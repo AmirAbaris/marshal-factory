@@ -8,7 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
-import type { AgentRow, EventRow, RunRow } from "@/db/schema";
+import type { AgentRow, EventRow, IssueRow, RunRow } from "@/db/schema";
 import { AgentTree } from "./agent-tree";
 import { EventFeed } from "./event-feed";
 import { formatUsd, runCost, runTitle, shortId } from "./format";
@@ -22,7 +22,9 @@ export function RunDetail({
   agents,
   events,
   stages,
+  issue,
 }: {
+  issue: IssueRow | undefined;
   run: RunRow;
   agents: Feed<AgentRow>;
   events: Feed<EventRow>;
@@ -68,7 +70,7 @@ export function RunDetail({
               </Link>
             </Button>
           </div>
-          <h2 className="text-base font-semibold">{runTitle(run)}</h2>
+          <h2 className="text-base font-semibold">{issue?.title ?? runTitle(run)}</h2>
           <div className="flex flex-wrap items-center gap-2">
             {run.stage && (
               <Badge variant="outline" className="gap-1.5 rounded-md font-normal">
@@ -84,8 +86,16 @@ export function RunDetail({
             <span className="font-mono text-muted-foreground">
               {formatUsd(runCost(run, agentRows))}
             </span>
-            {run.pr_url && (
+            {issue && (
               <Button asChild variant="outline" size="sm" className="ml-auto">
+                <a href={issue.url} target="_blank" rel="noreferrer">
+                  Linear
+                  <ExternalLinkIcon data-icon="inline-end" />
+                </a>
+              </Button>
+            )}
+            {run.pr_url && (
+              <Button asChild variant="outline" size="sm" className={issue ? "" : "ml-auto"}>
                 <a href={run.pr_url} target="_blank" rel="noreferrer">
                   Pull request
                   <ExternalLinkIcon data-icon="inline-end" />
@@ -93,7 +103,7 @@ export function RunDetail({
               </Button>
             )}
             {run.t3_thread_id && (
-              <Button asChild variant="outline" size="sm" className={run.pr_url ? "" : "ml-auto"}>
+              <Button asChild variant="outline" size="sm" className={issue || run.pr_url ? "" : "ml-auto"}>
                 <a href={`t3-thread://v1/${run.t3_thread_id}`}>
                   Open in T3
                   <ExternalLinkIcon data-icon="inline-end" />

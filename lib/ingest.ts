@@ -1,7 +1,7 @@
-import { eq, sql } from "drizzle-orm";
+import { and, eq, isNull, lte, or, sql } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import * as schema from "../db/schema";
-import { agents, events, runs } from "../db/schema";
+import { agents, events, issues, runs } from "../db/schema";
 import type { FactoryEvent, Usage } from "./events";
 import { issueKeyFromBranch } from "./factory";
 
@@ -264,7 +264,45 @@ async function applyStage(tx: Tx, e: Extract<FactoryEvent, { kind: "stage" }>) {
     });
 }
 
+/** A claimed issue follows its runs' stage reports, newest first, and remembers its latest session. */
+async function applyToIssue(tx: Tx, event: FactoryEvent) {
+  if (event.kind === "session_start") {
+    const key = issueKeyFromBranch(event.branch);
+    if (!key) return;
+    await tx
+      .update(issues)
+      .set({
+        session_id: event.sessionId,
+        t3_thread_id: sql`coalesce(${event.t3ThreadId ?? null}, ${issues.t3_thread_id})`,
+        updated_at: when(event.at),
+      })
+      .where(eq(issues.key, key));
+  }
+  if (event.kind === "stage" && event.issueKey) {
+    const at = when(event.at);
+    await tx
+      .update(issues)
+      .set({
+        stage: event.stage,
+        stage_at: at,
+        stage_summary: event.summary,
+        question: event.question ?? null,
+        pr_url: sql`coalesce(${event.prUrl ?? null}, ${issues.pr_url})`,
+        stage_event_id: event.eventId,
+        session_id: event.sessionId,
+        updated_at: at,
+      })
+      .where(
+        and(
+          eq(issues.key, event.issueKey),
+          or(isNull(issues.stage_at), lte(issues.stage_at, at)),
+        ),
+      );
+  }
+}
+
 async function project(tx: Tx, event: FactoryEvent) {
+  await applyToIssue(tx, event);
   if (event.kind === "stage") return applyStage(tx, event);
   await upsertRun(tx, event);
   switch (event.kind) {

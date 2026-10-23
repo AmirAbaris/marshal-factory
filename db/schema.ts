@@ -86,6 +86,35 @@ export const agents = pgTable(
   (t) => [index("agents_session_idx").on(t.session_id)],
 );
 
+/** One Linear issue the factory claimed. Ingest keeps its stage; the poller owns the rest. */
+export const issues = pgTable(
+  "issues",
+  {
+    linear_id: text("linear_id").primaryKey(),
+    key: text("key").notNull().unique(),
+    title: text("title").notNull(),
+    url: text("url").notNull(),
+    description: text("description"),
+    linear_state: text("linear_state"),
+    labels: jsonb("labels").$type<string[]>().notNull().default([]),
+    stage: runStage("stage").notNull().default("queued"),
+    stage_at: ts("stage_at"),
+    stage_summary: text("stage_summary"),
+    question: text("question"),
+    pr_url: text("pr_url"),
+    /** The stage event the issue's stage came from; write-back keys its Linear comment on it. */
+    stage_event_id: text("stage_event_id"),
+    /** The stage event last written back to Linear. */
+    synced_event_id: text("synced_event_id"),
+    t3_thread_id: text("t3_thread_id"),
+    session_id: text("session_id"),
+    claimed_at: ts("claimed_at").notNull(),
+    updated_at: ts("updated_at").notNull(),
+  },
+  (t) => [index("issues_claimed_at_idx").on(t.claimed_at)],
+);
+
 export type EventRow = typeof events.$inferSelect;
 export type RunRow = typeof runs.$inferSelect;
 export type AgentRow = typeof agents.$inferSelect;
+export type IssueRow = typeof issues.$inferSelect;

@@ -3,6 +3,7 @@ import { LivePanel, type DetailProps } from "@/components/panel/live-panel";
 import { RealtimeRoot } from "@/components/panel/realtime-root";
 import {
   agentsOverviewQuery,
+  issuesQuery,
   load,
   parseSessionId,
   runsQuery,
@@ -24,14 +25,15 @@ async function loadDetail(raw: string | undefined): Promise<DetailProps | undefi
 
 async function Panel({ searchParams }: Pick<PageProps<"/">, "searchParams">) {
   const { run } = await searchParams;
-  const [runs, agents, detail] = await Promise.all([
+  const [issues, runs, agents, detail] = await Promise.all([
+    load(issuesQuery()),
     load(runsQuery()),
     load(agentsOverviewQuery()),
     loadDetail(typeof run === "string" ? run : undefined),
   ]);
   return (
     <RealtimeRoot>
-      <LivePanel runs={runs} agents={agents} detail={detail} />
+      <LivePanel issues={issues} runs={runs} agents={agents} detail={detail} />
     </RealtimeRoot>
   );
 }

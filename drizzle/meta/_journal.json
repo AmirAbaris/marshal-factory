@@ -15,6 +15,13 @@
       "when": 1792760496083,
       "tag": "0001_stage_columns",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1792761280761,
+      "tag": "0002_issues",
+      "breakpoints": true
     }
   ]
 }
