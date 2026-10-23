@@ -76,7 +76,8 @@ export function resumeMessage(key: string, question: string, answer: string) {
 
 /**
  * Marks replies delivered while the issue is still waiting. Returns false when another pass
- * already delivered any of them, which is the replay guard: claim first, then send.
+ * already delivered any of them, which is the replay guard: claim first, then send. Only a
+ * failed send rolls the claim back; after a successful send the thread's own reports move on.
  */
 export async function claimReplies(
   db: NodePgDatabase<typeof schema>,
@@ -84,6 +85,8 @@ export async function claimReplies(
   replyIds: readonly string[],
   answer: string,
   at: Date,
+  /** Set when the thread that asked is gone: unlinks it and keeps the Q&A for a fresh thread. */
+  relaunchContext?: string,
 ) {
   const claimed = await db
     .update(issues)
@@ -92,6 +95,9 @@ export async function claimReplies(
       answered_at: at,
       answer,
       updated_at: at,
+      ...(relaunchContext
+        ? { resume_context: relaunchContext, t3_thread_id: null, session_id: null }
+        : {}),
     })
     .where(
       and(

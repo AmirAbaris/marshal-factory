@@ -289,7 +289,6 @@ async function applyToIssue(tx: Tx, event: FactoryEvent) {
         question: event.question ?? null,
         pr_url: sql`coalesce(${event.prUrl ?? null}, ${issues.pr_url})`,
         stage_event_id: event.eventId,
-        session_id: event.sessionId,
         updated_at: at,
       })
       .where(

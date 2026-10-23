@@ -124,15 +124,19 @@ async function postEvent(event: Record<string, unknown>) {
 /** A thread can take the answer if T3 still has it and its worktree is on disk. */
 async function threadAlive(threadId: string | null) {
   if (!threadId) return false;
+  let stdout: string;
   try {
-    const { stdout } = await run(T3, ["thread", "show", threadId, "--json"], { timeout: 20_000 });
-    const { thread } = z
-      .object({ thread: z.object({ archived: z.boolean(), worktreePath: z.string().nullable() }) })
-      .parse(JSON.parse(stdout));
-    return !thread.archived && (thread.worktreePath === null || existsSync(thread.worktreePath));
-  } catch {
-    return false;
+    ({ stdout } = await run(T3, ["thread", "show", threadId, "--json"], { timeout: 20_000 }));
+  } catch (error) {
+    // Only T3 saying the thread is gone counts as gone; a timeout or crash must not start a second thread.
+    const output = String((error as { stdout?: string }).stdout ?? "") + String((error as { stderr?: string }).stderr ?? "");
+    if (output.includes("no longer available")) return false;
+    throw error;
   }
+  const { thread } = z
+    .object({ thread: z.object({ archived: z.boolean(), worktreePath: z.string().nullable() }) })
+    .parse(JSON.parse(stdout));
+  return !thread.archived && (thread.worktreePath === null || existsSync(thread.worktreePath));
 }
 
 async function sendToThread(threadId: string, message: string) {
@@ -177,19 +181,22 @@ async function resumeAnswered() {
 
     const replyIds = plan.replies.map((r) => r.id);
     const ackId = resumeCommentId(issue.linear_id, replyIds);
-    if (!(await claimReplies(db, issue.linear_id, replyIds, plan.answer, now))) continue;
-
     const alive = await threadAlive(issue.t3_thread_id);
-    try {
-      if (alive) {
+    // A dead thread is unlinked in the same update that claims the replies, so the relaunch
+    // cannot be lost to a later failure in this pass.
+    const relaunch = alive ? undefined : qaBlock(plan.question, plan.answer);
+    if (!(await claimReplies(db, issue.linear_id, replyIds, plan.answer, now, relaunch))) continue;
+
+    if (alive) {
+      try {
         await sendToThread(issue.t3_thread_id!, resumeMessage(issue.key, plan.question, plan.answer));
+      } catch (error) {
+        await db
+          .update(issues)
+          .set({ delivered_reply_ids: issue.delivered_reply_ids, answered_at: issue.answered_at, answer: issue.answer })
+          .where(eq(issues.linear_id, issue.linear_id));
+        throw error;
       }
-    } catch (error) {
-      await db
-        .update(issues)
-        .set({ delivered_reply_ids: issue.delivered_reply_ids, answered_at: issue.answered_at, answer: issue.answer })
-        .where(eq(issues.linear_id, issue.linear_id));
-      throw error;
     }
 
     const summary = alive
@@ -205,13 +212,6 @@ async function resumeAnswered() {
       answer: plan.answer.slice(0, 4000),
       issueKey: issue.key,
     });
-    if (!alive) {
-      // Unlinking the dead thread puts the issue back in the launch list, now with the Q&A.
-      await db
-        .update(issues)
-        .set({ resume_context: qaBlock(plan.question, plan.answer), t3_thread_id: null, session_id: null })
-        .where(eq(issues.linear_id, issue.linear_id));
-    }
     await postComment(issue, ackId, "Answer received, resuming.");
     resumed.push(`${issue.key}:${alive ? "sent" : "relaunch"}`);
   }
@@ -326,7 +326,13 @@ async function toLaunch() {
   const rows = await db
     .select()
     .from(issues)
-    .where(and(eq(issues.stage, "queued"), isNull(issues.t3_thread_id), isNull(issues.session_id)));
+    .where(
+      and(
+        or(eq(issues.stage, "queued"), isNotNull(issues.resume_context)),
+        isNull(issues.t3_thread_id),
+        isNull(issues.session_id),
+      ),
+    );
   return rows.map((issue) => ({
     key: issue.key,
     branch: `factory/${issue.key}`,

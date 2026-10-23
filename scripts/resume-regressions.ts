@@ -67,6 +67,13 @@ try {
   assert.equal(await claimReplies(db, id, ["c-2", "c-3"], "b", now), false, "any already delivered reply blocks the claim");
   const [row] = await db.select().from(issues).where(eq(issues.linear_id, id));
   assert.deepEqual(row!.delivered_reply_ids, ["c-1", "c-2"]);
+
+  await db.update(issues).set({ t3_thread_id: "dead-thread", session_id: "old-session" }).where(eq(issues.linear_id, id));
+  assert.equal(await claimReplies(db, id, ["c-3"], "c", now, "## Q&A"), true);
+  const [relaunch] = await db.select().from(issues).where(eq(issues.linear_id, id));
+  assert.equal(relaunch!.t3_thread_id, null, "claiming for a dead thread unlinks it in the same update");
+  assert.equal(relaunch!.session_id, null);
+  assert.equal(relaunch!.resume_context, "## Q&A");
   console.log("resume regressions passed");
 } catch (error) {
   console.error(error);
