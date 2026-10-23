@@ -117,30 +117,32 @@ async function checkPullRequests() {
 }
 
 async function sendBackForConflict(issue: IssueRow, head: string) {
+  // Ask T3 first: a CLI error then aborts the pass before anything is claimed.
+  const thread = await threadState(issue.t3_thread_id);
   if (!(await claimConflict(db, issue.linear_id, head))) return false;
+  const release = () =>
+    db.update(issues).set({ conflict_head: issue.conflict_head }).where(eq(issues.linear_id, issue.linear_id));
 
   const now = Date.now();
-  if ((await threadState(issue.t3_thread_id)) === "gone") {
-    await postEvent({
-      eventId: `conflict:${issue.linear_id}:${head}`,
-      sessionId: issue.session_id ?? `conflict:${issue.linear_id}`,
-      at: now,
-      kind: "stage",
-      stage: "failed",
-      summary: `${issue.pr_url} conflicts with main and its T3 thread is gone.`,
-      issueKey: issue.key,
-    });
-    return true;
-  }
   try {
+    if (thread === "gone") {
+      await postEvent({
+        eventId: `conflict:${issue.linear_id}:${head}`,
+        sessionId: issue.session_id ?? `conflict:${issue.linear_id}`,
+        at: now,
+        kind: "stage",
+        stage: "failed",
+        summary: `${issue.pr_url} conflicts with main and its T3 thread is gone.`,
+        issueKey: issue.key,
+      });
+      return true;
+    }
     await sendToThread(issue.t3_thread_id!, conflictMessage(issue.key, issue.pr_url!));
   } catch (error) {
-    await db
-      .update(issues)
-      .set({ conflict_head: issue.conflict_head })
-      .where(eq(issues.linear_id, issue.linear_id));
+    await release();
     throw error;
   }
+  // The thread has the message now; if this event fails, its own reports still move the board.
   await postEvent({
     eventId: `conflict:${issue.linear_id}:${head}`,
     sessionId: issue.session_id ?? `conflict:${issue.linear_id}`,
