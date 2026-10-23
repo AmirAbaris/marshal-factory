@@ -121,6 +121,8 @@ export const issues = pgTable(
     /** When the watchdog nudged a stuck run, and in which stage; cleared once the stage moves on. */
     nudged_at: ts("nudged_at"),
     nudged_stage: runStage("nudged_stage"),
+    /** The PR head the factory last sent back to its thread because it conflicted with main. */
+    conflict_head: text("conflict_head"),
     t3_thread_id: text("t3_thread_id"),
     session_id: text("session_id"),
     claimed_at: ts("claimed_at").notNull(),

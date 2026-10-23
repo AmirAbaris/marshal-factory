@@ -9,6 +9,7 @@ import type { IssueRow } from "../db/schema";
 import type { Stage } from "../lib/events";
 import { loadConfig } from "../lib/config";
 import { linearClient, type LinearClient } from "../lib/linear";
+import { claimConflict, conflictMessage } from "../lib/conflicts";
 import { nudgeMessage, watch, type ThreadState } from "../lib/watchdog";
 import {
   claimCommentId,
@@ -48,7 +49,7 @@ const stateId = (team: Team, name: string) => {
 const WRITE_BACK: Partial<Record<Stage, { state?: string; comment?: (issue: IssueRow) => string }>> = {
   pr: {
     state: "In Review",
-    comment: (i) => `marshal-factory opened a pull request: ${i.pr_url}\n\n${i.stage_summary ?? ""}`.trim(),
+    comment: (i) => `marshal-factory has a pull request ready for review: ${i.pr_url}\n\n${i.stage_summary ?? ""}`.trim(),
   },
   waiting: {
     comment: (i) =>
@@ -72,18 +73,33 @@ async function postComment(issue: IssueRow, id: string, body: string) {
   await linear.comment(issue.linear_id, id, body);
 }
 
+const prSchema = z.object({ state: z.string(), mergeable: z.string(), headRefOid: z.string() });
+
 async function prState(url: string) {
-  const { stdout } = await run("gh", ["pr", "view", url, "--json", "state"], { timeout: 20_000 });
-  return z.object({ state: z.string() }).parse(JSON.parse(stdout)).state;
+  const { stdout } = await run("gh", ["pr", "view", url, "--json", "state,mergeable,headRefOid"], {
+    timeout: 20_000,
+  });
+  return prSchema.parse(JSON.parse(stdout));
 }
 
-async function detectMerges() {
+/**
+ * Follows every factory PR: a merged one moves its issue to merged, and one that conflicts with
+ * main while its issue sits in pr sends the thread back to merge main. The conflict is handled
+ * once per PR head, so a pass never repeats the request while the thread works on it.
+ */
+async function checkPullRequests() {
   const open = await db
     .select()
     .from(issues)
     .where(and(isNotNull(issues.pr_url), ne(issues.stage, "merged")));
+  const conflicts: string[] = [];
   for (const issue of open) {
-    if ((await prState(issue.pr_url!)) !== "MERGED") continue;
+    const pr = await prState(issue.pr_url!);
+    if (pr.state === "OPEN" && pr.mergeable === "CONFLICTING" && issue.stage === "pr") {
+      if (await sendBackForConflict(issue, pr.headRefOid)) conflicts.push(issue.key);
+      continue;
+    }
+    if (pr.state !== "MERGED") continue;
     const now = new Date();
     await db
       .update(issues)
@@ -97,6 +113,46 @@ async function detectMerges() {
       })
       .where(eq(issues.linear_id, issue.linear_id));
   }
+  return conflicts;
+}
+
+async function sendBackForConflict(issue: IssueRow, head: string) {
+  // Ask T3 first: a CLI error then aborts the pass before anything is claimed.
+  const thread = await threadState(issue.t3_thread_id);
+  if (!(await claimConflict(db, issue.linear_id, head))) return false;
+  const release = () =>
+    db.update(issues).set({ conflict_head: issue.conflict_head }).where(eq(issues.linear_id, issue.linear_id));
+
+  const now = Date.now();
+  try {
+    if (thread === "gone") {
+      await postEvent({
+        eventId: `conflict:${issue.linear_id}:${head}`,
+        sessionId: issue.session_id ?? `conflict:${issue.linear_id}`,
+        at: now,
+        kind: "stage",
+        stage: "failed",
+        summary: `${issue.pr_url} conflicts with main and its T3 thread is gone.`,
+        issueKey: issue.key,
+      });
+      return true;
+    }
+    await sendToThread(issue.t3_thread_id!, conflictMessage(issue.key, issue.pr_url!));
+  } catch (error) {
+    await release();
+    throw error;
+  }
+  // The thread has the message now; if this event fails, its own reports still move the board.
+  await postEvent({
+    eventId: `conflict:${issue.linear_id}:${head}`,
+    sessionId: issue.session_id ?? `conflict:${issue.linear_id}`,
+    at: now,
+    kind: "stage",
+    stage: "implementing",
+    summary: `${issue.pr_url} conflicts with main; the thread is merging main into the branch.`,
+    issueKey: issue.key,
+  });
+  return true;
 }
 
 async function postEvent(event: Record<string, unknown>) {
@@ -441,14 +497,14 @@ async function main(args: string[]) {
     return attach(key, threadId);
   }
   const team = await linear.team(config.factory.teamKey);
-  await detectMerges();
-  if (args[0] === "--sync") return { synced: await writeBack(team) };
+  const conflicts = await checkPullRequests();
+  if (args[0] === "--sync") return { conflicts, synced: await writeBack(team) };
   const resumed = await resumeAnswered();
   const watched = await watchdog();
   const synced = await writeBack(team);
   const { claimed, inFlight } = await claim();
   await announceClaims(team);
-  return { claimed, resumed, watched, synced, inFlight, maxInFlight: config.factory.maxInFlight, launch: await toLaunch() };
+  return { claimed, resumed, watched, conflicts, synced, inFlight, maxInFlight: config.factory.maxInFlight, launch: await toLaunch() };
 }
 
 try {
