@@ -4,3 +4,10 @@ node_modules/
 .next/
 dist/
 .DS_Store
+*.tsbuildinfo
+next-env.d.ts
+.vercel
+/coverage
+/out/
+.neon
+.neon
