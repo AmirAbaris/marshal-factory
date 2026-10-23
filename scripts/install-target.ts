@@ -84,7 +84,9 @@ const configPath = CONFIG_PATH;
 const config = readJson(configPath);
 const factory = (config.factory as Json | undefined) ?? {};
 const repo = resolve(target);
-if (!((factory.repos as string[] | undefined) ?? []).includes(repo)) {
+if (!existsSync(configPath)) {
+  console.log(`skipped   factory.repos: ${configPath} does not exist yet; add ${repo} there by hand`);
+} else if (!((factory.repos as string[] | undefined) ?? []).includes(repo)) {
   factory.repos = [...((factory.repos as string[] | undefined) ?? []), repo];
   writeFileSync(configPath, json({ ...config, factory }), { mode: 0o600 });
   console.log(`added     ${repo} to factory.repos in ${configPath}`);

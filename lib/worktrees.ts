@@ -109,9 +109,14 @@ export async function cleanupRepo(
   const localBranches = new Set(branchList ? branchList.split("\n") : []);
   const branches = new Set([...localBranches, ...trees.keys(), ...threads.flatMap((t) => (t.branch ? [t.branch] : []))]);
 
+  const checkedOut = await sh("git", ["branch", "--show-current"], repo);
   for (const branch of branches) {
     const key = issueKeyFromBranch(branch);
     if (!key) continue;
+    if (branch === checkedOut) {
+      report.held.push({ key, reason: "checked out in the main repo" });
+      continue;
+    }
     const worktreePath = trees.get(branch) ?? null;
     const branchThreads = threads.filter(
       (t) => t.branch === branch || (worktreePath !== null && t.worktreePath === worktreePath),
@@ -146,7 +151,14 @@ export async function cleanupRepo(
         if (existsSync(worktreePath)) rmSync(worktreePath, { recursive: true, force: true });
         await sh("git", ["worktree", "prune"], repo);
       }
-      if (local) await sh("git", ["branch", "-D", branch], repo);
+      if (local) {
+        try {
+          await sh("git", ["branch", "-D", branch], repo);
+        } catch (error) {
+          report.held.push({ key, reason: `git branch -D failed: ${(error as Error).message.split("\n")[0]}` });
+          continue;
+        }
+      }
       report.removed.push({ key, worktree: worktreePath, freedKb });
     }
     const finished = plan.kind === "remove" || plan.reason === "already clean";
