@@ -23,6 +23,8 @@ export const factorySchema = z
     cleanupGraceDays: z.number().nonnegative().default(3),
     /** Target repos the factory works in; the installer adds each one. */
     repos: z.array(z.string()).default([]),
+    /** Ids of the webhooks scripts/install-webhooks.ts created: `linear`, and one per GitHub repo. */
+    webhooks: z.record(z.string(), z.union([z.string(), z.number()])).default({}),
   })
   .prefault({});
 export type FactoryLimits = z.infer<typeof factorySchema>;

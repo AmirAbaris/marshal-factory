@@ -137,7 +137,39 @@ export const issues = pgTable(
   (t) => [index("issues_claimed_at_idx").on(t.claimed_at)],
 );
 
+/** Every webhook delivery, keyed by its id, so a redelivery is recognised and changes nothing. */
+export const webhookDeliveries = pgTable("webhook_deliveries", {
+  delivery_id: text("delivery_id").primaryKey(),
+  source: text("source").notNull(),
+  event: text("event").notNull(),
+  received_at: ts("received_at").notNull(),
+  payload: jsonb("payload").notNull(),
+});
+
+export const intentKind = pgEnum("intent_kind", ["claim", "stop", "answer", "merged", "recheck_conflicts"]);
+
+/**
+ * What a webhook asks the runner to do. Webhooks only record these; the runner acts on each one
+ * through the same idempotent code its timer and startup reconcile use, then sets handled_at.
+ */
+export const intents = pgTable(
+  "intents",
+  {
+    id: text("id").primaryKey(),
+    kind: intentKind("kind").notNull(),
+    issue_key: text("issue_key"),
+    linear_id: text("linear_id"),
+    pr_url: text("pr_url"),
+    detail: text("detail"),
+    created_at: ts("created_at").notNull(),
+    handled_at: ts("handled_at"),
+    result: text("result"),
+  },
+  (t) => [index("intents_open_idx").on(t.handled_at, t.created_at)],
+);
+
 export type EventRow = typeof events.$inferSelect;
 export type RunRow = typeof runs.$inferSelect;
 export type AgentRow = typeof agents.$inferSelect;
 export type IssueRow = typeof issues.$inferSelect;
+export type IntentRow = typeof intents.$inferSelect;
