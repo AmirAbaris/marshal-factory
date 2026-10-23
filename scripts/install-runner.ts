@@ -69,5 +69,6 @@ if (changed && loaded()) {
   // bootout returns before the old process is gone; bootstrap fails until it is.
   for (let i = 0; i < 50 && loaded(); i++) execFileSync("/bin/sleep", ["0.2"]);
 }
-if (changed || !loaded()) launchctl("bootstrap", domain, plistPath);
-console.log(`${changed ? "installed" : "unchanged"} ${LABEL}; log ${logPath}`);
+const wasLoaded = loaded();
+if (changed || !wasLoaded) launchctl("bootstrap", domain, plistPath);
+console.log(`${changed ? "installed" : wasLoaded ? "unchanged" : "loaded"} ${LABEL}; log ${logPath}`);
