@@ -4,6 +4,7 @@ import { useLiveQuery } from "@neon/realtime-react";
 import { useCallback, useMemo, useState } from "react";
 import type { AgentRow, EventRow, RunRow } from "@/db/schema";
 import { Board } from "./board";
+import { stagedCards } from "./cards";
 import { groupBy } from "./format";
 import { RunDetail } from "./run-detail";
 import { fetchSealed, type Feed } from "./sealed";
@@ -15,6 +16,7 @@ export type DetailProps = {
   sessionId: string;
   agents: Feed<AgentRow>;
   events: Feed<EventRow>;
+  stages: Feed<EventRow>;
 };
 
 export function LivePanel({
@@ -40,6 +42,8 @@ export function LivePanel({
     () => groupBy(agentRows, (a) => a.session_id),
     [agentRows],
   );
+  const cards = useMemo(() => stagedCards(runRows), [runRows]);
+  const unstaged = runRows.filter((r) => r.stage === null);
   const startOfToday = useAfterHydration(() => new Date().setHours(0, 0, 0, 0), 0);
   const selectedRun = detail && runRows.find((r) => r.session_id === detail.sessionId);
 
@@ -47,7 +51,7 @@ export function LivePanel({
     <div className="grid h-screen grid-cols-[220px_1fr]">
       <Sidebar
         runCount={runRows.length}
-        unstagedCount={runRows.filter((r) => r.stage === null).length}
+        unstagedCount={unstaged.length}
         liveSessions={runRows.filter((r) => r.status === "active").length}
         connected={liveRuns.status === "live"}
       />
@@ -58,9 +62,20 @@ export function LivePanel({
         </header>
         <StatsStrip runs={runRows} agentsBySession={agentsBySession} startOfToday={startOfToday} />
         <div className={`grid min-h-0 flex-1 ${selectedRun ? "grid-cols-[1fr_420px]" : "grid-cols-1"}`}>
-          <Board runs={runRows} agentsBySession={agentsBySession} selected={detail?.sessionId} />
+          <Board
+            cards={cards}
+            unstaged={unstaged}
+            agentsBySession={agentsBySession}
+            selected={detail?.sessionId}
+          />
           {selectedRun && detail && (
-            <RunDetail key={detail.sessionId} run={selectedRun} agents={detail.agents} events={detail.events} />
+            <RunDetail
+              key={detail.sessionId}
+              run={selectedRun}
+              agents={detail.agents}
+              events={detail.events}
+              stages={detail.stages}
+            />
           )}
         </div>
       </main>

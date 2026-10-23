@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { stageReportSchema, type FactoryEvent, type Usage } from "../lib/events";
 import { issueKeyFromBranch, REPORT_STAGE_TOOL } from "../lib/factory";
@@ -113,20 +113,28 @@ async function sh(command: string, args: string[]) {
 }
 
 async function gitContext(cwd: string) {
-  const [branch, toplevel] = await Promise.all([
+  const [branch, toplevel, commonDir] = await Promise.all([
     sh("git", ["-C", cwd, "rev-parse", "--abbrev-ref", "HEAD"]).catch(() => undefined),
     sh("git", ["-C", cwd, "rev-parse", "--show-toplevel"]).catch(() => undefined),
+    sh("git", ["-C", cwd, "rev-parse", "--path-format=absolute", "--git-common-dir"]).catch(
+      () => undefined,
+    ),
   ]);
-  return { branch, toplevel, repo: toplevel ? basename(toplevel) : undefined };
+  // A T3 worktree lives outside the project folder; the shared .git dir points back to it.
+  const mainRoot = commonDir ? dirname(commonDir) : toplevel;
+  return { branch, toplevel, mainRoot, repo: mainRoot ? basename(mainRoot) : undefined };
 }
 
 type T3Thread = { threadId: string; title?: string; status?: string };
 
 /** The running thread whose worktree is this session's directory; omitted when T3 can't say. */
-async function findT3Thread(cwd: string, toplevel: string | undefined) {
+async function findT3Thread(
+  cwd: string,
+  { toplevel, mainRoot }: { toplevel?: string; mainRoot?: string },
+) {
   try {
     const list = JSON.parse(
-      await sh(T3, ["thread", "list", "--project", cwd, "--json"]),
+      await sh(T3, ["thread", "list", "--project", mainRoot ?? cwd, "--json"]),
     ) as T3Thread[];
     const running = list.filter((thread) => thread.status === "running");
     const shown = await Promise.all(
@@ -165,7 +173,7 @@ async function toEvent(
     case "SessionStart": {
       const cwd = str(input.cwd) ?? process.cwd();
       const git = await gitContext(cwd);
-      const t3 = await findT3Thread(cwd, git.toplevel);
+      const t3 = await findT3Thread(cwd, git);
       const source = str(input.source);
       return {
         ...base,

@@ -8,16 +8,18 @@ import {
   runsQuery,
   sessionAgentsQuery,
   sessionEventsQuery,
+  sessionStagesQuery,
 } from "@/lib/live-queries";
 
 async function loadDetail(raw: string | undefined): Promise<DetailProps | undefined> {
   const sessionId = raw && parseSessionId(raw);
   if (!sessionId) return undefined;
-  const [agents, events] = await Promise.all([
+  const [agents, events, stages] = await Promise.all([
     load(sessionAgentsQuery(sessionId)),
     load(sessionEventsQuery(sessionId)),
+    load(sessionStagesQuery(sessionId)),
   ]);
-  return { sessionId, agents, events };
+  return { sessionId, agents, events, stages };
 }
 
 async function Panel({ searchParams }: Pick<PageProps<"/">, "searchParams">) {

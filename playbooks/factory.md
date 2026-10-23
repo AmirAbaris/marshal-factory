@@ -28,6 +28,7 @@ No human reads this thread while it runs. The supervision panel and the pull req
 - **Replace** "Ask the user only with a stated, specific reason the control surface cannot reach the target, and only after driving it as far as it goes." with: If the control surface cannot reach the target after you drove it as far as it goes, report `waiting` with the reason and the exact repro you need, then stop.
 - **Before** "Plan the fix." call `report_stage` with `stage: "implementing"`.
 - **Replace** "Skip it when the test would be expensive, integration-heavy, or unclear." with: In a factory run the failing test is mandatory. Write it first, run it, and quote the failure before the fix. If no test can express the bug, report `waiting` and say why.
+- **After** "Stage the commits so the failing repro lands before the fix in git history." commit the failing test on its own, then the fix in a second commit.
 - **Before** "Verify on the same surface." call `report_stage` with `stage: "verifying"`. Run the repo's lint, typecheck, tests and build locally before you push.
 - **Before** "`how` over the affected subsystem." call `report_stage` with `stage: "investigating"`.
 - **Before** "Delegate code-writing to a subagent using your configured feature model" call `report_stage` with `stage: "implementing"`.

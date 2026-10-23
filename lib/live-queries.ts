@@ -1,6 +1,6 @@
 import { createRealtime } from "@neon/realtime/server";
 import { drizzleAdapter } from "@neon/realtime-drizzle";
-import { desc, eq, getTableColumns } from "drizzle-orm";
+import { and, asc, desc, eq, getTableColumns } from "drizzle-orm";
 import { db } from "@/db/client";
 import { agents, events, runs } from "@/db/schema";
 
@@ -50,6 +50,16 @@ export const sessionEventsQuery = (sessionId: string) =>
     .where(eq(events.session_id, sessionId))
     .orderBy(desc(events.at), desc(events.event_id))
     .limit(FEED_LIMIT);
+
+export const STAGE_HISTORY_LIMIT = 100;
+
+export const sessionStagesQuery = (sessionId: string) =>
+  db
+    .select(getTableColumns(events))
+    .from(events)
+    .where(and(eq(events.session_id, sessionId), eq(events.kind, "stage")))
+    .orderBy(asc(events.at), asc(events.event_id))
+    .limit(STAGE_HISTORY_LIMIT);
 
 /** Runs the query for server rendering and seals it for the browser subscription. */
 export async function load<Q extends Parameters<typeof realtime.seal>[0]["query"]>(
