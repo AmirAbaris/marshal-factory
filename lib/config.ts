@@ -23,6 +23,11 @@ export const factorySchema = z
     cleanupGraceDays: z.number().nonnegative().default(3),
     /** Target repos the factory works in; the installer adds each one. */
     repos: z.array(z.string()).default([]),
+    /** The runner starts factory threads in the first repo with this provider and model. */
+    provider: z.string().default("claudeAgent"),
+    model: z.string().default("claude-opus-5-5"),
+    /** How often the runner's timer runs the watchdog, the cost-cap backstop and usage reconcile. */
+    tickSeconds: z.number().positive().default(90),
     /** Ids of the webhooks scripts/install-webhooks.ts created: `linear`, and one per GitHub repo. */
     webhooks: z.record(z.string(), z.union([z.string(), z.number()])).default({}),
   })

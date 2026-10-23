@@ -127,6 +127,8 @@ export const issues = pgTable(
     /** When the watchdog nudged a stuck run, and in which stage; cleared once the stage moves on. */
     nudged_at: ts("nudged_at"),
     nudged_stage: runStage("nudged_stage"),
+    /** The thread a stop message reached; a stop recorded before the thread was known waits for it. */
+    stop_sent_to: text("stop_sent_to"),
     /** The PR head the factory last sent back to its thread because it conflicted with main. */
     conflict_head: text("conflict_head"),
     t3_thread_id: text("t3_thread_id"),
@@ -163,6 +165,8 @@ export const intents = pgTable(
     detail: text("detail"),
     created_at: ts("created_at").notNull(),
     handled_at: ts("handled_at"),
+    attempts: integer("attempts").notNull().default(0),
+    retry_at: ts("retry_at"),
     result: text("result"),
   },
   (t) => [index("intents_open_idx").on(t.handled_at, t.created_at)],

@@ -16,8 +16,6 @@ const T3 = process.env.T3CODE_CLI_PATH ?? "t3";
 const FETCH_TIMEOUT_MS = 4000;
 const SUBPROCESS_TIMEOUT_MS = 3000;
 const LAST_MESSAGE_MAX = 500;
-const SYNC_TIMEOUT_MS = 60_000;
-const ANNOUNCED_STAGES = new Set(["pr", "waiting", "failed"]);
 
 type HookInput = Record<string, unknown> & {
   hook_event_name?: string;
@@ -264,13 +262,6 @@ async function main() {
   });
   const result = (await res.json()) as { spend?: Record<string, number> };
   if (result.spend) writeSpend(result.spend);
-
-  // The poller pass would also write these back to Linear; running it now saves up to one interval.
-  if (event.kind === "stage" && ANNOUNCED_STAGES.has(event.stage)) {
-    await run("bun", [join(import.meta.dirname, "../scripts/linear-poll.ts"), "--sync"], {
-      timeout: SYNC_TIMEOUT_MS,
-    });
-  }
 }
 
 // A reporting failure must never disturb the session.

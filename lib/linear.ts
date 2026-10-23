@@ -113,6 +113,42 @@ export function linearClient(apiKey: string) {
       return { state: data.issue.state, comments: data.issue.comments.nodes };
     },
 
+    /** The issues that still exist, archived and trashed ones included; a deleted id is simply absent. */
+    async issuesByIds(ids: string[]) {
+      if (ids.length === 0) return [];
+      const data = await gql(
+        `query($ids: [ID!]) {
+          issues(first: 250, filter: { id: { in: $ids } }, includeArchived: true) {
+            nodes { id archivedAt trashed state { type name } labels { nodes { name } } }
+          }
+        }`,
+        { ids },
+        z.object({
+          issues: z.object({
+            nodes: z.array(
+              z.object({
+                id: z.string(),
+                archivedAt: z.string().nullable(),
+                trashed: z.boolean().nullable(),
+                state: z.object({ type: z.string(), name: z.string() }),
+                labels: z.object({ nodes: z.array(z.object({ name: z.string() })) }),
+              }),
+            ),
+          }),
+        }),
+      );
+      return data.issues.nodes;
+    },
+
+    async labelsOf(issueId: string) {
+      const data = await gql(
+        `query($id: String!) { issue(id: $id) { labels { nodes { name } } } }`,
+        { id: issueId },
+        z.object({ issue: z.object({ labels: z.object({ nodes: z.array(z.object({ name: z.string() })) }) }) }),
+      );
+      return data.issue.labels.nodes.map((l) => l.name);
+    },
+
     async setState(issueId: string, stateId: string) {
       await this.update(issueId, { stateId });
     },

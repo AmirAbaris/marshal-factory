@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNotNull, isNull, lte, or, sql } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, isNull, lte, ne, or, sql } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import * as schema from "../db/schema";
 import { agents, events, issues, runs } from "../db/schema";
@@ -349,8 +349,9 @@ async function applyToIssue(tx: Tx, event: FactoryEvent) {
         and(
           eq(issues.key, event.issueKey),
           or(isNull(issues.stage_at), lte(issues.stage_at, at)),
-          // Reports from a thread carry its branch; the poller's own events target the current attempt.
-          ...(event.branch ? [onCurrentAttempt(event.branch)] : []),
+          // Reports from a thread carry its branch; the runner's own events target the current attempt.
+          // A failed attempt stays failed: a stopped or timed-out thread that reports again does not revive it.
+          ...(event.branch ? [onCurrentAttempt(event.branch), ne(issues.stage, "failed")] : []),
         ),
       );
   }
