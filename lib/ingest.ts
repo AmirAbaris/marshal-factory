@@ -3,6 +3,7 @@ import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import * as schema from "../db/schema";
 import { agents, events, runs } from "../db/schema";
 import type { FactoryEvent, Usage } from "./events";
+import { issueKeyFromBranch } from "./factory";
 
 type Db = NodePgDatabase<typeof schema>;
 type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
@@ -16,12 +17,10 @@ const RUN_STATUS: Record<FactoryEvent["kind"], RunStatus | null> = {
   agent_launched: "active",
   agent_stop: null,
   turn_stop: "idle",
+  stage: null,
   session_end: "ended",
 };
 
-export function issueKeyFromBranch(branch: string | undefined) {
-  return branch?.match(/^factory\/([^/\s]+)/)?.[1];
-}
 
 const when = (ms: number) => new Date(ms);
 
@@ -229,7 +228,44 @@ async function applyAgentStop(
     .where(eq(agents.tool_use_id, existing.tool_use_id));
 }
 
+const ifNewerStage = (column: string, value = `excluded."${column}"`) =>
+  sql.raw(
+    `case when runs."stage_at" is null or excluded."stage_at" >= runs."stage_at" then ${value} else runs."${column}" end`,
+  );
+
+/** A stage report that arrives late never overwrites a newer one. */
+async function applyStage(tx: Tx, e: Extract<FactoryEvent, { kind: "stage" }>) {
+  const at = when(e.at);
+  await tx
+    .insert(runs)
+    .values({
+      session_id: e.sessionId,
+      started_at: at,
+      last_event_at: at,
+      issue_key: e.issueKey,
+      stage: e.stage,
+      stage_at: at,
+      stage_summary: e.summary,
+      question: e.question ?? null,
+      pr_url: e.prUrl,
+    })
+    .onConflictDoUpdate({
+      target: runs.session_id,
+      set: {
+        started_at: sql.raw(`least(runs."started_at", excluded."started_at")`),
+        last_event_at: sql.raw(`greatest(runs."last_event_at", excluded."last_event_at")`),
+        issue_key: sql.raw(`coalesce(runs."issue_key", excluded."issue_key")`),
+        stage: ifNewerStage("stage"),
+        stage_summary: ifNewerStage("stage_summary"),
+        question: ifNewerStage("question"),
+        pr_url: ifNewerStage("pr_url", `coalesce(excluded."pr_url", runs."pr_url")`),
+        stage_at: sql.raw(`greatest(runs."stage_at", excluded."stage_at")`),
+      },
+    });
+}
+
 async function project(tx: Tx, event: FactoryEvent) {
+  if (event.kind === "stage") return applyStage(tx, event);
   await upsertRun(tx, event);
   switch (event.kind) {
     case "agent_start":

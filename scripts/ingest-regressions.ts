@@ -33,6 +33,28 @@ try {
   assert.equal(a.model, "claude-haiku-5-5", "a late agent_start keeps the resolved model id");
   assert.equal(a.status, "completed", "a late agent_start keeps the agent completed");
 
+  await ingest(db, [
+    ev(7, { kind: "stage", at: t0 + 30_000, stage: "implementing", summary: "red test in", issueKey: "FAC-9" }),
+    ev(8, { kind: "stage", at: t0 + 40_000, stage: "pr", summary: "opened", prUrl: "https://github.com/x/y/pull/1" }),
+    ev(9, { kind: "turn_stop", at: t0 + 41_000, usage }),
+  ]);
+  await ingest(db, [
+    ev(10, { kind: "stage", at: t0 + 35_000, stage: "verifying", summary: "late" }),
+  ]);
+  const [s] = await db.select().from(runs).where(eq(runs.session_id, run));
+  assert.equal(s.stage, "pr", "a late stage report does not move the stage back");
+  assert.equal(s.stage_summary, "opened", "a late stage report keeps the newer summary");
+  assert.equal(s.pr_url, "https://github.com/x/y/pull/1");
+  assert.equal(s.issue_key, "FAC-9", "the stage report's issue key fills a run that had none");
+  assert.equal(s.status, "idle", "stage reports leave the status alone");
+
+  await ingest(db, [
+    ev(11, { kind: "stage", at: t0 + 50_000, stage: "waiting", summary: "blocked", question: "Which breakpoint?" }),
+  ]);
+  const [w] = await db.select().from(runs).where(eq(runs.session_id, run));
+  assert.equal(w.question, "Which breakpoint?");
+  assert.equal(w.pr_url, "https://github.com/x/y/pull/1", "a later stage without a PR keeps the PR link");
+
   console.log("ingest regressions passed");
 } catch (error) {
   console.error(error);

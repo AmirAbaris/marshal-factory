@@ -7,22 +7,13 @@ import {
   text,
   timestamp,
 } from "drizzle-orm/pg-core";
+import { STAGES } from "../lib/events";
 
 // Keys equal column names: the Neon Realtime Drizzle adapter requires it.
 // Token counters are float8 because int8 and numeric reach live subscribers as strings.
 
 export const runStatus = pgEnum("run_status", ["active", "idle", "ended"]);
-export const runStage = pgEnum("run_stage", [
-  "queued",
-  "triage",
-  "investigating",
-  "implementing",
-  "verifying",
-  "pr",
-  "waiting",
-  "merged",
-  "failed",
-]);
+export const runStage = pgEnum("run_stage", STAGES);
 export const agentStatus = pgEnum("agent_status", [
   "running",
   "completed",
@@ -64,6 +55,11 @@ export const runs = pgTable(
     title: text("title"),
     status: runStatus("status").notNull().default("active"),
     stage: runStage("stage"),
+    // Stage moves on its own clock: a stage report can land after a later turn_stop.
+    stage_at: ts("stage_at"),
+    stage_summary: text("stage_summary"),
+    question: text("question"),
+    pr_url: text("pr_url"),
     started_at: ts("started_at").notNull(),
     last_event_at: ts("last_event_at").notNull(),
     model: text("model"),

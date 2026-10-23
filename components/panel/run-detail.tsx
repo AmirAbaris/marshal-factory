@@ -14,22 +14,28 @@ import { EventFeed } from "./event-feed";
 import { formatUsd, runCost, runTitle, shortId } from "./format";
 import { ModelChip } from "./model-chip";
 import { fetchSealed, type Feed } from "./sealed";
+import { StageTimeline } from "./stage-timeline";
+import { STAGE_META } from "./stages";
 
 export function RunDetail({
   run,
   agents,
   events,
+  stages,
 }: {
   run: RunRow;
   agents: Feed<AgentRow>;
   events: Feed<EventRow>;
+  stages: Feed<EventRow>;
 }) {
   const base = `/api/live/runs/${encodeURIComponent(run.session_id)}`;
   // Server re-renders hand over a fresh sealed object for the same query; keep the first.
   const [agentsQuery] = useState(agents.sealedQuery);
   const [eventsQuery] = useState(events.sealedQuery);
+  const [stagesQuery] = useState(stages.sealedQuery);
   const refreshAgents = useCallback(() => fetchSealed<AgentRow>(`${base}/agents`), [base]);
   const refreshEvents = useCallback(() => fetchSealed<EventRow>(`${base}/events`), [base]);
+  const refreshStages = useCallback(() => fetchSealed<EventRow>(`${base}/stages`), [base]);
 
   const liveAgents = useLiveQuery(agentsQuery, {
     refreshQuery: refreshAgents,
@@ -39,7 +45,12 @@ export function RunDetail({
     refreshQuery: refreshEvents,
     initialData: events.initialData,
   });
+  const liveStages = useLiveQuery(stagesQuery, {
+    refreshQuery: refreshStages,
+    initialData: stages.initialData,
+  });
   const agentRows = liveAgents.data ?? agents.initialData;
+  const stageRows = liveStages.data ?? stages.initialData;
   const eventRows = liveEvents.data ?? events.initialData;
 
   return (
@@ -59,6 +70,12 @@ export function RunDetail({
           </div>
           <h2 className="text-base font-semibold">{runTitle(run)}</h2>
           <div className="flex flex-wrap items-center gap-2">
+            {run.stage && (
+              <Badge variant="outline" className="gap-1.5 rounded-md font-normal">
+                <span className={`size-1.5 rounded-full ${STAGE_META[run.stage].dot}`} />
+                {STAGE_META[run.stage].label}
+              </Badge>
+            )}
             <Badge variant="outline" className="rounded-md font-normal">
               {run.status}
             </Badge>
@@ -67,8 +84,16 @@ export function RunDetail({
             <span className="font-mono text-muted-foreground">
               {formatUsd(runCost(run, agentRows))}
             </span>
-            {run.t3_thread_id && (
+            {run.pr_url && (
               <Button asChild variant="outline" size="sm" className="ml-auto">
+                <a href={run.pr_url} target="_blank" rel="noreferrer">
+                  Pull request
+                  <ExternalLinkIcon data-icon="inline-end" />
+                </a>
+              </Button>
+            )}
+            {run.t3_thread_id && (
+              <Button asChild variant="outline" size="sm" className={run.pr_url ? "" : "ml-auto"}>
                 <a href={`t3-thread://v1/${run.t3_thread_id}`}>
                   Open in T3
                   <ExternalLinkIcon data-icon="inline-end" />
@@ -77,6 +102,21 @@ export function RunDetail({
             )}
           </div>
         </div>
+        {run.stage === "waiting" && run.question && (
+          <div className="mx-4.5 mb-3.5 rounded-lg border border-warning/40 bg-warning/10 px-3 py-2.5">
+            <div className="text-xs font-semibold tracking-wider text-warning uppercase">
+              Question for you
+            </div>
+            <p className="mt-1 whitespace-pre-wrap">{run.question}</p>
+          </div>
+        )}
+        <Separator />
+        <section className="flex flex-col gap-2.5 px-4.5 py-3.5">
+          <h3 className="text-xs font-semibold tracking-wider text-faint uppercase">
+            Timeline
+          </h3>
+          <StageTimeline events={stageRows} />
+        </section>
         <Separator />
         <section className="flex flex-col gap-2.5 px-4.5 py-3.5">
           <h3 className="text-xs font-semibold tracking-wider text-faint uppercase">
