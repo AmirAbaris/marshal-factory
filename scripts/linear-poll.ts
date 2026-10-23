@@ -118,30 +118,32 @@ async function checkPullRequests() {
 }
 
 async function sendBackForConflict(issue: IssueRow, head: string) {
+  // Ask T3 first: a CLI error then aborts the pass before anything is claimed.
+  const thread = await threadState(issue.t3_thread_id);
   if (!(await claimConflict(db, issue.linear_id, head))) return false;
+  const release = () =>
+    db.update(issues).set({ conflict_head: issue.conflict_head }).where(eq(issues.linear_id, issue.linear_id));
 
   const now = Date.now();
-  if ((await threadState(issue.t3_thread_id)) === "gone") {
-    await postEvent({
-      eventId: `conflict:${issue.linear_id}:${head}`,
-      sessionId: issue.session_id ?? `conflict:${issue.linear_id}`,
-      at: now,
-      kind: "stage",
-      stage: "failed",
-      summary: `${issue.pr_url} conflicts with main and its T3 thread is gone.`,
-      issueKey: issue.key,
-    });
-    return true;
-  }
   try {
+    if (thread === "gone") {
+      await postEvent({
+        eventId: `conflict:${issue.linear_id}:${head}`,
+        sessionId: issue.session_id ?? `conflict:${issue.linear_id}`,
+        at: now,
+        kind: "stage",
+        stage: "failed",
+        summary: `${issue.pr_url} conflicts with main and its T3 thread is gone.`,
+        issueKey: issue.key,
+      });
+      return true;
+    }
     await sendToThread(issue.t3_thread_id!, conflictMessage(issue.key, issue.pr_url!));
   } catch (error) {
-    await db
-      .update(issues)
-      .set({ conflict_head: issue.conflict_head })
-      .where(eq(issues.linear_id, issue.linear_id));
+    await release();
     throw error;
   }
+  // The thread has the message now; if this event fails, its own reports still move the board.
   await postEvent({
     eventId: `conflict:${issue.linear_id}:${head}`,
     sessionId: issue.session_id ?? `conflict:${issue.linear_id}`,
@@ -326,13 +328,28 @@ async function watchdog() {
       actions.push(`${issue.key}:nudged`);
       continue;
     }
+    // Fail only the stage this pass looked at: a report that landed since then wins.
+    const eventId = `watchdog:${issue.linear_id}:${issue.stage_event_id ?? issue.stage}`;
+    const summary = `Watchdog stopped this run: ${action.reason}.`;
+    const failed = await db
+      .update(issues)
+      .set({ stage: "failed", stage_at: now, stage_summary: summary, question: null, stage_event_id: eventId, updated_at: now })
+      .where(
+        and(
+          eq(issues.linear_id, issue.linear_id),
+          eq(issues.stage, issue.stage),
+          sql`${issues.stage_event_id} is not distinct from ${issue.stage_event_id}`,
+        ),
+      )
+      .returning({ key: issues.key });
+    if (failed.length === 0) continue;
     await postEvent({
-      eventId: `watchdog:${issue.linear_id}:${issue.stage_event_id ?? issue.stage}`,
+      eventId,
       sessionId: issue.session_id ?? `watchdog:${issue.linear_id}`,
       at: now.getTime(),
       kind: "stage",
       stage: "failed",
-      summary: `Watchdog stopped this run: ${action.reason}.`,
+      summary,
       issueKey: issue.key,
     });
     actions.push(`${issue.key}:failed`);
