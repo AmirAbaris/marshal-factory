@@ -9,7 +9,7 @@ import type { IssueRow } from "../db/schema";
 import type { Stage } from "../lib/events";
 import { loadConfig } from "../lib/config";
 import { linearClient, type LinearClient } from "../lib/linear";
-import { conflictMessage } from "../lib/conflicts";
+import { claimConflict, conflictMessage } from "../lib/conflicts";
 import { nudgeMessage, watch, type ThreadState } from "../lib/watchdog";
 import {
   claimCommentId,
@@ -117,18 +117,7 @@ async function checkPullRequests() {
 }
 
 async function sendBackForConflict(issue: IssueRow, head: string) {
-  const claimed = await db
-    .update(issues)
-    .set({ conflict_head: head })
-    .where(
-      and(
-        eq(issues.linear_id, issue.linear_id),
-        eq(issues.stage, "pr"),
-        or(isNull(issues.conflict_head), ne(issues.conflict_head, head)),
-      ),
-    )
-    .returning({ key: issues.key });
-  if (claimed.length === 0) return false;
+  if (!(await claimConflict(db, issue.linear_id, head))) return false;
 
   const now = Date.now();
   if ((await threadState(issue.t3_thread_id)) === "gone") {

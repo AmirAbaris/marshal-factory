@@ -1,3 +1,24 @@
+import { and, eq, isNull, ne, or } from "drizzle-orm";
+import type { NodePgDatabase } from "drizzle-orm/node-postgres";
+import type * as schema from "../db/schema";
+import { issues } from "../db/schema";
+
+/** Claims a conflicting PR head for one send-back; false when this head was already handled. */
+export async function claimConflict(db: NodePgDatabase<typeof schema>, linearId: string, head: string) {
+  const claimed = await db
+    .update(issues)
+    .set({ conflict_head: head })
+    .where(
+      and(
+        eq(issues.linear_id, linearId),
+        eq(issues.stage, "pr"),
+        or(isNull(issues.conflict_head), ne(issues.conflict_head, head)),
+      ),
+    )
+    .returning({ key: issues.key });
+  return claimed.length > 0;
+}
+
 export function conflictMessage(key: string, prUrl: string) {
   return [
     `Factory run ${key}: your pull request ${prUrl} now conflicts with main.`,
