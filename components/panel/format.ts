@@ -26,6 +26,10 @@ export function runCost(run: RunRow, runAgents: readonly AgentRow[]) {
   );
 }
 
+export function spendOf(runs: readonly RunRow[], agentsBySession: Map<string, AgentRow[]>) {
+  return runs.reduce((sum, run) => sum + runCost(run, agentsBySession.get(run.session_id) ?? []), 0);
+}
+
 export function groupBy<T>(rows: readonly T[], key: (row: T) => string) {
   const groups = new Map<string, T[]>();
   for (const row of rows) {

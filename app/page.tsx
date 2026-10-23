@@ -1,4 +1,5 @@
 import { Suspense } from "react";
+import { loadLimits } from "@/lib/config";
 import { LivePanel, type DetailProps } from "@/components/panel/live-panel";
 import { RealtimeRoot } from "@/components/panel/realtime-root";
 import {
@@ -39,7 +40,7 @@ async function Panel({ searchParams }: Pick<PageProps<"/">, "searchParams">) {
   ]);
   return (
     <RealtimeRoot>
-      <LivePanel issues={issues} runs={runs} agents={agents} detail={detail} />
+      <LivePanel budgetUsd={loadLimits().budgetUsd} issues={issues} runs={runs} agents={agents} detail={detail} />
     </RealtimeRoot>
   );
 }

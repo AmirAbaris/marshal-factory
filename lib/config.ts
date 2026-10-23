@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
@@ -17,6 +17,8 @@ export const factorySchema = z
     stoppedGraceMinutes: z.number().nonnegative().default(2),
     /** After a nudge, this much more quiet marks the issue failed. */
     failAfterNudgeMinutes: z.number().positive().default(30),
+    /** USD an issue may spend across all its runs, main sessions plus subagents. */
+    budgetUsd: z.number().positive().default(5),
   })
   .prefault({});
 export type FactoryLimits = z.infer<typeof factorySchema>;
@@ -28,6 +30,12 @@ const configSchema = z.object({
   factory: factorySchema,
 });
 export type FactoryConfig = z.infer<typeof configSchema>;
+
+/** Just the limits, for readers that hold no secrets: the panel and the budget hook. */
+export function loadLimits(): FactoryLimits {
+  const raw = existsSync(CONFIG_PATH) ? JSON.parse(readFileSync(CONFIG_PATH, "utf8")).factory : undefined;
+  return factorySchema.parse(raw ?? {});
+}
 
 export function loadConfig(): FactoryConfig {
   return configSchema.parse(JSON.parse(readFileSync(CONFIG_PATH, "utf8")));

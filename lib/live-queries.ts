@@ -1,6 +1,6 @@
 import { createRealtime } from "@neon/realtime/server";
 import { drizzleAdapter } from "@neon/realtime-drizzle";
-import { and, asc, desc, eq, getTableColumns } from "drizzle-orm";
+import { and, asc, desc, eq, getTableColumns, ne } from "drizzle-orm";
 import { db } from "@/db/client";
 import { agents, events, issues, runs } from "@/db/schema";
 
@@ -47,7 +47,8 @@ export const sessionEventsQuery = (sessionId: string) =>
   db
     .select(getTableColumns(events))
     .from(events)
-    .where(eq(events.session_id, sessionId))
+    // Usage snapshots arrive every half minute and would push everything else out of the feed.
+    .where(and(eq(events.session_id, sessionId), ne(events.kind, "usage")))
     .orderBy(desc(events.at), desc(events.event_id))
     .limit(FEED_LIMIT);
 

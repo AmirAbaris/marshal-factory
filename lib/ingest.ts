@@ -1,9 +1,10 @@
-import { and, eq, isNull, lte, or, sql } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, isNull, lte, or, sql } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import * as schema from "../db/schema";
 import { agents, events, issues, runs } from "../db/schema";
 import type { FactoryEvent, Usage } from "./events";
 import { issueKeyFromBranch } from "./factory";
+import { issueSpend } from "./spend";
 
 type Db = NodePgDatabase<typeof schema>;
 type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
@@ -17,6 +18,7 @@ const RUN_STATUS: Record<FactoryEvent["kind"], RunStatus | null> = {
   agent_launched: "active",
   agent_stop: null,
   turn_stop: "idle",
+  usage: null,
   stage: null,
   session_end: "ended",
 };
@@ -50,7 +52,7 @@ async function upsertRun(tx: Tx, event: FactoryEvent) {
           title: event.title,
           model: event.model,
         }
-      : event.kind === "turn_stop"
+      : event.kind === "turn_stop" || event.kind === "usage"
         ? { model: event.usage.model, ...usageColumns(event.usage) }
         : {};
   const keep = (name: string) =>
@@ -316,7 +318,12 @@ async function project(tx: Tx, event: FactoryEvent) {
   }
 }
 
-export type IngestResult = { received: number; inserted: number };
+export type IngestResult = {
+  received: number;
+  inserted: number;
+  /** USD spent so far per factory issue touched by the batch; the reporter caches it for the budget hook. */
+  spend: Record<string, number>;
+};
 
 /**
  * Appends events and applies projections in one transaction. Events that were
@@ -353,6 +360,11 @@ export async function ingest(
       if (!fresh.delete(event.eventId)) continue;
       await project(tx, event);
     }
-    return { received: batch.length, inserted: stored.length };
+    const keys = await tx
+      .selectDistinct({ key: runs.issue_key })
+      .from(runs)
+      .where(and(inArray(runs.session_id, sessionIds), isNotNull(runs.issue_key)));
+    const spend = await issueSpend(tx, keys.map((k) => k.key!));
+    return { received: batch.length, inserted: stored.length, spend };
   });
 }

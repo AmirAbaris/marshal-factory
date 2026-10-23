@@ -58,6 +58,13 @@ try {
   assert.equal(s.issue_key, "FAC-9", "the stage report's issue key fills a run that had none");
   assert.equal(s.status, "idle", "stage reports leave the status alone");
 
+  const bigUsage = { ...usage, input: 1_000_000, output: 2 };
+  const result = await ingest(db, [ev(20, { kind: "usage", at: t0 + 42_000, usage: bigUsage })]);
+  const [u] = await db.select().from(runs).where(eq(runs.session_id, run));
+  assert.equal(u.input_tokens, 1_000_000, "a usage snapshot raises the run's tokens mid-turn");
+  assert.equal(u.status, "idle", "a usage snapshot leaves the status alone");
+  assert.ok((result.spend["FAC-9"] ?? 0) >= 2, "ingest answers with the issue's spend");
+
   await ingest(db, [
     ev(11, { kind: "stage", at: t0 + 50_000, stage: "waiting", summary: "blocked", question: "Which breakpoint?" }),
   ]);

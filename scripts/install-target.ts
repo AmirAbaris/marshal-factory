@@ -13,31 +13,30 @@ type HookEntry = {
 };
 
 const root = fileURLToPath(new URL("..", import.meta.url)).replace(/\/$/, "");
-const reporter = `bun "${join(root, "hooks/report.ts")}"`;
+const reporter = { type: "command", command: `bun "${join(root, "hooks/report.ts")}"`, async: true, timeout: 20 };
+// Synchronous on purpose: it has to answer before the tool runs.
+const budget = { type: "command", command: `bun "${join(root, "hooks/budget.ts")}"`, timeout: 10 };
 
-const HOOKS: Record<string, string | undefined> = {
-  SessionStart: undefined,
-  PreToolUse: "Agent",
-  PostToolUse: `Agent|${REPORT_STAGE_TOOL}`,
-  SubagentStop: undefined,
-  Stop: undefined,
-  SessionEnd: undefined,
+/** Ours, per event, in order. PostToolUse takes every tool so the reporter can send usage snapshots. */
+const HOOKS: Record<string, HookEntry[]> = {
+  SessionStart: [{ hooks: [reporter] }],
+  PreToolUse: [{ hooks: [budget] }, { matcher: "Agent", hooks: [reporter] }],
+  PostToolUse: [{ hooks: [reporter] }],
+  SubagentStop: [{ hooks: [reporter] }],
+  Stop: [{ hooks: [reporter] }],
+  SessionEnd: [{ hooks: [reporter] }],
 };
 
 const readJson = (path: string): Json =>
   existsSync(path) ? (JSON.parse(readFileSync(path, "utf8")) as Json) : {};
 
-const isReporter = (entry: HookEntry) =>
-  entry.hooks?.some((hook) => hook.command?.includes("hooks/report.ts"));
+const isOurs = (entry: HookEntry) =>
+  entry.hooks?.some((hook) => /hooks\/(report|budget)\.ts/.test(hook.command ?? ""));
 
 function withHooks(settings: Json): Json {
   const hooks = { ...((settings.hooks as Record<string, HookEntry[]>) ?? {}) };
-  for (const [event, matcher] of Object.entries(HOOKS)) {
-    const ours: HookEntry = {
-      ...(matcher ? { matcher } : {}),
-      hooks: [{ type: "command", command: reporter, async: true, timeout: 20 }],
-    };
-    hooks[event] = [...(hooks[event] ?? []).filter((entry) => !isReporter(entry)), ours];
+  for (const [event, ours] of Object.entries(HOOKS)) {
+    hooks[event] = [...(hooks[event] ?? []).filter((entry) => !isOurs(entry)), ...ours];
   }
   const permissions = (settings.permissions as Json) ?? {};
   const allow = new Set([...((permissions.allow as string[]) ?? []), REPORT_STAGE_TOOL]);

@@ -18,6 +18,8 @@ function summarize(payload: unknown, kind: string) {
       return { who: "agent", text: `${shortId(e.agentId)} ${e.status}` };
     case "turn_stop":
       return { who: "turn", text: e.lastMessage?.replace(/\s+/g, " ").slice(0, 120) ?? "ended" };
+    case "usage":
+      return { who: "usage", text: e.usage.model };
     case "stage":
       return { who: e.stage, text: e.question ?? e.summary };
     case "session_end":

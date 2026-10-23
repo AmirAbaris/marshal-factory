@@ -1,11 +1,12 @@
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { stageReportSchema, type FactoryEvent, type Usage } from "../lib/events";
 import { issueKeyFromBranch, REPORT_STAGE_TOOL } from "../lib/factory";
+import { writeSpend } from "../lib/spend-cache";
 
 const run = promisify(execFile);
 
@@ -80,9 +81,9 @@ async function readSettled(path: string | undefined) {
 }
 
 /** One API message spans several JSONL lines that repeat its usage, so count each message id once. */
-async function sumTranscriptUsage(path: string | undefined): Promise<Usage> {
+async function sumTranscriptUsage(path: string | undefined, settle = true): Promise<Usage> {
   const total: Usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, model: "unknown" };
-  const transcript = await readSettled(path);
+  const transcript = settle ? await readSettled(path) : path && existsSync(path) ? readFileSync(path, "utf8") : "";
 
   const messages = new Map<string, NonNullable<Line["message"]>>();
   for (const raw of transcript.split("\n")) {
@@ -165,6 +166,29 @@ async function findT3Thread(
   }
 }
 
+const USAGE_EVERY_MS = 30_000;
+const USAGE_DIR = join(homedir(), ".cache/marshal-factory/usage");
+
+/**
+ * A factory session's main usage only lands with turn_stop, and a factory run is one long turn.
+ * So after other tool calls the reporter sends a usage snapshot, at most every 30 s per session,
+ * which keeps the issue's spend, and the budget hook, close to real time.
+ */
+async function usageSnapshot(
+  input: HookInput,
+  base: { eventId: string; sessionId: string; at: number },
+): Promise<FactoryEvent | undefined> {
+  if (input.agent_id) return undefined;
+  const git = await gitContext(str(input.cwd) ?? process.cwd());
+  if (!issueKeyFromBranch(git.branch)) return undefined;
+  const stamp = join(USAGE_DIR, base.sessionId.replace(/[^\w-]/g, "_"));
+  if (existsSync(stamp) && base.at - statSync(stamp).mtimeMs < USAGE_EVERY_MS) return undefined;
+  mkdirSync(USAGE_DIR, { recursive: true });
+  writeFileSync(stamp, "");
+  const usage = await sumTranscriptUsage(input.transcript_path, false);
+  return usage.model === "unknown" ? undefined : { ...base, kind: "usage", usage };
+}
+
 const SOURCES = new Set(["startup", "resume", "compact"]);
 
 async function toEvent(
@@ -210,8 +234,10 @@ async function toEvent(
         return { ...base, kind: "stage", ...report.data, issueKey: issueKeyFromBranch(git.branch) };
       }
       const agentId = str(input.tool_response?.agentId);
-      if (input.tool_name !== "Agent" || !input.tool_use_id || !agentId) return undefined;
-      return { ...base, kind: "agent_launched", toolUseId: input.tool_use_id, agentId };
+      if (input.tool_name === "Agent" && input.tool_use_id && agentId) {
+        return { ...base, kind: "agent_launched", toolUseId: input.tool_use_id, agentId };
+      }
+      return usageSnapshot(input, base);
     }
     case "SubagentStop": {
       const agentId = str(input.agent_id);
@@ -253,7 +279,7 @@ async function main() {
   const event = await toEvent(input, { eventId, sessionId, at: Date.now() });
   if (!event) return;
 
-  await fetch(config.ingestUrl, {
+  const res = await fetch(config.ingestUrl, {
     method: "POST",
     headers: {
       authorization: `Bearer ${config.secret}`,
@@ -262,6 +288,8 @@ async function main() {
     body: JSON.stringify(event),
     signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
   });
+  const result = (await res.json()) as { spend?: Record<string, number> };
+  if (result.spend) writeSpend(result.spend);
 
   // The poller pass would also write these back to Linear; running it now saves up to one interval.
   if (event.kind === "stage" && ANNOUNCED_STAGES.has(event.stage)) {
