@@ -32,3 +32,12 @@ Every payload has `session_id`, `transcript_path`, `cwd`, `hook_event_name`. Too
 ## `t3-thread://` links
 
 `open "t3-thread://v1/<threadId>"` fails on macOS with `kLSApplicationNotFoundErr`: no app claims the scheme. T3 Code (Nightly 0.1.3) registers only `t3code://` and `t3code-dev://` with the OS. The `t3-thread://v1/<threadId>` form is handled inside T3's own markdown renderer, which turns such links in chat messages into thread links showing the current title (found in the app bundle and in the T3 MCP tool instructions). So the panel's "Open in T3" link is correct for T3 chat but does nothing when clicked in a browser. The only OS-level route found is `t3code://app`, with no thread parameter. A working jump from the panel needs T3 to expose a thread deep link, or the panel to call `t3 app`.
+
+## Stage reports and the session id
+
+Checked 2026-10-23 with a T3 thread (Claude Agent SDK 0.3.276, Claude Code 2.1.309) in factory-demo that called `report_stage` once, with the MCP server dumping its environment and the hook logging its stdin.
+
+- **The MCP server gets the session id in its environment.** Claude Code spawns project `.mcp.json` servers with `CLAUDE_CODE_SESSION_ID`, `CLAUDE_PROJECT_DIR`, `CLAUDE_CODE_ENTRYPOINT=sdk-ts` and T3's `T3CODE_CLI_PATH`. The value matched the hooks' `session_id`. It is fixed when the server starts, so a resumed or forked session that gets a new id would keep reporting the old one. The MCP tool call itself carries no session id.
+- **PostToolUse fires for MCP tools** with `tool_name` `mcp__factory-report__report_stage`, the full `tool_input`, `tool_response` (the tool's content array), `tool_use_id`, and `mcp_server` {name, source: "project"}. The `Agent|mcp__factory-report__report_stage` matcher catches it.
+- **Choice.** The tool only validates its input. `hooks/report.ts` builds the `stage` event from the PostToolUse payload, so every event, stage reports included, takes the session id from the same source, and the reporter stays the only thing that holds the ingest secret. A rejected call (for example `waiting` without a question) fails the same Zod check in the hook and sends nothing.
+- **The project MCP server loaded in the T3 thread** with `enabledMcpjsonServers: ["factory-report"]` in `.claude/settings.json`, which the installer writes. Loading without that line was not tested. The probe ran with `permission_mode: bypassPermissions`.
