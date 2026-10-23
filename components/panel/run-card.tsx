@@ -62,6 +62,11 @@ export function StageCard({
         {card.issueKey ?? card.id.slice(0, 8)}
       </div>
       <div className="line-clamp-2 font-medium">{card.title}</div>
+      {card.nudgedAt && (
+        <p className="text-xs text-warning">
+          Stuck · nudged <Time date={card.nudgedAt} />
+        </p>
+      )}
       {card.answeredAt && card.stage !== "waiting" && (
         <p className="text-xs text-success">
           Answer received <Time date={card.answeredAt} />

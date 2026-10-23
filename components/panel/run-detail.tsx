@@ -116,6 +116,13 @@ export function RunDetail({
             )}
           </div>
         </div>
+        {issue?.nudged_at && issue.nudged_stage === issue.stage && (
+          <div className="mx-4.5 mb-3.5 rounded-lg border border-warning/40 bg-warning/10 px-3 py-2.5 text-xs">
+            <span className="font-semibold tracking-wider text-warning uppercase">Stuck</span> · the
+            watchdog nudged this run at <Time date={issue.nudged_at} /> in{" "}
+            {STAGE_META[issue.stage].label}. It fails if nothing moves.
+          </div>
+        )}
         {issue?.answered_at && issue.answer && issue.stage !== "waiting" && (
           <div className="mx-4.5 mb-3.5 rounded-lg border border-success/40 bg-success/10 px-3 py-2.5">
             <div className="text-xs font-semibold tracking-wider text-success uppercase">
