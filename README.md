@@ -25,6 +25,13 @@ T3 scheduled task (poller) ──► t3_thread_launch per issue, branch factory/
 4. Panel UI: board, run view, agent tree, inbox.
 5. Linear poller as a T3 scheduled task.
 
+## Operating it
+
+- **Wire a target repo.** `bun scripts/install-target.ts <repo>` adds the reporter hooks, the `factory-report` MCP server and `.agents/playbooks/factory.md`, all pointing at this checkout. Re-running changes nothing. Commit the result in the target repo.
+- **Intake.** The "Factory intake" T3 thread owns a scheduled task that runs every 20 minutes. Each pass runs `bun scripts/linear-poll.ts`, which claims Linear issues labeled `factory` in an unstarted state (at most `factory.maxInFlight` working at once, default 2), moves them to In Progress, and prints the issues to launch. The pass then starts one T3 thread per issue on `factory/<KEY>` and records it with `--attach <KEY> <threadId>`.
+- **Write-back.** Stage `pr` moves the Linear issue to In Review with the PR link, `waiting` posts the question, `failed` posts the reason, and a merged PR moves it to Done. The reporter hook triggers this right after the stage event, and every poller pass repeats it. Comment ids are derived from the stage event, so a replay never posts twice.
+- **Config.** `~/.config/marshal-factory/config.json` holds `ingestUrl`, `secret` and `linearApiKey`, and optionally `factory: { teamKey, label, maxInFlight }`.
+
 ## Research
 
 Background reports from the initial investigation live in [`docs/research/`](docs/research/).

@@ -66,7 +66,6 @@ async function prState(url: string) {
   return z.object({ state: z.string() }).parse(JSON.parse(stdout)).state;
 }
 
-/** A merged PR moves its issue to merged; the write-back then marks it Done. */
 async function detectMerges() {
   const open = await db
     .select()

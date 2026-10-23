@@ -31,16 +31,16 @@ export function LivePanel({
   detail: DetailProps | undefined;
 }) {
   const [issuesQuery] = useState(issues.sealedQuery);
-  const refreshIssues = useCallback(() => fetchSealed<IssueRow>("/api/live/issues"), []);
-  const liveIssues = useLiveQuery(issuesQuery, { refreshQuery: refreshIssues, initialData: issues.initialData });
-  const issueRows = liveIssues.data ?? issues.initialData;
   const [runsQuery] = useState(runs.sealedQuery);
   const [agentsQuery] = useState(agents.sealedQuery);
+  const refreshIssues = useCallback(() => fetchSealed<IssueRow>("/api/live/issues"), []);
   const refreshRuns = useCallback(() => fetchSealed<RunRow>("/api/live/runs"), []);
   const refreshAgents = useCallback(() => fetchSealed<AgentRow>("/api/live/agents"), []);
 
+  const liveIssues = useLiveQuery(issuesQuery, { refreshQuery: refreshIssues, initialData: issues.initialData });
   const liveRuns = useLiveQuery(runsQuery, { refreshQuery: refreshRuns, initialData: runs.initialData });
   const liveAgents = useLiveQuery(agentsQuery, { refreshQuery: refreshAgents, initialData: agents.initialData });
+  const issueRows = liveIssues.data ?? issues.initialData;
   const runRows = liveRuns.data ?? runs.initialData;
   const agentRows = liveAgents.data ?? agents.initialData;
 

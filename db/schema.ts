@@ -104,7 +104,6 @@ export const issues = pgTable(
     pr_url: text("pr_url"),
     /** The stage event the issue's stage came from; write-back keys its Linear comment on it. */
     stage_event_id: text("stage_event_id"),
-    /** The stage event last written back to Linear. */
     synced_event_id: text("synced_event_id"),
     t3_thread_id: text("t3_thread_id"),
     session_id: text("session_id"),
