@@ -1,7 +1,7 @@
-import { and, eq, isNull, ne, or } from "drizzle-orm";
+import { and, eq, isNotNull, isNull, ne, notInArray, or } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import type * as schema from "../db/schema";
-import { issues } from "../db/schema";
+import { issues, runs } from "../db/schema";
 
 /** Claims a conflicting PR head for one send-back; false when this head was already handled. */
 export async function claimConflict(db: NodePgDatabase<typeof schema>, linearId: string, head: string) {
@@ -17,6 +17,21 @@ export async function claimConflict(db: NodePgDatabase<typeof schema>, linearId:
     )
     .returning({ key: issues.key });
   return claimed.length > 0;
+}
+
+/** Hand-started runs: a PR and an issue key, but no claimed issue that the PR check would see. */
+export function unclaimedRunsWithPr(db: NodePgDatabase<typeof schema>) {
+  return db
+    .select()
+    .from(runs)
+    .where(
+      and(
+        isNotNull(runs.pr_url),
+        isNotNull(runs.issue_key),
+        or(isNull(runs.stage), ne(runs.stage, "merged")),
+        notInArray(runs.issue_key, db.select({ key: issues.key }).from(issues)),
+      ),
+    );
 }
 
 export function conflictMessage(key: string, prUrl: string) {

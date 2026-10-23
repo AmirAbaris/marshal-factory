@@ -12,7 +12,7 @@ import { linearClient, type LinearClient } from "../lib/linear";
 import { issueSpend } from "../lib/spend";
 import { readTranscript, subagentTranscripts, sumUsage, transcriptPathFor } from "../lib/transcript";
 import { cleanupRepo } from "../lib/worktrees";
-import { claimConflict, conflictMessage } from "../lib/conflicts";
+import { claimConflict, conflictMessage, unclaimedRunsWithPr } from "../lib/conflicts";
 import { nudgeMessage, watch, type ThreadState } from "../lib/watchdog";
 import {
   claimCommentId,
@@ -104,20 +104,27 @@ async function checkPullRequests() {
       continue;
     }
     if (pr.state !== "MERGED") continue;
-    const now = new Date();
-    await db
-      .update(issues)
-      .set({
-        stage: "merged",
-        stage_at: now,
-        stage_summary: `Merged ${issue.pr_url}`,
-        question: null,
-        stage_event_id: `merged:${issue.pr_url}`,
-        updated_at: now,
-      })
-      .where(eq(issues.linear_id, issue.linear_id));
+    await postMerged(issue.key, issue.pr_url!, issue.session_id ?? `merged:${issue.linear_id}`);
+  }
+
+  for (const run of await unclaimedRunsWithPr(db)) {
+    if ((await prState(run.pr_url!)).state === "MERGED") await postMerged(run.issue_key!, run.pr_url!, run.session_id);
   }
   return conflicts;
+}
+
+/** A merge goes in as a stage event, so the run, the issue, the timeline and the write-back all follow it. */
+async function postMerged(issueKey: string, prUrl: string, sessionId: string) {
+  await postEvent({
+    eventId: `merged:${prUrl}:${sessionId}`,
+    sessionId,
+    at: Date.now(),
+    kind: "stage",
+    stage: "merged",
+    summary: `Merged ${prUrl}`,
+    prUrl,
+    issueKey,
+  });
 }
 
 async function sendBackForConflict(issue: IssueRow, head: string) {
