@@ -37,13 +37,18 @@ async function projectThreads(repo: string): Promise<Thread[]> {
   );
 }
 
-async function worktrees(repo: string) {
+/** Linked worktrees by branch. The main checkout is listed first and never counts, whatever it has checked out. */
+export async function linkedWorktrees(repo: string) {
   const out = await sh("git", ["worktree", "list", "--porcelain"], repo);
   const byBranch = new Map<string, string>();
   let path = "";
+  let main = true;
   for (const line of out.split("\n")) {
-    if (line.startsWith("worktree ")) path = line.slice(9);
-    if (line.startsWith("branch refs/heads/")) byBranch.set(line.slice(18), path);
+    if (line.startsWith("worktree ")) {
+      if (path) main = false;
+      path = line.slice(9);
+    }
+    if (!main && line.startsWith("branch refs/heads/")) byBranch.set(line.slice(18), path);
   }
   return byBranch;
 }
@@ -58,11 +63,12 @@ async function outcomeOf(repo: string, branch: string, issue: IssueRow | undefin
   );
   const merged = prs.find((p) => p.state === "MERGED");
   const mergedAtHead = Boolean(merged && head && merged.headRefOid === head);
-  if (issue?.stage === "merged" || merged) {
-    return { outcome: "merged" as const, outcomeAt: issue?.stage_at ?? new Date(merged!.mergedAt!), mergedAtHead };
+  // A claimed issue's own stage decides; a merged PR on its branch does not end a run that is still going.
+  if (issue) {
+    const outcome = issue.stage === "merged" ? "merged" : issue.stage === "failed" ? "failed" : "open";
+    return { outcome: outcome as "merged" | "failed" | "open", outcomeAt: issue.stage_at, mergedAtHead };
   }
-  if (issue?.stage === "failed") return { outcome: "failed" as const, outcomeAt: issue.stage_at, mergedAtHead };
-  if (issue) return { outcome: "open" as const, outcomeAt: null, mergedAtHead };
+  if (merged) return { outcome: "merged" as const, outcomeAt: new Date(merged.mergedAt!), mergedAtHead };
   const closed = prs.find((p) => p.state === "CLOSED");
   if (closed) return { outcome: "failed" as const, outcomeAt: new Date(closed.closedAt!), mergedAtHead };
   return { outcome: prs.length ? ("open" as const) : ("unknown" as const), outcomeAt: null, mergedAtHead };
@@ -96,7 +102,7 @@ export async function cleanupRepo(
 ): Promise<CleanupReport> {
   const report: CleanupReport = { removed: [], held: [], archive: [] };
   const [trees, threads, branchList] = await Promise.all([
-    worktrees(repo),
+    linkedWorktrees(repo),
     projectThreads(repo),
     sh("git", ["branch", "--list", "factory/*", "--format=%(refname:short)"], repo),
   ]);
@@ -106,8 +112,10 @@ export async function cleanupRepo(
   for (const branch of branches) {
     const key = issueKeyFromBranch(branch);
     if (!key) continue;
-    const thread = threads.find((t) => t.branch === branch);
     const worktreePath = trees.get(branch) ?? null;
+    const branchThreads = threads.filter(
+      (t) => t.branch === branch || (worktreePath !== null && t.worktreePath === worktreePath),
+    );
     const local = localBranches.has(branch);
     const head = local ? await sh("git", ["rev-parse", branch], repo) : null;
     const state: BranchState = {
@@ -118,7 +126,7 @@ export async function cleanupRepo(
       ...(await outcomeOf(repo, branch, issuesByKey.get(key), head)),
       dirtyFiles: worktreePath && existsSync(worktreePath) ? await countLines("git", ["status", "--porcelain"], worktreePath) : 0,
       unpushedCommits: local ? await countLines("git", ["rev-list", branch, "--not", "--remotes"], repo) : 0,
-      threadRunning: thread?.running ?? false,
+      threadRunning: branchThreads.some((t) => t.running),
     };
     const plan = planCleanup(state, now, graceDays);
     if (plan.kind === "hold") report.held.push({ key, reason: plan.reason });
@@ -128,8 +136,13 @@ export async function cleanupRepo(
       let freedKb = 0;
       if (worktreePath) {
         if (existsSync(worktreePath)) freedKb = await sizeKb(worktreePath);
-        await sh("git", ["worktree", "remove", "--force", worktreePath], repo).catch(() => "");
-        // Ignored build output can keep the directory alive after git lets go of it.
+        try {
+          await sh("git", ["worktree", "remove", "--force", worktreePath], repo);
+        } catch (error) {
+          report.held.push({ key, reason: `git worktree remove failed: ${(error as Error).message.split("\n")[0]}` });
+          continue;
+        }
+        // Git let go of it; ignored build output can still keep the directory alive.
         if (existsSync(worktreePath)) rmSync(worktreePath, { recursive: true, force: true });
         await sh("git", ["worktree", "prune"], repo);
       }
@@ -137,7 +150,9 @@ export async function cleanupRepo(
       report.removed.push({ key, worktree: worktreePath, freedKb });
     }
     const finished = plan.kind === "remove" || plan.reason === "already clean";
-    if (finished && thread && !thread.archived) report.archive.push({ key, threadId: thread.threadId });
+    if (finished) {
+      for (const t of branchThreads) if (!t.archived) report.archive.push({ key, threadId: t.threadId });
+    }
   }
   return report;
 }
