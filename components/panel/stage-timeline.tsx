@@ -14,10 +14,13 @@ function steps(reports: readonly StageEvent[]): Step[] {
   for (const report of reports) last.set(report.stage, report);
   const current = reports.at(-1)?.stage;
   const reached = new Set(reports.map((r) => r.stage));
-  const offPath = (["waiting", "failed"] as const).filter((s) => reached.has(s));
-  const order = [...MAIN_PATH.filter((s) => s !== "queued" || reached.has(s)), ...offPath];
   // Stages the run skipped on its way to a later one still count as passed.
   const furthest = Math.max(...[...reached].map((s) => MAIN_PATH.indexOf(s)));
+  const path = MAIN_PATH.filter((s) => s !== "queued" || reached.has(s));
+  const split = path.findIndex((s) => MAIN_PATH.indexOf(s) > furthest);
+  const offPath = (["waiting", "failed"] as const).filter((s) => reached.has(s));
+  const order =
+    split === -1 ? [...path, ...offPath] : [...path.slice(0, split), ...offPath, ...path.slice(split)];
   return order.map((stage) => ({
     stage,
     event: last.get(stage),

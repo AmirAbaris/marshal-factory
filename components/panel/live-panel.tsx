@@ -2,9 +2,9 @@
 
 import { useLiveQuery } from "@neon/realtime-react";
 import { useCallback, useMemo, useState } from "react";
-import type { AgentRow, EventRow, RunRow } from "@/db/schema";
+import type { AgentRow, EventRow, IssueRow, RunRow } from "@/db/schema";
 import { Board } from "./board";
-import { stagedCards } from "./cards";
+import { boardCards } from "./cards";
 import { groupBy } from "./format";
 import { RunDetail } from "./run-detail";
 import { fetchSealed, type Feed } from "./sealed";
@@ -20,21 +20,27 @@ export type DetailProps = {
 };
 
 export function LivePanel({
+  issues,
   runs,
   agents,
   detail,
 }: {
+  issues: Feed<IssueRow>;
   runs: Feed<RunRow>;
   agents: Feed<AgentRow>;
   detail: DetailProps | undefined;
 }) {
+  const [issuesQuery] = useState(issues.sealedQuery);
   const [runsQuery] = useState(runs.sealedQuery);
   const [agentsQuery] = useState(agents.sealedQuery);
+  const refreshIssues = useCallback(() => fetchSealed<IssueRow>("/api/live/issues"), []);
   const refreshRuns = useCallback(() => fetchSealed<RunRow>("/api/live/runs"), []);
   const refreshAgents = useCallback(() => fetchSealed<AgentRow>("/api/live/agents"), []);
 
+  const liveIssues = useLiveQuery(issuesQuery, { refreshQuery: refreshIssues, initialData: issues.initialData });
   const liveRuns = useLiveQuery(runsQuery, { refreshQuery: refreshRuns, initialData: runs.initialData });
   const liveAgents = useLiveQuery(agentsQuery, { refreshQuery: refreshAgents, initialData: agents.initialData });
+  const issueRows = liveIssues.data ?? issues.initialData;
   const runRows = liveRuns.data ?? runs.initialData;
   const agentRows = liveAgents.data ?? agents.initialData;
 
@@ -42,15 +48,21 @@ export function LivePanel({
     () => groupBy(agentRows, (a) => a.session_id),
     [agentRows],
   );
-  const cards = useMemo(() => stagedCards(runRows), [runRows]);
-  const unstaged = runRows.filter((r) => r.stage === null);
+  const cards = useMemo(() => boardCards(issueRows, runRows), [issueRows, runRows]);
+  const claimed = new Set(issueRows.map((i) => i.key));
+  const unstaged = runRows.filter(
+    (r) => r.stage === null && !(r.issue_key && claimed.has(r.issue_key)),
+  );
   const startOfToday = useAfterHydration(() => new Date().setHours(0, 0, 0, 0), 0);
   const selectedRun = detail && runRows.find((r) => r.session_id === detail.sessionId);
+  const selectedIssue = selectedRun?.issue_key
+    ? issueRows.find((i) => i.key === selectedRun.issue_key)
+    : undefined;
 
   return (
     <div className="grid h-screen grid-cols-[220px_1fr]">
       <Sidebar
-        runCount={runRows.length}
+        cardCount={cards.length}
         unstagedCount={unstaged.length}
         liveSessions={runRows.filter((r) => r.status === "active").length}
         connected={liveRuns.status === "live"}
@@ -75,6 +87,7 @@ export function LivePanel({
               agents={detail.agents}
               events={detail.events}
               stages={detail.stages}
+              issue={selectedIssue}
             />
           )}
         </div>

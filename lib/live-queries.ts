@@ -2,7 +2,7 @@ import { createRealtime } from "@neon/realtime/server";
 import { drizzleAdapter } from "@neon/realtime-drizzle";
 import { and, asc, desc, eq, getTableColumns } from "drizzle-orm";
 import { db } from "@/db/client";
-import { agents, events, runs } from "@/db/schema";
+import { agents, events, issues, runs } from "@/db/schema";
 
 // v0 has no auth: the panel is local and single-user. Phase 7 puts a session check in front of
 // every route that calls seal(); until then anyone who can reach these routes can read all rows.
@@ -50,6 +50,15 @@ export const sessionEventsQuery = (sessionId: string) =>
     .where(eq(events.session_id, sessionId))
     .orderBy(desc(events.at), desc(events.event_id))
     .limit(FEED_LIMIT);
+
+export const ISSUE_LIMIT = 200;
+
+export const issuesQuery = () =>
+  db
+    .select(getTableColumns(issues))
+    .from(issues)
+    .orderBy(desc(issues.claimed_at))
+    .limit(ISSUE_LIMIT);
 
 export const STAGE_HISTORY_LIMIT = 100;
 

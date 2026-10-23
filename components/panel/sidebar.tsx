@@ -3,12 +3,12 @@ import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 
 export function Sidebar({
-  runCount,
+  cardCount,
   unstagedCount,
   liveSessions,
   connected,
 }: {
-  runCount: number;
+  cardCount: number;
   unstagedCount: number;
   liveSessions: number;
   connected: boolean;
@@ -23,7 +23,7 @@ export function Sidebar({
         href="/"
         className="flex items-center justify-between rounded-md bg-accent px-2.5 py-1.5"
       >
-        Board <Badge variant="secondary">{runCount}</Badge>
+        Board <Badge variant="secondary">{cardCount}</Badge>
       </Link>
       <a
         href="#other-activity"

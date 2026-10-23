@@ -12,7 +12,6 @@ export const STAGE_META: Record<Stage, { label: string; dot: string }> = {
   failed: { label: "Failed", dot: "bg-destructive" },
 };
 
-/** The stages a healthy run walks through, in order; waiting and failed branch off it. */
 export const MAIN_PATH: readonly Stage[] = [
   "queued",
   "triage",

@@ -48,15 +48,17 @@ export function StageCard({
   const { latest } = card;
   return (
     <div data-card={card.id} className={cardClass(selected)}>
-      <Link
-        href={`/?run=${latest.session_id}`}
-        scroll={false}
-        aria-label={`Open ${card.issueKey ?? card.title}`}
-        className="absolute inset-0 rounded-lg"
-      />
+      {latest && (
+        <Link
+          href={`/?run=${latest.session_id}`}
+          scroll={false}
+          aria-label={`Open ${card.issueKey ?? card.title}`}
+          className="absolute inset-0 rounded-lg"
+        />
+      )}
       <div className="flex items-center gap-1.5 font-mono text-xs text-faint">
-        {latest.status === "active" && <Spinner className="size-2.5" />}
-        {card.issueKey ?? shortId(latest.session_id)}
+        {latest?.status === "active" && <Spinner className="size-2.5" />}
+        {card.issueKey ?? card.id.slice(0, 8)}
       </div>
       <div className="line-clamp-2 font-medium">{card.title}</div>
       {card.stage === "waiting" && card.question ? (
@@ -67,8 +69,18 @@ export function StageCard({
         )
       )}
       <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
-        <ModelChip model={latest.model} />
+        {latest && <ModelChip model={latest.model} />}
         <AgentsAndCost runs={card.runs} agents={agents} />
+        {card.issueUrl && (
+          <a
+            href={card.issueUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="relative underline-offset-2 hover:underline"
+          >
+            Linear
+          </a>
+        )}
         {card.prUrl && (
           <a
             href={card.prUrl}
