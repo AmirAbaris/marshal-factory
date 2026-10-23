@@ -41,6 +41,9 @@ try {
   assert.equal(blocked.code, 2, "over the cap blocks the tool call");
   assert.match(blocked.stderr, /report_stage with stage "failed"/);
   assert.equal(runHook("mcp__factory-report__report_stage", worktree).code, 0, "report_stage stays allowed");
+  write(join(home, "folder/.git/HEAD"), "ref: refs/heads/factory/TST-1\n");
+  assert.equal(runHook("Bash", join(home, "folder")).code, 2, "a plain checkout on a factory branch is capped too");
+
   const plain = runHook("Bash", repo);
   assert.equal(plain.code, 0, "a session that is not on a factory branch is never blocked");
   assert.ok(plain.ms < 1000, `the hook stays fast (${plain.ms} ms)`);
