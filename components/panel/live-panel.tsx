@@ -17,6 +17,7 @@ export type DetailProps = {
   agents: Feed<AgentRow>;
   events: Feed<EventRow>;
   stages: Feed<EventRow>;
+  stagesPath: string;
 };
 
 export function LivePanel({
@@ -87,6 +88,7 @@ export function LivePanel({
               agents={detail.agents}
               events={detail.events}
               stages={detail.stages}
+              stagesPath={detail.stagesPath}
               issue={selectedIssue}
             />
           )}

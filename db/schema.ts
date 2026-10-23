@@ -38,9 +38,14 @@ export const events = pgTable(
     session_id: text("session_id").notNull(),
     kind: text("kind").notNull(),
     at: ts("at").notNull(),
+    // Set on stage events, so an issue's stage history spans every session that worked on it.
+    issue_key: text("issue_key"),
     payload: jsonb("payload").notNull(),
   },
-  (t) => [index("events_session_at_idx").on(t.session_id, t.at)],
+  (t) => [
+    index("events_session_at_idx").on(t.session_id, t.at),
+    index("events_issue_key_idx").on(t.issue_key),
+  ],
 );
 
 export const runs = pgTable(
@@ -105,6 +110,14 @@ export const issues = pgTable(
     /** The stage event the issue's stage came from; write-back keys its Linear comment on it. */
     stage_event_id: text("stage_event_id"),
     synced_event_id: text("synced_event_id"),
+    /** Ids of every Linear comment the factory posted here; anything else on the issue is a human. */
+    factory_comment_ids: jsonb("factory_comment_ids").$type<string[]>().notNull().default([]),
+    /** Reply comments already handed to a thread; the replay guard for resumes. */
+    delivered_reply_ids: jsonb("delivered_reply_ids").$type<string[]>().notNull().default([]),
+    answered_at: ts("answered_at"),
+    answer: text("answer"),
+    /** The question and answer a relaunched thread gets when the original thread is gone. */
+    resume_context: text("resume_context"),
     t3_thread_id: text("t3_thread_id"),
     session_id: text("session_id"),
     claimed_at: ts("claimed_at").notNull(),

@@ -342,6 +342,7 @@ export async function ingest(
           session_id: e.sessionId,
           kind: e.kind,
           at: when(e.at),
+          issue_key: e.kind === "stage" ? e.issueKey : undefined,
           payload: e,
         })),
       )

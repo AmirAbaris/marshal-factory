@@ -22,6 +22,13 @@
       "when": 1792761280761,
       "tag": "0002_issues",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1792764216142,
+      "tag": "0003_waiting_resume",
+      "breakpoints": true
     }
   ]
 }

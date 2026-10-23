@@ -15,6 +15,7 @@ import { formatUsd, runCost, runTitle, shortId } from "./format";
 import { ModelChip } from "./model-chip";
 import { fetchSealed, type Feed } from "./sealed";
 import { StageTimeline } from "./stage-timeline";
+import { Time } from "./time";
 import { STAGE_META } from "./stages";
 
 export function RunDetail({
@@ -22,8 +23,10 @@ export function RunDetail({
   agents,
   events,
   stages,
+  stagesPath,
   issue,
 }: {
+  stagesPath: string;
   issue: IssueRow | undefined;
   run: RunRow;
   agents: Feed<AgentRow>;
@@ -37,7 +40,7 @@ export function RunDetail({
   const [stagesQuery] = useState(stages.sealedQuery);
   const refreshAgents = useCallback(() => fetchSealed<AgentRow>(`${base}/agents`), [base]);
   const refreshEvents = useCallback(() => fetchSealed<EventRow>(`${base}/events`), [base]);
-  const refreshStages = useCallback(() => fetchSealed<EventRow>(`${base}/stages`), [base]);
+  const refreshStages = useCallback(() => fetchSealed<EventRow>(stagesPath), [stagesPath]);
 
   const liveAgents = useLiveQuery(agentsQuery, {
     refreshQuery: refreshAgents,
@@ -52,6 +55,7 @@ export function RunDetail({
     initialData: stages.initialData,
   });
   const agentRows = liveAgents.data ?? agents.initialData;
+  const stage = issue?.stage ?? run.stage;
   const stageRows = liveStages.data ?? stages.initialData;
   const eventRows = liveEvents.data ?? events.initialData;
 
@@ -72,10 +76,10 @@ export function RunDetail({
           </div>
           <h2 className="text-base font-semibold">{issue?.title ?? runTitle(run)}</h2>
           <div className="flex flex-wrap items-center gap-2">
-            {run.stage && (
+            {stage && (
               <Badge variant="outline" className="gap-1.5 rounded-md font-normal">
-                <span className={`size-1.5 rounded-full ${STAGE_META[run.stage].dot}`} />
-                {STAGE_META[run.stage].label}
+                <span className={`size-1.5 rounded-full ${STAGE_META[stage].dot}`} />
+                {STAGE_META[stage].label}
               </Badge>
             )}
             <Badge variant="outline" className="rounded-md font-normal">
@@ -112,7 +116,23 @@ export function RunDetail({
             )}
           </div>
         </div>
-        {run.stage === "waiting" && run.question && (
+        {issue?.answered_at && issue.answer && (
+          <div className="mx-4.5 mb-3.5 rounded-lg border border-success/40 bg-success/10 px-3 py-2.5">
+            <div className="text-xs font-semibold tracking-wider text-success uppercase">
+              Answer received <Time date={issue.answered_at} />
+            </div>
+            <p className="mt-1 whitespace-pre-wrap">{issue.answer}</p>
+          </div>
+        )}
+        {issue?.stage === "waiting" && issue.question ? (
+          <div className="mx-4.5 mb-3.5 rounded-lg border border-warning/40 bg-warning/10 px-3 py-2.5">
+            <div className="text-xs font-semibold tracking-wider text-warning uppercase">
+              Question for you
+            </div>
+            <p className="mt-1 whitespace-pre-wrap">{issue.question}</p>
+          </div>
+        ) : null}
+        {!issue && run.stage === "waiting" && run.question && (
           <div className="mx-4.5 mb-3.5 rounded-lg border border-warning/40 bg-warning/10 px-3 py-2.5">
             <div className="text-xs font-semibold tracking-wider text-warning uppercase">
               Question for you
