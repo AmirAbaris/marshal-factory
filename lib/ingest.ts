@@ -4,7 +4,7 @@ import * as schema from "../db/schema";
 import { agents, events, issues, runs } from "../db/schema";
 import type { FactoryEvent, Usage } from "./events";
 import { issueKeyFromBranch } from "./factory";
-import { issueSpend } from "./spend";
+import { branchSpend } from "./spend";
 
 type Db = NodePgDatabase<typeof schema>;
 type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
@@ -41,7 +41,7 @@ const keepGreater = (column: { name: string }) =>
 // Session totals only grow, so greatest() makes replays and reordering harmless.
 async function upsertRun(tx: Tx, event: FactoryEvent) {
   const at = when(event.at);
-  const meta =
+  const kindMeta =
     event.kind === "session_start"
       ? {
           cwd: event.cwd,
@@ -55,6 +55,10 @@ async function upsertRun(tx: Tx, event: FactoryEvent) {
       : event.kind === "turn_stop" || event.kind === "usage"
         ? { model: event.usage.model, ...usageColumns(event.usage) }
         : {};
+  const meta = {
+    ...kindMeta,
+    ...(event.transcriptPath ? { transcript_path: event.transcriptPath } : {}),
+  };
   const keep = (name: string) =>
     sql.raw(`coalesce(excluded."${name}", runs."${name}")`);
 
@@ -83,7 +87,7 @@ async function upsertRun(tx: Tx, event: FactoryEvent) {
             }
           : {}),
         ...Object.fromEntries(
-          ["cwd", "repo", "branch", "issue_key", "t3_thread_id", "title", "model"]
+          ["cwd", "repo", "branch", "issue_key", "t3_thread_id", "title", "model", "transcript_path"]
             .filter((name) => name in meta)
             .map((name) => [name, keep(name)]),
         ),
@@ -197,6 +201,48 @@ async function applyAgentLaunched(
   }
 }
 
+/**
+ * Running subagents' usage so far. Tokens only ever rise, by the same max() as agent_stop, so the
+ * later stop for the same agent never counts twice, and the status stays whatever it is.
+ */
+async function applyAgentUsage(tx: Tx, e: Extract<FactoryEvent, { kind: "usage" }>) {
+  for (const agent of e.agents ?? []) {
+    if (agent.toolUseId) {
+      await applyAgentLaunched(tx, {
+        kind: "agent_launched",
+        eventId: e.eventId,
+        sessionId: e.sessionId,
+        at: e.at,
+        toolUseId: agent.toolUseId,
+        agentId: agent.agentId,
+      });
+    }
+    const existing = await byAgentId(tx, agent.agentId);
+    if (!existing) {
+      await tx.insert(agents).values({
+        tool_use_id: pendingKey(agent.agentId),
+        session_id: e.sessionId,
+        agent_id: agent.agentId,
+        status: "running",
+        model: agent.usage.model,
+        started_at: when(e.at),
+        ...usageColumns(agent.usage),
+      });
+      continue;
+    }
+    await tx
+      .update(agents)
+      .set({
+        model: existing.model ?? agent.usage.model,
+        input_tokens: Math.max(existing.input_tokens, agent.usage.input),
+        output_tokens: Math.max(existing.output_tokens, agent.usage.output),
+        cache_read_tokens: Math.max(existing.cache_read_tokens, agent.usage.cacheRead),
+        cache_write_tokens: Math.max(existing.cache_write_tokens, agent.usage.cacheWrite),
+      })
+      .where(eq(agents.tool_use_id, existing.tool_use_id));
+  }
+}
+
 async function applyAgentStop(
   tx: Tx,
   e: Extract<FactoryEvent, { kind: "agent_stop" }>,
@@ -245,6 +291,7 @@ async function applyStage(tx: Tx, e: Extract<FactoryEvent, { kind: "stage" }>) {
       started_at: at,
       last_event_at: at,
       issue_key: e.issueKey,
+      branch: e.branch,
       stage: e.stage,
       stage_at: at,
       stage_summary: e.summary,
@@ -257,6 +304,7 @@ async function applyStage(tx: Tx, e: Extract<FactoryEvent, { kind: "stage" }>) {
         started_at: sql.raw(`least(runs."started_at", excluded."started_at")`),
         last_event_at: sql.raw(`greatest(runs."last_event_at", excluded."last_event_at")`),
         issue_key: sql.raw(`coalesce(runs."issue_key", excluded."issue_key")`),
+        branch: sql.raw(`coalesce(runs."branch", excluded."branch")`),
         stage: ifNewerStage("stage"),
         stage_summary: ifNewerStage("stage_summary"),
         question: ifNewerStage("question"),
@@ -267,6 +315,10 @@ async function applyStage(tx: Tx, e: Extract<FactoryEvent, { kind: "stage" }>) {
 }
 
 /** A claimed issue follows its runs' stage reports, newest first, and remembers its latest session. */
+/** True for the issue's current attempt branch, so an older attempt's thread cannot move a retry. */
+const onCurrentAttempt = (branch: string) =>
+  sql`${branch} = case when ${issues.attempt} > 1 then 'factory/' || ${issues.key} || '-a' || ${issues.attempt} else 'factory/' || ${issues.key} end`;
+
 async function applyToIssue(tx: Tx, event: FactoryEvent) {
   if (event.kind === "session_start") {
     const key = issueKeyFromBranch(event.branch);
@@ -278,7 +330,7 @@ async function applyToIssue(tx: Tx, event: FactoryEvent) {
         t3_thread_id: sql`coalesce(${event.t3ThreadId ?? null}, ${issues.t3_thread_id})`,
         updated_at: when(event.at),
       })
-      .where(eq(issues.key, key));
+      .where(and(eq(issues.key, key), onCurrentAttempt(event.branch!)));
   }
   if (event.kind === "stage" && event.issueKey) {
     const at = when(event.at);
@@ -297,6 +349,8 @@ async function applyToIssue(tx: Tx, event: FactoryEvent) {
         and(
           eq(issues.key, event.issueKey),
           or(isNull(issues.stage_at), lte(issues.stage_at, at)),
+          // Reports from a thread carry its branch; the poller's own events target the current attempt.
+          ...(event.branch ? [onCurrentAttempt(event.branch)] : []),
         ),
       );
   }
@@ -313,6 +367,8 @@ async function project(tx: Tx, event: FactoryEvent) {
       return applyAgentLaunched(tx, event);
     case "agent_stop":
       return applyAgentStop(tx, event);
+    case "usage":
+      return applyAgentUsage(tx, event);
     default:
       return;
   }
@@ -321,7 +377,7 @@ async function project(tx: Tx, event: FactoryEvent) {
 export type IngestResult = {
   received: number;
   inserted: number;
-  /** USD spent so far per factory issue touched by the batch; the reporter caches it for the budget hook. */
+  /** USD spent so far per factory branch (one attempt at an issue) touched by the batch; the reporter caches it for the budget hook. */
   spend: Record<string, number>;
 };
 
@@ -360,11 +416,11 @@ export async function ingest(
       if (!fresh.delete(event.eventId)) continue;
       await project(tx, event);
     }
-    const keys = await tx
-      .selectDistinct({ key: runs.issue_key })
+    const branches = await tx
+      .selectDistinct({ branch: runs.branch })
       .from(runs)
-      .where(and(inArray(runs.session_id, sessionIds), isNotNull(runs.issue_key)));
-    const spend = await issueSpend(tx, keys.map((k) => k.key!));
+      .where(and(inArray(runs.session_id, sessionIds), isNotNull(runs.issue_key), isNotNull(runs.branch)));
+    const spend = await branchSpend(tx, branches.map((b) => b.branch!));
     return { received: batch.length, inserted: stored.length, spend };
   });
 }

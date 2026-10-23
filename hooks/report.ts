@@ -6,7 +6,8 @@ import { basename, dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { stageReportSchema, type FactoryEvent, type Usage } from "../lib/events";
 import { issueKeyFromBranch, REPORT_STAGE_TOOL } from "../lib/factory";
-import { writeSpend } from "../lib/spend-cache";
+import { rememberSessionBranch, sessionBranch, writeSpend } from "../lib/spend-cache";
+import { mainTranscript, readTranscript, subagentTranscripts, sumUsage } from "../lib/transcript";
 
 const run = promisify(execFile);
 
@@ -46,20 +47,6 @@ function readConfig() {
     : undefined;
 }
 
-type Line = {
-  requestId?: string;
-  message?: {
-    id?: string;
-    model?: string;
-    usage?: {
-      input_tokens?: number;
-      output_tokens?: number;
-      cache_read_input_tokens?: number;
-      cache_creation_input_tokens?: number;
-    };
-  };
-};
-
 const SETTLE_POLL_MS = 250;
 const SETTLE_TRIES = 12;
 
@@ -80,34 +67,8 @@ async function readSettled(path: string | undefined) {
   return text;
 }
 
-/** One API message spans several JSONL lines that repeat its usage, so count each message id once. */
 async function sumTranscriptUsage(path: string | undefined, settle = true): Promise<Usage> {
-  const total: Usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, model: "unknown" };
-  const transcript = settle ? await readSettled(path) : path && existsSync(path) ? readFileSync(path, "utf8") : "";
-
-  const messages = new Map<string, NonNullable<Line["message"]>>();
-  for (const raw of transcript.split("\n")) {
-    if (!raw.includes('"usage"')) continue;
-    let line: Line;
-    try {
-      line = JSON.parse(raw) as Line;
-    } catch {
-      continue;
-    }
-    const message = line.message;
-    if (!message?.usage) continue;
-    // Later lines of the same message carry the final output count.
-    messages.set(message.id ?? line.requestId ?? raw, message);
-  }
-
-  for (const { usage, model } of messages.values()) {
-    total.input += usage?.input_tokens ?? 0;
-    total.output += usage?.output_tokens ?? 0;
-    total.cacheRead += usage?.cache_read_input_tokens ?? 0;
-    total.cacheWrite += usage?.cache_creation_input_tokens ?? 0;
-    if (model && model !== "<synthetic>") total.model = model;
-  }
-  return total;
+  return sumUsage(settle ? await readSettled(path) : readTranscript(path));
 }
 
 async function sh(command: string, args: string[]) {
@@ -171,34 +132,41 @@ const USAGE_DIR = join(homedir(), ".cache/marshal-factory/usage");
 
 /**
  * A factory session's main usage only lands with turn_stop, and a factory run is one long turn.
- * So after other tool calls the reporter sends a usage snapshot, at most every 30 s per session,
- * which keeps the issue's spend, and the budget hook, close to real time.
+ * So after other tool calls, including those inside subagents (the main session waits while a
+ * foreground subagent works), the reporter sends a snapshot of the main session and every
+ * subagent transcript, at most every 30 s per session. That keeps the issue's spend, and the
+ * budget hook, close to real time.
  */
 async function usageSnapshot(
   input: HookInput,
-  base: { eventId: string; sessionId: string; at: number },
+  base: { eventId: string; sessionId: string; at: number; transcriptPath?: string },
 ): Promise<FactoryEvent | undefined> {
-  if (input.agent_id) return undefined;
   const git = await gitContext(str(input.cwd) ?? process.cwd());
-  if (!issueKeyFromBranch(git.branch)) return undefined;
+  const onFactoryBranch = Boolean(issueKeyFromBranch(git.branch));
+  if (onFactoryBranch) rememberSessionBranch(base.sessionId, git.branch!);
+  if (!onFactoryBranch && !sessionBranch(base.sessionId)) return undefined;
   const stamp = join(USAGE_DIR, base.sessionId.replace(/[^\w-]/g, "_"));
   if (existsSync(stamp) && base.at - statSync(stamp).mtimeMs < USAGE_EVERY_MS) return undefined;
   mkdirSync(USAGE_DIR, { recursive: true });
   writeFileSync(stamp, "");
-  const usage = await sumTranscriptUsage(input.transcript_path, false);
-  return usage.model === "unknown" ? undefined : { ...base, kind: "usage", usage };
+  const main = mainTranscript(input.transcript_path, base.sessionId);
+  const usage = await sumTranscriptUsage(main, false);
+  if (usage.model === "unknown") return undefined;
+  const agents = main ? subagentTranscripts(main, base.sessionId) : [];
+  return { ...base, kind: "usage", usage, agents };
 }
 
 const SOURCES = new Set(["startup", "resume", "compact"]);
 
 async function toEvent(
   input: HookInput,
-  base: { eventId: string; sessionId: string; at: number },
+  base: { eventId: string; sessionId: string; at: number; transcriptPath?: string },
 ): Promise<FactoryEvent | undefined> {
   switch (input.hook_event_name) {
     case "SessionStart": {
       const cwd = str(input.cwd) ?? process.cwd();
       const git = await gitContext(cwd);
+      if (issueKeyFromBranch(git.branch)) rememberSessionBranch(base.sessionId, git.branch!);
       const t3 = await findT3Thread(cwd, git);
       const source = str(input.source);
       return {
@@ -231,7 +199,7 @@ async function toEvent(
         const report = stageReportSchema.safeParse(input.tool_input);
         if (!report.success) return undefined;
         const git = await gitContext(str(input.cwd) ?? process.cwd());
-        return { ...base, kind: "stage", ...report.data, issueKey: issueKeyFromBranch(git.branch) };
+        return { ...base, kind: "stage", ...report.data, issueKey: issueKeyFromBranch(git.branch), branch: git.branch };
       }
       const agentId = str(input.tool_response?.agentId);
       if (input.tool_name === "Agent" && input.tool_use_id && agentId) {
@@ -276,7 +244,13 @@ async function main() {
   const eventId = createHash("sha256")
     .update(`${input.hook_event_name}\n${raw}`)
     .digest("hex");
-  const event = await toEvent(input, { eventId, sessionId, at: Date.now() });
+  const event = await toEvent(input, {
+    eventId,
+    sessionId,
+    at: Date.now(),
+    // Hooks inside a subagent may name its own transcript; the run records the session's.
+    transcriptPath: mainTranscript(str(input.transcript_path), sessionId),
+  });
   if (!event) return;
 
   const res = await fetch(config.ingestUrl, {

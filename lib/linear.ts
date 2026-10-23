@@ -114,11 +114,41 @@ export function linearClient(apiKey: string) {
     },
 
     async setState(issueId: string, stateId: string) {
+      await this.update(issueId, { stateId });
+    },
+
+    /** Adding a label it has or removing one it lacks is a no-op in Linear, so replays are safe. */
+    async update(
+      issueId: string,
+      input: { stateId?: string; addedLabelIds?: string[]; removedLabelIds?: string[] },
+    ) {
       await gql(
-        `mutation($id: String!, $stateId: String!) { issueUpdate(id: $id, input: { stateId: $stateId }) { success } }`,
-        { id: issueId, stateId },
+        `mutation($id: String!, $input: IssueUpdateInput!) { issueUpdate(id: $id, input: $input) { success } }`,
+        { id: issueId, input },
         z.object({ issueUpdate: z.object({ success: z.literal(true) }) }),
       );
+    },
+
+    /** The team's label of that name, or a workspace label, created on the team if neither exists. */
+    async labelId(teamId: string, name: string) {
+      const data = await gql(
+        `query($name: String!) { issueLabels(filter: { name: { eqIgnoreCase: $name } }) { nodes { id team { id } } } }`,
+        { name },
+        z.object({
+          issueLabels: z.object({
+            nodes: z.array(z.object({ id: z.string(), team: z.object({ id: z.string() }).nullable() })),
+          }),
+        }),
+      );
+      const found =
+        data.issueLabels.nodes.find((l) => l.team?.id === teamId) ?? data.issueLabels.nodes.find((l) => !l.team);
+      if (found) return found.id;
+      const created = await gql(
+        `mutation($input: IssueLabelCreateInput!) { issueLabelCreate(input: $input) { issueLabel { id } } }`,
+        { input: { name, teamId, color: "#eb5757" } },
+        z.object({ issueLabelCreate: z.object({ issueLabel: z.object({ id: z.string() }) }) }),
+      );
+      return created.issueLabelCreate.issueLabel.id;
     },
 
     /** Returns false when a comment with this id already exists. */

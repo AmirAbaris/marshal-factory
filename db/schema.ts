@@ -1,6 +1,7 @@
 import {
   doublePrecision,
   index,
+  integer,
   jsonb,
   pgEnum,
   pgTable,
@@ -65,6 +66,7 @@ export const runs = pgTable(
     stage_summary: text("stage_summary"),
     question: text("question"),
     pr_url: text("pr_url"),
+    transcript_path: text("transcript_path"),
     started_at: ts("started_at").notNull(),
     last_event_at: ts("last_event_at").notNull(),
     model: text("model"),
@@ -118,6 +120,10 @@ export const issues = pgTable(
     answer: text("answer"),
     /** The question and answer a relaunched thread gets when the original thread is gone. */
     resume_context: text("resume_context"),
+    /** Each retry after a failure is a new attempt on its own branch, with its own budget. */
+    attempt: integer("attempt").notNull().default(1),
+    /** Why the previous attempt failed; the next attempt's first message quotes it. */
+    previous_failure: text("previous_failure"),
     /** When the watchdog nudged a stuck run, and in which stage; cleared once the stage moves on. */
     nudged_at: ts("nudged_at"),
     nudged_stage: runStage("nudged_stage"),

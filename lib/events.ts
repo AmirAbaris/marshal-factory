@@ -52,6 +52,8 @@ const base = {
   eventId: z.string().min(1),
   sessionId: z.string().min(1),
   at: z.number().int().nonnegative(),
+  /** The main session transcript; recorded so usage can be rebuilt when no Stop hook ever fires. */
+  transcriptPath: z.string().optional(),
 };
 
 export const eventSchema = z.discriminatedUnion("kind", [
@@ -100,6 +102,8 @@ export const eventSchema = z.discriminatedUnion("kind", [
     kind: z.literal("stage"),
     ...stageReportShape,
     issueKey: z.string().optional(),
+    /** The branch the reporting thread was on; absent on events the poller posts itself. */
+    branch: z.string().optional(),
     /** Set by the poller when a human answered a waiting question and the run resumes. */
     answer: z.string().max(4000).optional(),
   }),
@@ -108,6 +112,10 @@ export const eventSchema = z.discriminatedUnion("kind", [
     // A mid-turn snapshot of the main session's usage, so spend is known before the turn ends.
     kind: z.literal("usage"),
     usage: usageSchema,
+    /** Subagents of the session with their usage so far, so running ones count before SubagentStop. */
+    agents: z
+      .array(z.object({ agentId: z.string().min(1), toolUseId: z.string().optional(), usage: usageSchema }))
+      .optional(),
   }),
   z.object({
     ...base,

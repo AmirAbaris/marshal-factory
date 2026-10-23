@@ -2,7 +2,7 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { loadLimits } from "../lib/config";
 import { issueKeyFromBranch, REPORT_STAGE_TOOL } from "../lib/factory";
-import { readSpend } from "../lib/spend-cache";
+import { readSpend, sessionBranch } from "../lib/spend-cache";
 
 // Synchronous PreToolUse hook: once a factory issue has spent its budget, every tool call except
 // report_stage is blocked. It reads only local files, so it stays fast, and it exits 0 for any
@@ -24,11 +24,13 @@ function currentBranch(cwd: string) {
 }
 
 function verdict(): string | undefined {
-  const input = JSON.parse(readFileSync(0, "utf8")) as { tool_name?: string; cwd?: string };
+  const input = JSON.parse(readFileSync(0, "utf8")) as { tool_name?: string; cwd?: string; session_id?: string };
   if (input.tool_name === REPORT_STAGE_TOOL) return undefined;
-  const key = issueKeyFromBranch(currentBranch(input.cwd ?? process.cwd()));
-  if (!key) return undefined;
-  const spent = readSpend(key);
+  const cwdBranch = currentBranch(input.cwd ?? process.cwd());
+  const branch = issueKeyFromBranch(cwdBranch) ? cwdBranch : sessionBranch(input.session_id);
+  const key = issueKeyFromBranch(branch);
+  if (!branch || !key) return undefined;
+  const spent = readSpend(branch);
   if (!spent) return undefined;
   const cap = loadLimits().budgetUsd;
   if (spent.usd < cap) return undefined;

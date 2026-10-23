@@ -7,10 +7,10 @@ const DIR = join(homedir(), ".cache/marshal-factory/spend");
 
 export type CachedSpend = { usd: number; at: number };
 
-const fileFor = (issueKey: string) => join(DIR, `${issueKey.replace(/[^\w-]/g, "_")}.json`);
+const fileFor = (branch: string) => join(DIR, `${branch.replace(/[^\w-]/g, "_")}.json`);
 
-export function readSpend(issueKey: string): CachedSpend | undefined {
-  const file = fileFor(issueKey);
+export function readSpend(branch: string): CachedSpend | undefined {
+  const file = fileFor(branch);
   if (!existsSync(file)) return undefined;
   return JSON.parse(readFileSync(file, "utf8")) as CachedSpend;
 }
@@ -23,4 +23,22 @@ export function writeSpend(spend: Record<string, number>, at = Date.now()) {
     writeFileSync(tmp, JSON.stringify({ usd, at }));
     renameSync(tmp, fileFor(key));
   }
+}
+
+const SESSIONS = join(homedir(), ".cache/marshal-factory/sessions");
+const sessionFile = (sessionId: string) => join(SESSIONS, sessionId.replace(/[^\w-]/g, "_"));
+
+/**
+ * Subagents can run in their own worktree on a non-factory branch, so the factory branch is looked
+ * up by session as well as from the cwd. The reporter records it whenever the main session is on one.
+ */
+export function rememberSessionBranch(sessionId: string, branch: string) {
+  mkdirSync(SESSIONS, { recursive: true });
+  writeFileSync(sessionFile(sessionId), branch);
+}
+
+export function sessionBranch(sessionId: string | undefined) {
+  if (!sessionId) return undefined;
+  const file = sessionFile(sessionId);
+  return existsSync(file) ? readFileSync(file, "utf8").trim() || undefined : undefined;
 }

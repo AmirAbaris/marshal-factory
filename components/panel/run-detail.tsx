@@ -28,7 +28,7 @@ export function RunDetail({
   issue,
   issueSpend,
 }: {
-  issueSpend: { usd: number; capUsd: number } | undefined;
+  issueSpend: { usd: number; capUsd: number; attempt: number } | undefined;
   stagesPath: string;
   issue: IssueRow | undefined;
   run: RunRow;
@@ -93,6 +93,7 @@ export function RunDetail({
             <span className="font-mono text-muted-foreground">
               {issueSpend ? (
                 <span className={cn(issueSpend.usd >= issueSpend.capUsd && "text-destructive")}>
+                  {issueSpend.attempt > 1 && `attempt ${issueSpend.attempt}: `}
                   {formatUsd(issueSpend.usd)} of {formatUsd(issueSpend.capUsd)} cap
                 </span>
               ) : (
