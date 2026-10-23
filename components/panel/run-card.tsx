@@ -18,16 +18,19 @@ function AgentsAndCost({
   runs,
   agents,
   budgetUsd,
+  allRuns,
 }: {
   runs: readonly RunRow[];
   agents: readonly AgentRow[];
   budgetUsd?: number;
+  /** Every attempt's runs, when they differ from the runs the cap counts. */
+  allRuns?: readonly RunRow[];
 }) {
   const running = agents.filter((a) => a.status === "running").length;
-  const cost = runs.reduce(
-    (sum, run) => sum + runCost(run, agents.filter((a) => a.session_id === run.session_id)),
-    0,
-  );
+  const costOf = (list: readonly RunRow[]) =>
+    list.reduce((sum, run) => sum + runCost(run, agents.filter((a) => a.session_id === run.session_id)), 0);
+  const cost = costOf(runs);
+  const total = allRuns && allRuns.length !== runs.length ? costOf(allRuns) : undefined;
   return (
     <>
       {agents.length > 0 && (
@@ -37,11 +40,12 @@ function AgentsAndCost({
       )}
       <span
         className={cn("font-mono", budgetUsd !== undefined && cost >= budgetUsd && "text-destructive")}
-        title={budgetUsd !== undefined ? "spend / cap for this issue" : undefined}
+        title={budgetUsd !== undefined ? "spend of this attempt / cap per attempt" : undefined}
       >
         {formatUsd(cost)}
         {budgetUsd !== undefined && ` / ${formatUsd(budgetUsd)}`}
       </span>
+      {total !== undefined && <span className="font-mono text-faint">all attempts {formatUsd(total)}</span>}
     </>
   );
 }
@@ -97,8 +101,14 @@ export function StageCard({
       )}
       <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
         {latest && <ModelChip model={latest.model} />}
+        {card.attempt > 1 && (
+          <Badge variant="outline" className="rounded-md font-normal">
+            attempt {card.attempt}
+          </Badge>
+        )}
         <AgentsAndCost
-          runs={card.runs}
+          runs={card.attemptRuns}
+          allRuns={card.runs}
           agents={agents}
           budgetUsd={card.issueUrl ? budgetUsd : undefined}
         />

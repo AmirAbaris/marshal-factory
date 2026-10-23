@@ -17,7 +17,8 @@ type WaitingIssue = Pick<
   "linear_id" | "stage_event_id" | "question" | "factory_comment_ids" | "delivered_reply_ids"
 >;
 
-export const claimCommentId = (linearId: string) => commentId(linearId, "claim");
+export const claimCommentId = (linearId: string, attempt = 1) =>
+  attempt > 1 ? commentId(linearId, "claim", String(attempt)) : commentId(linearId, "claim");
 export const stageCommentId = (linearId: string, stageEventId: string) =>
   commentId(linearId, stageEventId);
 export const resumeCommentId = (linearId: string, replyIds: readonly string[]) =>

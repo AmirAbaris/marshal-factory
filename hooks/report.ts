@@ -6,7 +6,7 @@ import { basename, dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { stageReportSchema, type FactoryEvent, type Usage } from "../lib/events";
 import { issueKeyFromBranch, REPORT_STAGE_TOOL } from "../lib/factory";
-import { rememberSessionIssue, sessionIssue, writeSpend } from "../lib/spend-cache";
+import { rememberSessionBranch, sessionBranch, writeSpend } from "../lib/spend-cache";
 import { mainTranscript, readTranscript, subagentTranscripts, sumUsage } from "../lib/transcript";
 
 const run = promisify(execFile);
@@ -142,9 +142,9 @@ async function usageSnapshot(
   base: { eventId: string; sessionId: string; at: number; transcriptPath?: string },
 ): Promise<FactoryEvent | undefined> {
   const git = await gitContext(str(input.cwd) ?? process.cwd());
-  const branchKey = issueKeyFromBranch(git.branch);
-  if (branchKey) rememberSessionIssue(base.sessionId, branchKey);
-  if (!branchKey && !sessionIssue(base.sessionId)) return undefined;
+  const onFactoryBranch = Boolean(issueKeyFromBranch(git.branch));
+  if (onFactoryBranch) rememberSessionBranch(base.sessionId, git.branch!);
+  if (!onFactoryBranch && !sessionBranch(base.sessionId)) return undefined;
   const stamp = join(USAGE_DIR, base.sessionId.replace(/[^\w-]/g, "_"));
   if (existsSync(stamp) && base.at - statSync(stamp).mtimeMs < USAGE_EVERY_MS) return undefined;
   mkdirSync(USAGE_DIR, { recursive: true });
@@ -166,8 +166,7 @@ async function toEvent(
     case "SessionStart": {
       const cwd = str(input.cwd) ?? process.cwd();
       const git = await gitContext(cwd);
-      const key = issueKeyFromBranch(git.branch);
-      if (key) rememberSessionIssue(base.sessionId, key);
+      if (issueKeyFromBranch(git.branch)) rememberSessionBranch(base.sessionId, git.branch!);
       const t3 = await findT3Thread(cwd, git);
       const source = str(input.source);
       return {
@@ -200,7 +199,7 @@ async function toEvent(
         const report = stageReportSchema.safeParse(input.tool_input);
         if (!report.success) return undefined;
         const git = await gitContext(str(input.cwd) ?? process.cwd());
-        return { ...base, kind: "stage", ...report.data, issueKey: issueKeyFromBranch(git.branch) };
+        return { ...base, kind: "stage", ...report.data, issueKey: issueKeyFromBranch(git.branch), branch: git.branch };
       }
       const agentId = str(input.tool_response?.agentId);
       if (input.tool_name === "Agent" && input.tool_use_id && agentId) {

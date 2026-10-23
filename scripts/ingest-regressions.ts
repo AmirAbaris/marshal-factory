@@ -25,7 +25,7 @@ await db.insert(issues).values({
 
 try {
   await ingest(db, [
-    ev(1, { kind: "session_start", at: t0, cwd: "/tmp/x", transcriptPath: "/tmp/x/t.jsonl" }),
+    ev(1, { kind: "session_start", at: t0, cwd: "/tmp/x", branch: "factory/FAC-9", transcriptPath: "/tmp/x/t.jsonl" }),
     ev(2, { kind: "turn_stop", at: t0 + 10_000, usage }),
     ev(3, { kind: "agent_stop", at: t0 + 11_000, agentId: `${run}-bg`, status: "completed", usage }),
   ]);
@@ -57,6 +57,9 @@ try {
   assert.equal(s.stage_summary, "opened", "a late stage report keeps the newer summary");
   assert.equal(s.pr_url, "https://github.com/x/y/pull/1");
   assert.equal(s.issue_key, "FAC-9", "the stage report's issue key fills a run that had none");
+  await ingest(db, [ev(17, { kind: "stage", at: t0 + 30_500, stage: "triage", summary: "s", issueKey: "FAC-7", branch: "factory/FAC-7-a2", sessionId: `${run}-b` })]);
+  const [b] = await db.select().from(runs).where(eq(runs.session_id, `${run}-b`));
+  assert.equal(b.branch, "factory/FAC-7-a2", "a run first seen through a stage report keeps its branch");
   assert.equal(s.status, "idle", "stage reports leave the status alone");
 
   const bigUsage = { ...usage, input: 1_000_000, output: 2 };
@@ -64,21 +67,21 @@ try {
   const [u] = await db.select().from(runs).where(eq(runs.session_id, run));
   assert.equal(u.input_tokens, 1_000_000, "a usage snapshot raises the run's tokens mid-turn");
   assert.equal(u.status, "idle", "a usage snapshot leaves the status alone");
-  assert.ok((result.spend["FAC-9"] ?? 0) >= 2, "ingest answers with the issue's spend");
+  assert.ok((result.spend["factory/FAC-9"] ?? 0) >= 2, "ingest answers with the spend of the branch, one attempt at the issue");
 
   const subUsage = { ...usage, input: 500_000, model: "claude-sonnet-5-5" };
-  const before = result.spend["FAC-9"]!;
+  const before = result.spend["factory/FAC-9"]!;
   const running = await ingest(db, [
     ev(21, { kind: "usage", at: t0 + 43_000, usage: bigUsage, agents: [{ agentId: `${run}-sub`, toolUseId: `${run}-tu-sub`, usage: subUsage }] }),
   ]);
   const [sub] = await db.select().from(agents).where(eq(agents.agent_id, `${run}-sub`));
   assert.equal(sub.status, "running", "a subagent seen only in a usage snapshot stays running");
   assert.equal(sub.tool_use_id, `${run}-tu-sub`, "the snapshot links the agent to its Agent tool call");
-  assert.ok(running.spend["FAC-9"]! > before + 0.9, "a running subagent counts toward the issue's spend");
+  assert.ok(running.spend["factory/FAC-9"]! > before + 0.9, "a running subagent counts toward the issue's spend");
   const stopped = await ingest(db, [
     ev(22, { kind: "agent_stop", at: t0 + 44_000, agentId: `${run}-sub`, status: "completed", usage: subUsage }),
   ]);
-  assert.equal(stopped.spend["FAC-9"], running.spend["FAC-9"], "its SubagentStop does not count it twice");
+  assert.equal(stopped.spend["factory/FAC-9"], running.spend["factory/FAC-9"], "its SubagentStop does not count it twice");
 
   await ingest(db, [
     ev(11, { kind: "stage", at: t0 + 50_000, stage: "waiting", summary: "blocked", question: "Which breakpoint?" }),
@@ -94,6 +97,16 @@ try {
   await ingest(db, [
     ev(14, { kind: "stage", at: t0 + 61_000, stage: "implementing", summary: "late", issueKey }),
   ]);
+  await db.update(issues).set({ attempt: 2 }).where(eq(issues.key, issueKey));
+  await ingest(db, [
+    ev(15, { kind: "stage", at: t0 + 63_000, stage: "failed", summary: "old thread", issueKey, branch: `factory/${issueKey}` }),
+    ev(16, { kind: "session_start", at: t0 + 63_500, cwd: "/tmp/x", branch: `factory/${issueKey}`, t3ThreadId: "old" }),
+  ]);
+  const [kept] = await db.select().from(issues).where(eq(issues.key, issueKey));
+  assert.equal(kept.stage, "pr", "a report from an earlier attempt's branch does not move the retry");
+  assert.equal(kept.t3_thread_id, "thread-1", "nor does its session start");
+  await db.update(issues).set({ attempt: 1 }).where(eq(issues.key, issueKey));
+
   const [i] = await db.select().from(issues).where(eq(issues.key, issueKey));
   assert.equal(i.stage, "pr", "a late stage report does not move the issue back");
   assert.equal(i.stage_event_id, `${run}-13`, "the issue remembers the event its stage came from");
@@ -108,7 +121,7 @@ try {
 } finally {
   await db.delete(issues).where(eq(issues.linear_id, run));
   await db.delete(agents).where(eq(agents.session_id, run));
-  await db.delete(runs).where(eq(runs.session_id, run));
-  await db.delete(events).where(inArray(events.session_id, [run]));
+  await db.delete(runs).where(inArray(runs.session_id, [run, `${run}-b`]));
+  await db.delete(events).where(inArray(events.session_id, [run, `${run}-b`]));
   process.exit(process.exitCode ?? 0);
 }

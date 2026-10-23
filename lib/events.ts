@@ -102,6 +102,8 @@ export const eventSchema = z.discriminatedUnion("kind", [
     kind: z.literal("stage"),
     ...stageReportShape,
     issueKey: z.string().optional(),
+    /** The branch the reporting thread was on; absent on events the poller posts itself. */
+    branch: z.string().optional(),
     /** Set by the poller when a human answered a waiting question and the run resumes. */
     answer: z.string().max(4000).optional(),
   }),

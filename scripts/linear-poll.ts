@@ -9,10 +9,11 @@ import type { IssueRow } from "../db/schema";
 import type { Stage, Usage } from "../lib/events";
 import { loadConfig } from "../lib/config";
 import { linearClient, type LinearClient } from "../lib/linear";
-import { issueSpend } from "../lib/spend";
+import { branchSpend } from "../lib/spend";
 import { readTranscript, subagentTranscripts, sumUsage, transcriptPathFor } from "../lib/transcript";
 import { cleanupRepo } from "../lib/worktrees";
 import { claimConflict, conflictMessage, unclaimedRunsWithPr } from "../lib/conflicts";
+import { attemptBranch } from "../lib/factory";
 import { nudgeMessage, watch, type ThreadState } from "../lib/watchdog";
 import {
   claimCommentId,
@@ -50,7 +51,14 @@ const stateId = (team: Team, name: string) => {
 };
 
 /** What reaches Linear when an issue enters a stage. Stages without an entry stay in the panel. */
-const WRITE_BACK: Partial<Record<Stage, { state?: string; comment?: (issue: IssueRow) => string }>> = {
+type WriteBack = {
+  state?: string;
+  labels?: { add?: string[]; remove?: string[] };
+  comment?: (issue: IssueRow) => string;
+};
+const FAILED_LABEL = "factory-failed";
+
+const WRITE_BACK: Partial<Record<Stage, WriteBack>> = {
   pr: {
     state: "In Review",
     comment: (i) => `marshal-factory has a pull request ready for review: ${i.pr_url}\n\n${i.stage_summary ?? ""}`.trim(),
@@ -59,7 +67,14 @@ const WRITE_BACK: Partial<Record<Stage, { state?: string; comment?: (issue: Issu
     comment: (i) =>
       `marshal-factory stopped and needs an answer before it can continue:\n\n${i.question ?? i.stage_summary}`,
   },
-  failed: { comment: (i) => `marshal-factory gave up on this issue: ${i.stage_summary}` },
+  // Back to Todo without the factory label, so the poller does not pick it up again in a loop.
+  // Adding the label again retries it as a new attempt.
+  failed: {
+    state: "Todo",
+    labels: { add: [FAILED_LABEL], remove: [config.factory.label] },
+    comment: (i) =>
+      `marshal-factory gave up on this issue (attempt ${i.attempt}): ${i.stage_summary}\n\nAdd the \`${config.factory.label}\` label again to retry.`,
+  },
   merged: { state: "Done" },
 };
 
@@ -288,7 +303,8 @@ async function watchdog() {
   const working = await db
     .select({
       issue: issues,
-      lastEventAt: sql<Date | null>`(select max(${runs.last_event_at}) from ${runs} where ${runs.issue_key} = ${issues.key})`.mapWith(
+      // Only the current attempt's runs: an earlier attempt's thread must not keep a retry looking alive.
+      lastEventAt: sql<Date | null>`(select max(${runs.last_event_at}) from ${runs} where ${runs.issue_key} = ${issues.key} and ${runs.branch} = case when ${issues.attempt} > 1 then 'factory/' || ${issues.key} || '-a' || ${issues.attempt} else 'factory/' || ${issues.key} end)`.mapWith(
         (v: string | null) => (v ? new Date(v) : null),
       ),
     })
@@ -339,7 +355,7 @@ async function watchdog() {
       continue;
     }
     // Fail only the stage this pass looked at: a report that landed since then wins.
-    const eventId = `watchdog:${issue.linear_id}:${issue.stage_event_id ?? issue.stage}`;
+    const eventId = `watchdog:${issue.linear_id}:${issue.attempt}:${issue.stage_event_id ?? issue.stage}`;
     const summary = `Watchdog stopped this run: ${action.reason}.`;
     const failed = await db
       .update(issues)
@@ -414,14 +430,14 @@ async function reconcileUsage() {
 /** Backstop for the budget hook: a working issue over its cap fails even if its thread never reports it. */
 async function enforceBudget() {
   const working = await db.select().from(issues).where(inArray(issues.stage, IN_FLIGHT));
-  const spend = await issueSpend(db, working.map((i) => i.key));
+  const spend = await branchSpend(db, working.map((i) => attemptBranch(i.key, i.attempt)));
   const over: string[] = [];
   for (const issue of working) {
-    const usd = spend[issue.key] ?? 0;
+    const usd = spend[attemptBranch(issue.key, issue.attempt)] ?? 0;
     if (usd < config.factory.budgetUsd) continue;
     await postEvent({
       // Keyed on the stage it fails, so a run that reports again after this still gets failed again.
-      eventId: `budget:${issue.linear_id}:${issue.stage_event_id ?? issue.stage}`,
+      eventId: `budget:${issue.linear_id}:${issue.attempt}:${issue.stage_event_id ?? issue.stage}`,
       sessionId: issue.session_id ?? `budget:${issue.linear_id}`,
       at: Date.now(),
       kind: "stage",
@@ -432,6 +448,12 @@ async function enforceBudget() {
     over.push(issue.key);
   }
   return over;
+}
+
+async function labelChanges(team: Team, labels: WriteBack["labels"]) {
+  if (!labels) return {};
+  const ids = (names: string[] = []) => Promise.all(names.map((name) => linear.labelId(team.id, name)));
+  return { addedLabelIds: await ids(labels.add), removedLabelIds: await ids(labels.remove) };
 }
 
 async function writeBack(team: Team) {
@@ -447,7 +469,12 @@ async function writeBack(team: Team) {
   const synced: string[] = [];
   for (const issue of pending) {
     const action = WRITE_BACK[issue.stage];
-    if (action?.state) await linear.setState(issue.linear_id, stateId(team, action.state));
+    if (action?.state || action?.labels) {
+      await linear.update(issue.linear_id, {
+        ...(action.state ? { stateId: stateId(team, action.state) } : {}),
+        ...(await labelChanges(team, action.labels)),
+      });
+    }
     if (action?.comment) {
       await postComment(issue, stageCommentId(issue.linear_id, issue.stage_event_id!), action.comment(issue));
     }
@@ -491,7 +518,37 @@ async function claim() {
           claimed_at: now,
           updated_at: now,
         })
-        .onConflictDoNothing()
+        // A failed issue that got its label back is retried as a fresh attempt on a new branch.
+        .onConflictDoUpdate({
+          target: issues.linear_id,
+          set: {
+            attempt: sql`${issues.attempt} + 1`,
+            previous_failure: sql`${issues.stage_summary}`,
+            stage: "queued",
+            stage_at: null,
+            stage_summary: null,
+            question: null,
+            pr_url: null,
+            stage_event_id: null,
+            synced_event_id: null,
+            t3_thread_id: null,
+            session_id: null,
+            nudged_at: null,
+            nudged_stage: null,
+            conflict_head: null,
+            resume_context: null,
+            answered_at: null,
+            answer: null,
+            title: issue.title,
+            url: issue.url,
+            description: issue.description,
+            linear_state: issue.state.name,
+            labels: issue.labels.nodes.map((l) => l.name),
+            claimed_at: now,
+            updated_at: now,
+          },
+          setWhere: eq(issues.stage, "failed"),
+        })
         .returning({ key: issues.key });
       if (inserted.length === 0) continue;
       inFlight++;
@@ -508,8 +565,17 @@ async function announceClaims(team: Team) {
     .from(issues)
     .where(and(eq(issues.stage, "queued"), ne(issues.linear_state, "In Progress")));
   for (const issue of unannounced) {
-    await linear.setState(issue.linear_id, stateId(team, "In Progress"));
-    await postComment(issue, claimCommentId(issue.linear_id), "Picked up by marshal-factory.");
+    await linear.update(issue.linear_id, {
+      stateId: stateId(team, "In Progress"),
+      ...(issue.attempt > 1 ? await labelChanges(team, { remove: [FAILED_LABEL] }) : {}),
+    });
+    await postComment(
+      issue,
+      claimCommentId(issue.linear_id, issue.attempt),
+      issue.attempt > 1
+        ? `Picked up by marshal-factory again (attempt ${issue.attempt}, branch ${attemptBranch(issue.key, issue.attempt)}).`
+        : "Picked up by marshal-factory.",
+    );
     await db
       .update(issues)
       .set({ linear_state: "In Progress", updated_at: new Date() })
@@ -527,6 +593,12 @@ function launchMessage(issue: IssueRow) {
     "## Issue",
     "",
     issue.description?.trim() || "(The issue has no description.)",
+    ...(issue.previous_failure
+      ? [
+          "",
+          `This is attempt ${issue.attempt}. The previous attempt failed: ${issue.previous_failure} Start fresh from main on this branch.`,
+        ]
+      : []),
     ...(issue.resume_context
       ? [
           "",
@@ -552,7 +624,7 @@ async function toLaunch() {
     );
   return rows.map((issue) => ({
     key: issue.key,
-    branch: `factory/${issue.key}`,
+    branch: attemptBranch(issue.key, issue.attempt),
     threadTitle: `${issue.key} ${issue.title}`,
     message: launchMessage(issue),
   }));

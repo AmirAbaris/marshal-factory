@@ -6,7 +6,7 @@ import { promisify } from "node:util";
 import { z } from "zod";
 import type { IssueRow } from "../db/schema";
 import { planCleanup, type BranchState } from "./cleanup";
-import { issueKeyFromBranch } from "./factory";
+import { attemptBranch, issueKeyFromBranch } from "./factory";
 
 const run = promisify(execFile);
 const T3 = process.env.T3CODE_CLI_PATH ?? join(homedir(), ".t3/bin/t3");
@@ -64,6 +64,10 @@ async function outcomeOf(repo: string, branch: string, issue: IssueRow | undefin
   const merged = prs.find((p) => p.state === "MERGED");
   const mergedAtHead = Boolean(merged && head && merged.headRefOid === head);
   // A claimed issue's own stage decides; a merged PR on its branch does not end a run that is still going.
+  // An earlier attempt's branch is finished once the issue was claimed again.
+  if (issue && branch !== attemptBranch(issue.key, issue.attempt)) {
+    return { outcome: "failed" as const, outcomeAt: issue.claimed_at, mergedAtHead };
+  }
   if (issue) {
     const outcome = issue.stage === "merged" ? "merged" : issue.stage === "failed" ? "failed" : "open";
     return { outcome: outcome as "merged" | "failed" | "open", outcomeAt: issue.stage_at, mergedAtHead };

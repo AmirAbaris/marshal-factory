@@ -5,6 +5,7 @@ import { useCallback, useMemo, useState } from "react";
 import type { AgentRow, EventRow, IssueRow, RunRow } from "@/db/schema";
 import { Board } from "./board";
 import { boardCards } from "./cards";
+import { attemptBranch } from "@/lib/factory";
 import { groupBy, spendOf } from "./format";
 import { RunDetail } from "./run-detail";
 import { fetchSealed, type Feed } from "./sealed";
@@ -95,7 +96,14 @@ export function LivePanel({
               issue={selectedIssue}
               issueSpend={
                 selectedIssue
-                  ? { usd: spendOf(runRows.filter((r) => r.issue_key === selectedIssue.key), agentsBySession), capUsd: budgetUsd }
+                  ? {
+                      usd: spendOf(
+                        runRows.filter((r) => r.branch === attemptBranch(selectedIssue.key, selectedIssue.attempt)),
+                        agentsBySession,
+                      ),
+                      capUsd: budgetUsd,
+                      attempt: selectedIssue.attempt,
+                    }
                   : undefined
               }
             />
