@@ -10,6 +10,7 @@ import type { Stage } from "../lib/events";
 import { loadConfig } from "../lib/config";
 import { linearClient, type LinearClient } from "../lib/linear";
 import { issueSpend } from "../lib/spend";
+import { cleanupRepo } from "../lib/worktrees";
 import { claimConflict, conflictMessage } from "../lib/conflicts";
 import { nudgeMessage, watch, type ThreadState } from "../lib/watchdog";
 import {
@@ -26,6 +27,7 @@ import {
 //   bun scripts/linear-poll.ts                     resume, sync, claim, print the issues to launch as JSON
 //   bun scripts/linear-poll.ts --sync              write stage changes back to Linear, nothing else
 //   bun scripts/linear-poll.ts --attach KEY THREAD record the T3 thread launched for an issue
+//   bun scripts/linear-poll.ts --cleanup [--dry-run] remove finished factory worktrees and branches only
 
 process.chdir(join(import.meta.dirname, ".."));
 process.loadEnvFile(".env.local");
@@ -504,6 +506,19 @@ async function toLaunch() {
   }));
 }
 
+async function cleanup(dryRun = false) {
+  const all = await db.select().from(issues);
+  const byKey = new Map(all.map((i) => [i.key, i]));
+  const reports = await Promise.all(
+    config.factory.repos.map((repo) => cleanupRepo(repo, byKey, config.factory.cleanupGraceDays, { dryRun })),
+  );
+  return {
+    removed: reports.flatMap((r) => r.removed),
+    held: reports.flatMap((r) => r.held),
+    archive: reports.flatMap((r) => r.archive),
+  };
+}
+
 async function attach(key: string, threadId: string) {
   const updated = await db
     .update(issues)
@@ -515,6 +530,7 @@ async function attach(key: string, threadId: string) {
 }
 
 async function main(args: string[]) {
+  if (args[0] === "--cleanup") return cleanup(args[1] === "--dry-run");
   if (args[0] === "--attach") {
     const [, key, threadId] = args;
     if (!key || !threadId) throw new Error("usage: --attach <KEY> <threadId>");
@@ -529,7 +545,20 @@ async function main(args: string[]) {
   const synced = await writeBack(team);
   const { claimed, inFlight } = await claim();
   await announceClaims(team);
-  return { claimed, resumed, overBudget, watched, conflicts, synced, inFlight, maxInFlight: config.factory.maxInFlight, launch: await toLaunch() };
+  const { archive, ...cleaned } = await cleanup();
+  return {
+    claimed,
+    resumed,
+    overBudget,
+    watched,
+    conflicts,
+    synced,
+    cleaned,
+    inFlight,
+    maxInFlight: config.factory.maxInFlight,
+    launch: await toLaunch(),
+    archive,
+  };
 }
 
 try {

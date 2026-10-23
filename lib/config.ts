@@ -19,6 +19,10 @@ export const factorySchema = z
     failAfterNudgeMinutes: z.number().positive().default(30),
     /** USD an issue may spend across all its runs, main sessions plus subagents. */
     budgetUsd: z.number().positive().default(5),
+    /** Days a failed issue keeps its worktree for a human to look at before cleanup removes it. */
+    cleanupGraceDays: z.number().nonnegative().default(3),
+    /** Target repos the factory works in; the installer adds each one. */
+    repos: z.array(z.string()).default([]),
   })
   .prefault({});
 export type FactoryLimits = z.infer<typeof factorySchema>;
