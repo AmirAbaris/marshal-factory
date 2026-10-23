@@ -1,15 +1,16 @@
 import { execFile } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { and, eq, inArray, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
+import { and, eq, gt, inArray, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import type { IssueRow } from "../db/schema";
 import type { Stage } from "../lib/events";
 import { loadConfig } from "../lib/config";
 import { linearClient, type LinearClient } from "../lib/linear";
 import { issueSpend } from "../lib/spend";
+import { readTranscript, sumUsage, transcriptPathFor } from "../lib/transcript";
 import { cleanupRepo } from "../lib/worktrees";
 import { claimConflict, conflictMessage } from "../lib/conflicts";
 import { nudgeMessage, watch, type ThreadState } from "../lib/watchdog";
@@ -359,6 +360,41 @@ async function watchdog() {
   return actions;
 }
 
+/**
+ * Rebuilds usage from transcripts for factory runs whose numbers fell behind, such as a run
+ * interrupted before its Stop hook. It goes through the same greatest() projection as every
+ * usage event, keyed on the totals, so replays and live updates cannot double count.
+ */
+async function reconcileUsage() {
+  const recent = await db
+    .select()
+    .from(runs)
+    .where(and(isNotNull(runs.issue_key), gt(runs.last_event_at, new Date(Date.now() - 7 * 86_400_000))));
+  const fixed: string[] = [];
+  for (const run of recent) {
+    const path = transcriptPathFor(run);
+    if (!path || !existsSync(path)) continue;
+    const usage = sumUsage(readTranscript(path));
+    const behind =
+      usage.input > run.input_tokens ||
+      usage.output > run.output_tokens ||
+      usage.cacheRead > run.cache_read_tokens ||
+      usage.cacheWrite > run.cache_write_tokens;
+    if (!behind || usage.model === "unknown") continue;
+    await postEvent({
+      eventId: `reconcile:${run.session_id}:${usage.input}:${usage.output}:${usage.cacheRead}:${usage.cacheWrite}`,
+      sessionId: run.session_id,
+      // The transcript's own last write, so the watchdog never mistakes a reconcile for activity.
+      at: Math.min(Math.floor(statSync(path).mtimeMs), run.last_event_at.getTime()),
+      kind: "usage",
+      usage,
+      transcriptPath: path,
+    });
+    fixed.push(run.issue_key!);
+  }
+  return fixed;
+}
+
 /** Backstop for the budget hook: a working issue over its cap fails even if its thread never reports it. */
 async function enforceBudget() {
   const working = await db.select().from(issues).where(inArray(issues.stage, IN_FLIGHT));
@@ -540,6 +576,7 @@ async function main(args: string[]) {
   const conflicts = await checkPullRequests();
   if (args[0] === "--sync") return { conflicts, synced: await writeBack(team) };
   const resumed = await resumeAnswered();
+  const reconciled = await reconcileUsage();
   const overBudget = await enforceBudget();
   const watched = await watchdog();
   const synced = await writeBack(team);
@@ -549,6 +586,7 @@ async function main(args: string[]) {
   return {
     claimed,
     resumed,
+    reconciled,
     overBudget,
     watched,
     conflicts,

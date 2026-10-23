@@ -7,6 +7,7 @@ import { promisify } from "node:util";
 import { stageReportSchema, type FactoryEvent, type Usage } from "../lib/events";
 import { issueKeyFromBranch, REPORT_STAGE_TOOL } from "../lib/factory";
 import { writeSpend } from "../lib/spend-cache";
+import { readTranscript, sumUsage } from "../lib/transcript";
 
 const run = promisify(execFile);
 
@@ -46,20 +47,6 @@ function readConfig() {
     : undefined;
 }
 
-type Line = {
-  requestId?: string;
-  message?: {
-    id?: string;
-    model?: string;
-    usage?: {
-      input_tokens?: number;
-      output_tokens?: number;
-      cache_read_input_tokens?: number;
-      cache_creation_input_tokens?: number;
-    };
-  };
-};
-
 const SETTLE_POLL_MS = 250;
 const SETTLE_TRIES = 12;
 
@@ -80,34 +67,8 @@ async function readSettled(path: string | undefined) {
   return text;
 }
 
-/** One API message spans several JSONL lines that repeat its usage, so count each message id once. */
 async function sumTranscriptUsage(path: string | undefined, settle = true): Promise<Usage> {
-  const total: Usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, model: "unknown" };
-  const transcript = settle ? await readSettled(path) : path && existsSync(path) ? readFileSync(path, "utf8") : "";
-
-  const messages = new Map<string, NonNullable<Line["message"]>>();
-  for (const raw of transcript.split("\n")) {
-    if (!raw.includes('"usage"')) continue;
-    let line: Line;
-    try {
-      line = JSON.parse(raw) as Line;
-    } catch {
-      continue;
-    }
-    const message = line.message;
-    if (!message?.usage) continue;
-    // Later lines of the same message carry the final output count.
-    messages.set(message.id ?? line.requestId ?? raw, message);
-  }
-
-  for (const { usage, model } of messages.values()) {
-    total.input += usage?.input_tokens ?? 0;
-    total.output += usage?.output_tokens ?? 0;
-    total.cacheRead += usage?.cache_read_input_tokens ?? 0;
-    total.cacheWrite += usage?.cache_creation_input_tokens ?? 0;
-    if (model && model !== "<synthetic>") total.model = model;
-  }
-  return total;
+  return sumUsage(settle ? await readSettled(path) : readTranscript(path));
 }
 
 async function sh(command: string, args: string[]) {
@@ -176,7 +137,7 @@ const USAGE_DIR = join(homedir(), ".cache/marshal-factory/usage");
  */
 async function usageSnapshot(
   input: HookInput,
-  base: { eventId: string; sessionId: string; at: number },
+  base: { eventId: string; sessionId: string; at: number; transcriptPath?: string },
 ): Promise<FactoryEvent | undefined> {
   if (input.agent_id) return undefined;
   const git = await gitContext(str(input.cwd) ?? process.cwd());
@@ -193,7 +154,7 @@ const SOURCES = new Set(["startup", "resume", "compact"]);
 
 async function toEvent(
   input: HookInput,
-  base: { eventId: string; sessionId: string; at: number },
+  base: { eventId: string; sessionId: string; at: number; transcriptPath?: string },
 ): Promise<FactoryEvent | undefined> {
   switch (input.hook_event_name) {
     case "SessionStart": {
@@ -276,7 +237,12 @@ async function main() {
   const eventId = createHash("sha256")
     .update(`${input.hook_event_name}\n${raw}`)
     .digest("hex");
-  const event = await toEvent(input, { eventId, sessionId, at: Date.now() });
+  const event = await toEvent(input, {
+    eventId,
+    sessionId,
+    at: Date.now(),
+    transcriptPath: str(input.transcript_path),
+  });
   if (!event) return;
 
   const res = await fetch(config.ingestUrl, {

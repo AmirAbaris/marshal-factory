@@ -52,6 +52,8 @@ const base = {
   eventId: z.string().min(1),
   sessionId: z.string().min(1),
   at: z.number().int().nonnegative(),
+  /** The main session transcript; recorded so usage can be rebuilt when no Stop hook ever fires. */
+  transcriptPath: z.string().optional(),
 };
 
 export const eventSchema = z.discriminatedUnion("kind", [

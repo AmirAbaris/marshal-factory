@@ -41,7 +41,7 @@ const keepGreater = (column: { name: string }) =>
 // Session totals only grow, so greatest() makes replays and reordering harmless.
 async function upsertRun(tx: Tx, event: FactoryEvent) {
   const at = when(event.at);
-  const meta =
+  const kindMeta =
     event.kind === "session_start"
       ? {
           cwd: event.cwd,
@@ -55,6 +55,10 @@ async function upsertRun(tx: Tx, event: FactoryEvent) {
       : event.kind === "turn_stop" || event.kind === "usage"
         ? { model: event.usage.model, ...usageColumns(event.usage) }
         : {};
+  const meta = {
+    ...kindMeta,
+    ...(event.transcriptPath ? { transcript_path: event.transcriptPath } : {}),
+  };
   const keep = (name: string) =>
     sql.raw(`coalesce(excluded."${name}", runs."${name}")`);
 
@@ -83,7 +87,7 @@ async function upsertRun(tx: Tx, event: FactoryEvent) {
             }
           : {}),
         ...Object.fromEntries(
-          ["cwd", "repo", "branch", "issue_key", "t3_thread_id", "title", "model"]
+          ["cwd", "repo", "branch", "issue_key", "t3_thread_id", "title", "model", "transcript_path"]
             .filter((name) => name in meta)
             .map((name) => [name, keep(name)]),
         ),

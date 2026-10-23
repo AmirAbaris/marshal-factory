@@ -65,6 +65,7 @@ export const runs = pgTable(
     stage_summary: text("stage_summary"),
     question: text("question"),
     pr_url: text("pr_url"),
+    transcript_path: text("transcript_path"),
     started_at: ts("started_at").notNull(),
     last_event_at: ts("last_event_at").notNull(),
     model: text("model"),

@@ -25,12 +25,13 @@ await db.insert(issues).values({
 
 try {
   await ingest(db, [
-    ev(1, { kind: "session_start", at: t0, cwd: "/tmp/x" }),
+    ev(1, { kind: "session_start", at: t0, cwd: "/tmp/x", transcriptPath: "/tmp/x/t.jsonl" }),
     ev(2, { kind: "turn_stop", at: t0 + 10_000, usage }),
     ev(3, { kind: "agent_stop", at: t0 + 11_000, agentId: `${run}-bg`, status: "completed", usage }),
   ]);
   const [r] = await db.select().from(runs).where(eq(runs.session_id, run));
   assert.equal(r.status, "idle", "a background agent finishing after the turn keeps the run idle");
+  assert.equal(r.transcript_path, "/tmp/x/t.jsonl", "the run records its transcript path");
 
   await ingest(db, [
     ev(4, { kind: "agent_stop", at: t0 + 20_000, agentId: `${run}-a`, status: "completed", usage, model: "claude-haiku-5-5" }),
