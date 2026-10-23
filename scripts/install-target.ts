@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { CONFIG_PATH } from "../lib/config";
 import { REPORT_SERVER, REPORT_STAGE_TOOL } from "../lib/factory";
 
 // Wires a target repo to this checkout: hooks, the factory-report MCP server, the playbook.
@@ -76,6 +77,17 @@ const target = process.argv[2];
 if (!target || !existsSync(join(target, ".git"))) {
   console.error("usage: bun scripts/install-target.ts <path to a git repo>");
   process.exit(1);
+}
+
+// Cleanup walks the repos listed in the config; the file holds secrets, so it stays owner-only.
+const configPath = CONFIG_PATH;
+const config = readJson(configPath);
+const factory = (config.factory as Json | undefined) ?? {};
+const repo = resolve(target);
+if (!((factory.repos as string[] | undefined) ?? []).includes(repo)) {
+  factory.repos = [...((factory.repos as string[] | undefined) ?? []), repo];
+  writeFileSync(configPath, json({ ...config, factory }), { mode: 0o600 });
+  console.log(`added     ${repo} to factory.repos in ${configPath}`);
 }
 
 const settingsPath = join(target, ".claude/settings.json");
