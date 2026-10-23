@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -7,7 +7,9 @@ import { and, eq, inArray, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import type { IssueRow } from "../db/schema";
 import type { Stage } from "../lib/events";
+import { loadConfig } from "../lib/config";
 import { linearClient, type LinearClient } from "../lib/linear";
+import { nudgeMessage, watch, type ThreadState } from "../lib/watchdog";
 import {
   claimCommentId,
   claimReplies,
@@ -26,23 +28,9 @@ import {
 process.chdir(join(import.meta.dirname, ".."));
 process.loadEnvFile(".env.local");
 const { db } = await import("../db/client");
-const { issues } = await import("../db/schema");
+const { issues, runs } = await import("../db/schema");
 
-const configSchema = z.object({
-  linearApiKey: z.string().min(1),
-  ingestUrl: z.url(),
-  secret: z.string().min(1),
-  factory: z
-    .object({
-      teamKey: z.string().default("FAC"),
-      label: z.string().default("factory"),
-      maxInFlight: z.number().int().positive().default(2),
-    })
-    .prefault({}),
-});
-const config = configSchema.parse(
-  JSON.parse(readFileSync(join(homedir(), ".config/marshal-factory/config.json"), "utf8")),
-);
+const config = loadConfig();
 const linear = linearClient(config.linearApiKey);
 
 /** Stages where a thread is working; waiting, pr, merged and failed free the slot. */
@@ -121,23 +109,32 @@ async function postEvent(event: Record<string, unknown>) {
   if (!res.ok) throw new Error(`ingest answered ${res.status}: ${await res.text()}`);
 }
 
-/** A thread can take the answer if T3 still has it and its worktree is on disk. */
-async function threadAlive(threadId: string | null) {
-  if (!threadId) return false;
+/** Gone means T3 no longer has the thread, it is archived, or its worktree left the disk. */
+async function threadState(threadId: string | null): Promise<ThreadState> {
+  if (!threadId) return "gone";
   let stdout: string;
   try {
     ({ stdout } = await run(T3, ["thread", "show", threadId, "--json"], { timeout: 20_000 }));
   } catch (error) {
     // Only T3 saying the thread is gone counts as gone; a timeout or crash must not start a second thread.
     const output = String((error as { stdout?: string }).stdout ?? "") + String((error as { stderr?: string }).stderr ?? "");
-    if (output.includes("no longer available")) return false;
+    if (output.includes("no longer available")) return "gone";
     throw error;
   }
   const { thread } = z
-    .object({ thread: z.object({ archived: z.boolean(), worktreePath: z.string().nullable() }) })
+    .object({
+      thread: z.object({
+        archived: z.boolean(),
+        worktreePath: z.string().nullable(),
+        activeRunId: z.string().nullable(),
+      }),
+    })
     .parse(JSON.parse(stdout));
-  return !thread.archived && (thread.worktreePath === null || existsSync(thread.worktreePath));
+  if (thread.archived || (thread.worktreePath !== null && !existsSync(thread.worktreePath))) return "gone";
+  return thread.activeRunId ? "running" : "stopped";
 }
+
+const threadAlive = async (threadId: string | null) => (await threadState(threadId)) !== "gone";
 
 async function sendToThread(threadId: string, message: string) {
   await new Promise<void>((resolve, reject) => {
@@ -217,6 +214,90 @@ async function resumeAnswered() {
     resumed.push(`${issue.key}:${alive ? "sent" : "relaunch"}`);
   }
   return resumed;
+}
+
+/** Nudges stuck runs once, then fails them; see lib/watchdog.ts for when a run counts as stuck. */
+async function watchdog() {
+  const working = await db
+    .select({
+      issue: issues,
+      lastEventAt: sql<Date | null>`(select max(${runs.last_event_at}) from ${runs} where ${runs.issue_key} = ${issues.key})`.mapWith(
+        (v: string | null) => (v ? new Date(v) : null),
+      ),
+    })
+    .from(issues)
+    .where(and(inArray(issues.stage, IN_FLIGHT), or(isNotNull(issues.t3_thread_id), isNotNull(issues.session_id))));
+  const actions: string[] = [];
+  for (const { issue, lastEventAt } of working) {
+    const now = new Date();
+    const action = watch(
+      {
+        stage: issue.stage,
+        lastEventAt: lastEventAt ?? issue.updated_at,
+        nudgedAt: issue.nudged_at,
+        nudgedStage: issue.nudged_stage,
+        thread: await threadState(issue.t3_thread_id),
+        now,
+      },
+      config.factory,
+    );
+    if (action.kind === "ok") continue;
+    if (action.kind === "reset") {
+      await db.update(issues).set({ nudged_at: null, nudged_stage: null }).where(eq(issues.linear_id, issue.linear_id));
+      continue;
+    }
+    if (action.kind === "nudge") {
+      const claimed = await db
+        .update(issues)
+        .set({ nudged_at: now, nudged_stage: issue.stage, updated_at: now })
+        .where(
+          and(
+            eq(issues.linear_id, issue.linear_id),
+            eq(issues.stage, issue.stage),
+            or(isNull(issues.nudged_stage), ne(issues.nudged_stage, issue.stage)),
+          ),
+        )
+        .returning({ key: issues.key });
+      if (claimed.length === 0) continue;
+      try {
+        await sendToThread(issue.t3_thread_id!, nudgeMessage(issue.key, issue.stage, action.idleMinutes));
+      } catch (error) {
+        await db
+          .update(issues)
+          .set({ nudged_at: issue.nudged_at, nudged_stage: issue.nudged_stage })
+          .where(eq(issues.linear_id, issue.linear_id));
+        throw error;
+      }
+      actions.push(`${issue.key}:nudged`);
+      continue;
+    }
+    // Fail only the stage this pass looked at: a report that landed since then wins.
+    const eventId = `watchdog:${issue.linear_id}:${issue.stage_event_id ?? issue.stage}`;
+    const summary = `Watchdog stopped this run: ${action.reason}.`;
+    const failed = await db
+      .update(issues)
+      .set({ stage: "failed", stage_at: now, stage_summary: summary, question: null, stage_event_id: eventId, updated_at: now })
+      .where(
+        and(
+          eq(issues.linear_id, issue.linear_id),
+          eq(issues.stage, issue.stage),
+          sql`${issues.stage_event_id} is not distinct from ${issue.stage_event_id}`,
+        ),
+      )
+      .returning({ key: issues.key });
+    if (failed.length === 0) continue;
+    await postEvent({
+      eventId,
+      sessionId: issue.session_id ?? `watchdog:${issue.linear_id}`,
+      at: now.getTime(),
+      kind: "stage",
+      stage: "failed",
+      summary,
+      issueKey: issue.key,
+    });
+    actions.push(`${issue.key}:failed`);
+  }
+  return actions;
 }
 
 async function writeBack(team: Team) {
@@ -363,10 +444,11 @@ async function main(args: string[]) {
   await detectMerges();
   if (args[0] === "--sync") return { synced: await writeBack(team) };
   const resumed = await resumeAnswered();
+  const watched = await watchdog();
   const synced = await writeBack(team);
   const { claimed, inFlight } = await claim();
   await announceClaims(team);
-  return { claimed, resumed, synced, inFlight, maxInFlight: config.factory.maxInFlight, launch: await toLaunch() };
+  return { claimed, resumed, watched, synced, inFlight, maxInFlight: config.factory.maxInFlight, launch: await toLaunch() };
 }
 
 try {

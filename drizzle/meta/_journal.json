@@ -29,6 +29,13 @@
       "when": 1792764216142,
       "tag": "0003_waiting_resume",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1792773463089,
+      "tag": "0004_watchdog",
+      "breakpoints": true
     }
   ]
 }

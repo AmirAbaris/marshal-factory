@@ -118,6 +118,9 @@ export const issues = pgTable(
     answer: text("answer"),
     /** The question and answer a relaunched thread gets when the original thread is gone. */
     resume_context: text("resume_context"),
+    /** When the watchdog nudged a stuck run, and in which stage; cleared once the stage moves on. */
+    nudged_at: ts("nudged_at"),
+    nudged_stage: runStage("nudged_stage"),
     t3_thread_id: text("t3_thread_id"),
     session_id: text("session_id"),
     claimed_at: ts("claimed_at").notNull(),
