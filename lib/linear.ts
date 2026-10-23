@@ -16,6 +16,9 @@ const issueSchema = z.object({
 });
 export type LinearIssue = z.infer<typeof issueSchema>;
 
+const commentSchema = z.object({ id: z.string(), body: z.string(), createdAt: z.string() });
+export type LinearComment = z.infer<typeof commentSchema>;
+
 const stateSchema = z.object({ id: z.string(), name: z.string(), type: z.string() });
 
 export class LinearError extends Error {
@@ -89,6 +92,25 @@ export function linearClient(apiKey: string) {
         z.object({ issues: z.object({ nodes: z.array(issueSchema) }) }),
       );
       return data.issues.nodes.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    },
+
+    async issueWithComments(issueId: string) {
+      const data = await gql(
+        `query($id: String!) {
+          issue(id: $id) {
+            state { name type }
+            comments(first: 100) { nodes { id body createdAt } }
+          }
+        }`,
+        { id: issueId },
+        z.object({
+          issue: z.object({
+            state: z.object({ name: z.string(), type: z.string() }),
+            comments: z.object({ nodes: z.array(commentSchema) }),
+          }),
+        }),
+      );
+      return { state: data.issue.state, comments: data.issue.comments.nodes };
     },
 
     async setState(issueId: string, stateId: string) {

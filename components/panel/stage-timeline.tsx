@@ -6,32 +6,35 @@ import { Time } from "./time";
 
 type StageEvent = Extract<FactoryEvent, { kind: "stage" }>;
 
-type Step = { stage: Stage; event: StageEvent | undefined; state: "done" | "now" | "todo" };
+type Step = {
+  key: string;
+  stage: Stage;
+  event: StageEvent | undefined;
+  state: "done" | "now" | "todo";
+};
 
-/** The main path with the latest report per stage, plus waiting or failed when the run went there. */
+/** Every report in order, then the main-path stages still ahead of the current one. */
 function steps(reports: readonly StageEvent[]): Step[] {
-  const last = new Map<Stage, StageEvent>();
-  for (const report of reports) last.set(report.stage, report);
-  const current = reports.at(-1)?.stage;
-  const reached = new Set(reports.map((r) => r.stage));
-  // Stages the run skipped on its way to a later one still count as passed.
-  const furthest = Math.max(...[...reached].map((s) => MAIN_PATH.indexOf(s)));
-  const path = MAIN_PATH.filter((s) => s !== "queued" || reached.has(s));
-  const split = path.findIndex((s) => MAIN_PATH.indexOf(s) > furthest);
-  const offPath = (["waiting", "failed"] as const).filter((s) => reached.has(s));
-  const order =
-    split === -1 ? [...path, ...offPath] : [...path.slice(0, split), ...offPath, ...path.slice(split)];
-  return order.map((stage) => ({
-    stage,
-    event: last.get(stage),
-    state:
-      stage === current
-        ? "now"
-        : reached.has(stage) || MAIN_PATH.indexOf(stage) < furthest
-          ? "done"
-          : "todo",
-  }));
+  const reported = reports.map(
+    (event, i): Step => ({
+      key: event.eventId,
+      stage: event.stage,
+      event,
+      state: i === reports.length - 1 ? "now" : "done",
+    }),
+  );
+  const current = MAIN_PATH.indexOf(reports.at(-1)!.stage);
+  const ahead = current === -1 ? [] : MAIN_PATH.slice(current + 1);
+  return [
+    ...reported,
+    ...ahead.map((stage): Step => ({ key: stage, stage, event: undefined, state: "todo" })),
+  ];
 }
+
+const DOT: Partial<Record<Stage, string>> = {
+  waiting: "bg-warning ring-warning/20",
+  failed: "bg-destructive ring-destructive/20",
+};
 
 export function StageTimeline({ events }: { events: readonly EventRow[] }) {
   const reports = events.flatMap((row) => {
@@ -43,10 +46,11 @@ export function StageTimeline({ events }: { events: readonly EventRow[] }) {
   }
   return (
     <ol className="ml-1.5 flex flex-col">
-      {steps(reports).map(({ stage, event, state }) => (
+      {steps(reports).map(({ key, stage, event, state }) => (
         <li
-          key={stage}
+          key={key}
           data-state={state}
+          data-stage={stage}
           className="relative pb-3 pl-5 before:absolute before:top-3 before:-bottom-0.5 before:left-[3px] before:w-px before:bg-border last:before:hidden"
         >
           <span
@@ -54,13 +58,12 @@ export function StageTimeline({ events }: { events: readonly EventRow[] }) {
               "absolute top-1 -left-px size-2.25 rounded-full bg-border",
               state === "done" && "bg-success",
               state === "now" && "bg-primary ring-4 ring-primary/20",
-              state === "now" && stage === "failed" && "bg-destructive ring-destructive/20",
-              state === "now" && stage === "waiting" && "bg-warning ring-warning/20",
+              state === "now" && DOT[stage],
             )}
           />
           <div className="flex justify-between">
             <b className={cn("font-medium", state === "todo" && "text-faint")}>
-              {STAGE_META[stage].label}
+              {event?.answer ? "Answer received · resumed" : STAGE_META[stage].label}
             </b>
             {event && (
               <span className="font-mono text-xs text-faint">
@@ -68,8 +71,16 @@ export function StageTimeline({ events }: { events: readonly EventRow[] }) {
               </span>
             )}
           </div>
-          {event && (
-            <p className="mt-0.5 text-muted-foreground">{event.question ?? event.summary}</p>
+          {event?.answer ? (
+            <blockquote className="mt-1 border-l-2 border-success/60 pl-2 whitespace-pre-wrap text-muted-foreground">
+              {event.answer}
+            </blockquote>
+          ) : (
+            event && (
+              <p className="mt-0.5 whitespace-pre-wrap text-muted-foreground">
+                {event.question ?? event.summary}
+              </p>
+            )
           )}
         </li>
       ))}

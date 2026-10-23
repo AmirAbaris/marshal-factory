@@ -12,6 +12,7 @@ export type BoardCard = {
   question: string | null;
   prUrl: string | null;
   issueUrl: string | null;
+  answeredAt: Date | null;
   /** The run the card opens; null while a claimed issue has no session yet. */
   latest: RunRow | null;
   runs: RunRow[];
@@ -38,6 +39,7 @@ export function boardCards(issues: readonly IssueRow[], runs: readonly RunRow[])
       question: issue.question,
       prUrl: issue.pr_url,
       issueUrl: issue.url,
+      answeredAt: issue.answered_at,
       latest: issueRuns.find((r) => r.session_id === issue.session_id) ?? issueRuns[0] ?? null,
       runs: issueRuns,
     };
@@ -61,6 +63,7 @@ export function boardCards(issues: readonly IssueRow[], runs: readonly RunRow[])
         question: latest.question,
         prUrl: sorted.find((r) => r.pr_url)?.pr_url ?? null,
         issueUrl: null,
+        answeredAt: null,
         latest,
         runs: sorted,
       };

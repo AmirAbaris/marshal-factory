@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -7,10 +7,19 @@ import { and, eq, inArray, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import type { IssueRow } from "../db/schema";
 import type { Stage } from "../lib/events";
-import { commentId, linearClient, type LinearClient } from "../lib/linear";
+import { linearClient, type LinearClient } from "../lib/linear";
+import {
+  claimCommentId,
+  claimReplies,
+  planResume,
+  qaBlock,
+  resumeCommentId,
+  resumeMessage,
+  stageCommentId,
+} from "../lib/resume";
 
 // Usage:
-//   bun scripts/linear-poll.ts                     sync, claim, print the issues to launch as JSON
+//   bun scripts/linear-poll.ts                     resume, sync, claim, print the issues to launch as JSON
 //   bun scripts/linear-poll.ts --sync              write stage changes back to Linear, nothing else
 //   bun scripts/linear-poll.ts --attach KEY THREAD record the T3 thread launched for an issue
 
@@ -21,6 +30,8 @@ const { issues } = await import("../db/schema");
 
 const configSchema = z.object({
   linearApiKey: z.string().min(1),
+  ingestUrl: z.url(),
+  secret: z.string().min(1),
   factory: z
     .object({
       teamKey: z.string().default("FAC"),
@@ -60,6 +71,18 @@ const WRITE_BACK: Partial<Record<Stage, { state?: string; comment?: (issue: Issu
 };
 
 const run = promisify(execFile);
+const T3 = process.env.T3CODE_CLI_PATH ?? join(homedir(), ".t3/bin/t3");
+
+/** Records the id before posting, so a crash in between can never make our own comment look like a reply. */
+async function postComment(issue: IssueRow, id: string, body: string) {
+  await db
+    .update(issues)
+    .set({
+      factory_comment_ids: sql`case when ${issues.factory_comment_ids} ? ${id} then ${issues.factory_comment_ids} else ${issues.factory_comment_ids} || jsonb_build_array(${id}::text) end`,
+    })
+    .where(eq(issues.linear_id, issue.linear_id));
+  await linear.comment(issue.linear_id, id, body);
+}
 
 async function prState(url: string) {
   const { stdout } = await run("gh", ["pr", "view", url, "--json", "state"], { timeout: 20_000 });
@@ -88,6 +111,114 @@ async function detectMerges() {
   }
 }
 
+async function postEvent(event: Record<string, unknown>) {
+  const res = await fetch(config.ingestUrl, {
+    method: "POST",
+    headers: { authorization: `Bearer ${config.secret}`, "content-type": "application/json" },
+    body: JSON.stringify(event),
+    signal: AbortSignal.timeout(15_000),
+  });
+  if (!res.ok) throw new Error(`ingest answered ${res.status}: ${await res.text()}`);
+}
+
+/** A thread can take the answer if T3 still has it and its worktree is on disk. */
+async function threadAlive(threadId: string | null) {
+  if (!threadId) return false;
+  let stdout: string;
+  try {
+    ({ stdout } = await run(T3, ["thread", "show", threadId, "--json"], { timeout: 20_000 }));
+  } catch (error) {
+    // Only T3 saying the thread is gone counts as gone; a timeout or crash must not start a second thread.
+    const output = String((error as { stdout?: string }).stdout ?? "") + String((error as { stderr?: string }).stderr ?? "");
+    if (output.includes("no longer available")) return false;
+    throw error;
+  }
+  const { thread } = z
+    .object({ thread: z.object({ archived: z.boolean(), worktreePath: z.string().nullable() }) })
+    .parse(JSON.parse(stdout));
+  return !thread.archived && (thread.worktreePath === null || existsSync(thread.worktreePath));
+}
+
+async function sendToThread(threadId: string, message: string) {
+  await new Promise<void>((resolve, reject) => {
+    const child = execFile(T3, ["thread", "send", threadId, "-"], { timeout: 30_000 }, (error) =>
+      error ? reject(error) : resolve(),
+    );
+    child.stdin!.end(message);
+  });
+}
+
+/**
+ * Hands answers to waiting questions back to the run that asked. The reply ids are claimed in
+ * the database before anything is sent, so a replayed or concurrent pass never delivers twice.
+ */
+async function resumeAnswered() {
+  const waiting = await db.select().from(issues).where(eq(issues.stage, "waiting"));
+  const resumed: string[] = [];
+  for (const issue of waiting) {
+    const plan = planResume(issue, await linear.issueWithComments(issue.linear_id));
+    if (plan.kind === "wait") continue;
+
+    const now = new Date();
+    if (plan.kind === "close") {
+      const closed = `closed:${plan.state}`;
+      await db
+        .update(issues)
+        .set({
+          stage: "failed",
+          stage_at: now,
+          stage_summary: `Moved to ${plan.state} in Linear while waiting; not resumed.`,
+          question: null,
+          resume_context: null,
+          stage_event_id: closed,
+          synced_event_id: closed,
+          linear_state: plan.state,
+          updated_at: now,
+        })
+        .where(and(eq(issues.linear_id, issue.linear_id), eq(issues.stage, "waiting")));
+      resumed.push(`${issue.key}:closed`);
+      continue;
+    }
+
+    const replyIds = plan.replies.map((r) => r.id);
+    const ackId = resumeCommentId(issue.linear_id, replyIds);
+    const alive = await threadAlive(issue.t3_thread_id);
+    // A dead thread is unlinked in the same update that claims the replies, so the relaunch
+    // cannot be lost to a later failure in this pass.
+    const relaunch = alive ? undefined : qaBlock(plan.question, plan.answer);
+    if (!(await claimReplies(db, issue.linear_id, replyIds, plan.answer, now, relaunch))) continue;
+
+    if (alive) {
+      try {
+        await sendToThread(issue.t3_thread_id!, resumeMessage(issue.key, plan.question, plan.answer));
+      } catch (error) {
+        await db
+          .update(issues)
+          .set({ delivered_reply_ids: issue.delivered_reply_ids, answered_at: issue.answered_at, answer: issue.answer })
+          .where(eq(issues.linear_id, issue.linear_id));
+        throw error;
+      }
+    }
+
+    const summary = alive
+      ? "Answer received; the thread resumes from triage."
+      : "Answer received; a fresh thread will pick it up.";
+    await postEvent({
+      eventId: `resume:${issue.linear_id}:${replyIds.join(",")}`,
+      sessionId: issue.session_id ?? `resume:${issue.linear_id}`,
+      at: now.getTime(),
+      kind: "stage",
+      stage: "queued",
+      summary,
+      answer: plan.answer.slice(0, 4000),
+      issueKey: issue.key,
+    });
+    await postComment(issue, ackId, "Answer received, resuming.");
+    resumed.push(`${issue.key}:${alive ? "sent" : "relaunch"}`);
+  }
+  return resumed;
+}
+
 async function writeBack(team: Team) {
   const pending = await db
     .select()
@@ -103,11 +234,7 @@ async function writeBack(team: Team) {
     const action = WRITE_BACK[issue.stage];
     if (action?.state) await linear.setState(issue.linear_id, stateId(team, action.state));
     if (action?.comment) {
-      await linear.comment(
-        issue.linear_id,
-        commentId(issue.linear_id, issue.stage_event_id!),
-        action.comment(issue),
-      );
+      await postComment(issue, stageCommentId(issue.linear_id, issue.stage_event_id!), action.comment(issue));
     }
     // Only this event counts as synced; a newer one that landed meanwhile goes next pass.
     await db
@@ -167,11 +294,7 @@ async function announceClaims(team: Team) {
     .where(and(eq(issues.stage, "queued"), ne(issues.linear_state, "In Progress")));
   for (const issue of unannounced) {
     await linear.setState(issue.linear_id, stateId(team, "In Progress"));
-    await linear.comment(
-      issue.linear_id,
-      commentId(issue.linear_id, "claim"),
-      "Picked up by marshal-factory.",
-    );
+    await postComment(issue, claimCommentId(issue.linear_id), "Picked up by marshal-factory.");
     await db
       .update(issues)
       .set({ linear_state: "In Progress", updated_at: new Date() })
@@ -189,6 +312,14 @@ function launchMessage(issue: IssueRow) {
     "## Issue",
     "",
     issue.description?.trim() || "(The issue has no description.)",
+    ...(issue.resume_context
+      ? [
+          "",
+          "An earlier run on this branch stopped with a question, and the reporter answered it. Treat the answer as the spec.",
+          "",
+          issue.resume_context,
+        ]
+      : []),
   ].join("\n");
 }
 
@@ -196,7 +327,14 @@ async function toLaunch() {
   const rows = await db
     .select()
     .from(issues)
-    .where(and(eq(issues.stage, "queued"), isNull(issues.t3_thread_id), isNull(issues.session_id)));
+    .where(
+      and(
+        // A waiting issue whose thread died and whose question was answered relaunches too.
+        or(eq(issues.stage, "queued"), and(eq(issues.stage, "waiting"), isNotNull(issues.resume_context))),
+        isNull(issues.t3_thread_id),
+        isNull(issues.session_id),
+      ),
+    );
   return rows.map((issue) => ({
     key: issue.key,
     branch: `factory/${issue.key}`,
@@ -223,11 +361,12 @@ async function main(args: string[]) {
   }
   const team = await linear.team(config.factory.teamKey);
   await detectMerges();
+  if (args[0] === "--sync") return { synced: await writeBack(team) };
+  const resumed = await resumeAnswered();
   const synced = await writeBack(team);
-  if (args[0] === "--sync") return { synced };
   const { claimed, inFlight } = await claim();
   await announceClaims(team);
-  return { claimed, synced, inFlight, maxInFlight: config.factory.maxInFlight, launch: await toLaunch() };
+  return { claimed, resumed, synced, inFlight, maxInFlight: config.factory.maxInFlight, launch: await toLaunch() };
 }
 
 try {

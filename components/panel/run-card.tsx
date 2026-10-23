@@ -6,6 +6,7 @@ import { cn } from "@/lib/utils";
 import type { BoardCard } from "./cards";
 import { formatUsd, runCost, runTitle, shortId } from "./format";
 import { ModelChip } from "./model-chip";
+import { Time } from "./time";
 
 const cardClass = (selected: boolean) =>
   cn(
@@ -61,6 +62,11 @@ export function StageCard({
         {card.issueKey ?? card.id.slice(0, 8)}
       </div>
       <div className="line-clamp-2 font-medium">{card.title}</div>
+      {card.answeredAt && card.stage !== "waiting" && (
+        <p className="text-xs text-success">
+          Answer received <Time date={card.answeredAt} />
+        </p>
+      )}
       {card.stage === "waiting" && card.question ? (
         <p className="line-clamp-3 text-xs text-warning">{card.question}</p>
       ) : (

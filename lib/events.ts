@@ -100,6 +100,8 @@ export const eventSchema = z.discriminatedUnion("kind", [
     kind: z.literal("stage"),
     ...stageReportShape,
     issueKey: z.string().optional(),
+    /** Set by the poller when a human answered a waiting question and the run resumes. */
+    answer: z.string().max(4000).optional(),
   }),
   z.object({
     ...base,

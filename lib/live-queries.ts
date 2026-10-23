@@ -70,6 +70,23 @@ export const sessionStagesQuery = (sessionId: string) =>
     .orderBy(asc(events.at), asc(events.event_id))
     .limit(STAGE_HISTORY_LIMIT);
 
+/** Every stage report for an issue, across all the sessions that worked on it. */
+export const issueStagesQuery = (issueKey: string) =>
+  db
+    .select(getTableColumns(events))
+    .from(events)
+    .where(and(eq(events.issue_key, issueKey), eq(events.kind, "stage")))
+    .orderBy(asc(events.at), asc(events.event_id))
+    .limit(STAGE_HISTORY_LIMIT);
+
+export async function runIssueKey(sessionId: string) {
+  const [row] = await db
+    .select({ issueKey: runs.issue_key })
+    .from(runs)
+    .where(eq(runs.session_id, sessionId));
+  return row?.issueKey ?? undefined;
+}
+
 /** Runs the query for server rendering and seals it for the browser subscription. */
 export async function load<Q extends Parameters<typeof realtime.seal>[0]["query"]>(
   query: Q,
@@ -88,3 +105,6 @@ export function sealOnly(query: Parameters<typeof realtime.seal>[0]["query"]) {
 const SESSION_ID = /^[\w.:-]{1,128}$/;
 export const parseSessionId = (value: string) =>
   SESSION_ID.test(value) ? value : undefined;
+
+const ISSUE_KEY = /^[A-Z][A-Z0-9]*-\d+$/;
+export const parseIssueKey = (value: string) => (ISSUE_KEY.test(value) ? value : undefined);

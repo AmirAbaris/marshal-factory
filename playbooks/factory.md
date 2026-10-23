@@ -23,6 +23,15 @@ No human reads this thread while it runs. The supervision panel and the pull req
 3. Test for ambiguity before any code. Write down the acceptance check, a test or an observable result, using only the issue text. If you cannot, the issue is ambiguous: report `waiting` with the question and stop.
 4. Work in the thread's worktree on the current branch. Do not create other worktrees or branches for the PR.
 
+## Resumed runs
+
+A run that stopped in `waiting` resumes when the reporter answers on Linear. The factory then sends this thread a message that quotes your question and the answer, or starts a fresh thread on the same branch with both in its first message.
+
+1. Start again at Triage and call `report_stage` with `stage: "triage"`. Keep the branch and any commits already on it.
+2. The answer is the spec. Where it picks an option you offered, build that option and nothing the reporter did not ask for. Where it adds a request, include it.
+3. Run the ambiguity test again with the issue plus the answer. If you still cannot write the acceptance check, report `waiting` with one more concrete question about what is still open, and end the turn. Do not guess.
+4. Otherwise continue with the bundled playbook as usual.
+
 ## Changes to the bundled playbooks
 
 - **Before** "Reproduce it yourself on the matching surface via the driver skill" call `report_stage` with `stage: "investigating"`.
