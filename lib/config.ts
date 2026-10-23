@@ -21,6 +21,8 @@ export const factorySchema = z
     budgetUsd: z.number().positive().default(5),
     /** Days a failed issue keeps its worktree for a human to look at before cleanup removes it. */
     cleanupGraceDays: z.number().nonnegative().default(3),
+    /** Hours a Claude Code subagent worktree must sit untouched before cleanup considers it. */
+    subagentIdleHours: z.number().nonnegative().default(6),
     /** Target repos the factory works in; the installer adds each one. */
     repos: z.array(z.string()).default([]),
     /** The runner starts factory threads in the first repo with this provider and model. */

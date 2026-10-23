@@ -10,7 +10,7 @@ import { loadConfig } from "../lib/config";
 import { linearClient, type LinearClient } from "../lib/linear";
 import { branchSpend } from "../lib/spend";
 import { readTranscript, subagentTranscripts, sumUsage, transcriptPathFor } from "../lib/transcript";
-import { cleanupRepo } from "../lib/worktrees";
+import { cleanupRepo, cleanupSubagentWorktrees } from "../lib/worktrees";
 import { claimConflict, conflictMessage, unclaimedRunsWithPr } from "../lib/conflicts";
 import { attemptBranch } from "../lib/factory";
 import { nudgeMessage, watch, type ThreadState } from "../lib/watchdog";
@@ -631,9 +631,12 @@ export async function toLaunch() {
 export async function cleanup(dryRun = false) {
   const all = await db.select().from(issues);
   const byKey = new Map(all.map((i) => [i.key, i]));
-  const reports = await Promise.all(
-    config.factory.repos.map((repo) => cleanupRepo(repo, byKey, config.factory.cleanupGraceDays, { dryRun })),
-  );
+  // One after the other: both edit the same repo's worktree list and refs, and git locks them.
+  const reports = [];
+  for (const repo of config.factory.repos) {
+    reports.push(await cleanupRepo(repo, byKey, config.factory.cleanupGraceDays, { dryRun }));
+    reports.push(await cleanupSubagentWorktrees(repo, config.factory.subagentIdleHours, { dryRun }));
+  }
   return {
     removed: reports.flatMap((r) => r.removed),
     held: reports.flatMap((r) => r.held),

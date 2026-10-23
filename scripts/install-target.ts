@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CONFIG_PATH } from "../lib/config";
@@ -88,7 +88,8 @@ if (!existsSync(configPath)) {
   console.log(`skipped   factory.repos: ${configPath} does not exist yet; add ${repo} there by hand`);
 } else if (!((factory.repos as string[] | undefined) ?? []).includes(repo)) {
   factory.repos = [...((factory.repos as string[] | undefined) ?? []), repo];
-  writeFileSync(configPath, json({ ...config, factory }), { mode: 0o600 });
+  writeFileSync(configPath, json({ ...config, factory }));
+  chmodSync(configPath, 0o600);
   console.log(`added     ${repo} to factory.repos in ${configPath}`);
 }
 
@@ -100,3 +101,14 @@ write(
   join(target, ".agents/playbooks/factory.md"),
   readFileSync(join(root, "playbooks/factory.md"), "utf8"),
 );
+
+// Claude Code puts isolated subagents in .claude/worktrees/; linting them breaks the repo's lint.
+const eslintConfig = ["eslint.config.mjs", "eslint.config.js", "eslint.config.ts"]
+  .map((name) => join(target, name))
+  .find(existsSync);
+if (eslintConfig) {
+  const text = readFileSync(eslintConfig, "utf8");
+  if (text.includes(".claude/")) console.log(`unchanged ${eslintConfig}`);
+  else if (text.includes("globalIgnores([")) write(eslintConfig, text.replace("globalIgnores([", 'globalIgnores([\n    ".claude/**",'));
+  else console.log(`skipped   ${eslintConfig}: add ".claude/**" to its ignores by hand`);
+}
