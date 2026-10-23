@@ -32,6 +32,16 @@ A run that stopped in `waiting` resumes when the reporter answers on Linear. The
 3. Run the ambiguity test again with the issue plus the answer. If you still cannot write the acceptance check, report `waiting` with one more concrete question about what is still open, and end the turn. Do not guess.
 4. Otherwise continue with the bundled playbook as usual.
 
+## Merge conflicts
+
+When the factory tells this thread that its PR conflicts with main, the board has already moved the run back to Implementing.
+
+1. Run `git fetch origin` and `git merge origin/main` on this branch. Never rebase a pushed factory branch and never force-push it.
+2. Resolve each conflict so that main's change and yours both keep working. Read main's commit to learn what it meant. Do not drop either side to make the conflict go away.
+3. Call `report_stage` with `stage: "verifying"`, then run lint, typecheck, tests and build, and check the changed screen when the conflict touched UI.
+4. Commit the merge, push, and babysit the PR to green as in the bundled Babysit playbook. Then call `report_stage` with `stage: "pr"` and the `prUrl` again, and end the turn.
+5. If the two changes contradict each other and the issue does not say which wins, abort the merge with `git merge --abort`, report `waiting` with a question that names both changes, and end the turn.
+
 ## Changes to the bundled playbooks
 
 - **Before** "Reproduce it yourself on the matching surface via the driver skill" call `report_stage` with `stage: "investigating"`.
