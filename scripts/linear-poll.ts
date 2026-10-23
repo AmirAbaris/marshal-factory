@@ -368,7 +368,8 @@ async function enforceBudget() {
     const usd = spend[issue.key] ?? 0;
     if (usd < config.factory.budgetUsd) continue;
     await postEvent({
-      eventId: `budget:${issue.linear_id}`,
+      // Keyed on the stage it fails, so a run that reports again after this still gets failed again.
+      eventId: `budget:${issue.linear_id}:${issue.stage_event_id ?? issue.stage}`,
       sessionId: issue.session_id ?? `budget:${issue.linear_id}`,
       at: Date.now(),
       kind: "stage",
