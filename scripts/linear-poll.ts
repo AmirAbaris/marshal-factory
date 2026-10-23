@@ -9,6 +9,7 @@ import type { IssueRow } from "../db/schema";
 import type { Stage } from "../lib/events";
 import { loadConfig } from "../lib/config";
 import { linearClient, type LinearClient } from "../lib/linear";
+import { issueSpend } from "../lib/spend";
 import { claimConflict, conflictMessage } from "../lib/conflicts";
 import { nudgeMessage, watch, type ThreadState } from "../lib/watchdog";
 import {
@@ -339,6 +340,28 @@ async function watchdog() {
   return actions;
 }
 
+/** Backstop for the budget hook: a working issue over its cap fails even if its thread never reports it. */
+async function enforceBudget() {
+  const working = await db.select().from(issues).where(inArray(issues.stage, IN_FLIGHT));
+  const spend = await issueSpend(db, working.map((i) => i.key));
+  const over: string[] = [];
+  for (const issue of working) {
+    const usd = spend[issue.key] ?? 0;
+    if (usd < config.factory.budgetUsd) continue;
+    await postEvent({
+      eventId: `budget:${issue.linear_id}`,
+      sessionId: issue.session_id ?? `budget:${issue.linear_id}`,
+      at: Date.now(),
+      kind: "stage",
+      stage: "failed",
+      summary: `budget exceeded ($${usd.toFixed(2)} of $${config.factory.budgetUsd.toFixed(2)})`,
+      issueKey: issue.key,
+    });
+    over.push(issue.key);
+  }
+  return over;
+}
+
 async function writeBack(team: Team) {
   const pending = await db
     .select()
@@ -483,11 +506,12 @@ async function main(args: string[]) {
   const conflicts = await checkPullRequests();
   if (args[0] === "--sync") return { conflicts, synced: await writeBack(team) };
   const resumed = await resumeAnswered();
+  const overBudget = await enforceBudget();
   const watched = await watchdog();
   const synced = await writeBack(team);
   const { claimed, inFlight } = await claim();
   await announceClaims(team);
-  return { claimed, resumed, watched, conflicts, synced, inFlight, maxInFlight: config.factory.maxInFlight, launch: await toLaunch() };
+  return { claimed, resumed, overBudget, watched, conflicts, synced, inFlight, maxInFlight: config.factory.maxInFlight, launch: await toLaunch() };
 }
 
 try {

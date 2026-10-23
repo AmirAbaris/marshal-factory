@@ -5,7 +5,7 @@ import { useCallback, useMemo, useState } from "react";
 import type { AgentRow, EventRow, IssueRow, RunRow } from "@/db/schema";
 import { Board } from "./board";
 import { boardCards } from "./cards";
-import { groupBy } from "./format";
+import { groupBy, spendOf } from "./format";
 import { RunDetail } from "./run-detail";
 import { fetchSealed, type Feed } from "./sealed";
 import { Sidebar } from "./sidebar";
@@ -25,7 +25,9 @@ export function LivePanel({
   runs,
   agents,
   detail,
+  budgetUsd,
 }: {
+  budgetUsd: number;
   issues: Feed<IssueRow>;
   runs: Feed<RunRow>;
   agents: Feed<AgentRow>;
@@ -80,6 +82,7 @@ export function LivePanel({
             unstaged={unstaged}
             agentsBySession={agentsBySession}
             selected={detail?.sessionId}
+            budgetUsd={budgetUsd}
           />
           {selectedRun && detail && (
             <RunDetail
@@ -90,6 +93,11 @@ export function LivePanel({
               stages={detail.stages}
               stagesPath={detail.stagesPath}
               issue={selectedIssue}
+              issueSpend={
+                selectedIssue
+                  ? { usd: spendOf(runRows.filter((r) => r.issue_key === selectedIssue.key), agentsBySession), capUsd: budgetUsd }
+                  : undefined
+              }
             />
           )}
         </div>

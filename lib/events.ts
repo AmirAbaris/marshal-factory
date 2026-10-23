@@ -105,6 +105,12 @@ export const eventSchema = z.discriminatedUnion("kind", [
   }),
   z.object({
     ...base,
+    // A mid-turn snapshot of the main session's usage, so spend is known before the turn ends.
+    kind: z.literal("usage"),
+    usage: usageSchema,
+  }),
+  z.object({
+    ...base,
     kind: z.literal("session_end"),
     reason: z.string().optional(),
   }),

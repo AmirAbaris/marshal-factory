@@ -6,6 +6,7 @@ import Link from "next/link";
 import { useCallback, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import type { AgentRow, EventRow, IssueRow, RunRow } from "@/db/schema";
@@ -25,7 +26,9 @@ export function RunDetail({
   stages,
   stagesPath,
   issue,
+  issueSpend,
 }: {
+  issueSpend: { usd: number; capUsd: number } | undefined;
   stagesPath: string;
   issue: IssueRow | undefined;
   run: RunRow;
@@ -88,7 +91,13 @@ export function RunDetail({
             <ModelChip model={run.model} />
             {run.repo && <span className="text-muted-foreground">{run.repo}</span>}
             <span className="font-mono text-muted-foreground">
-              {formatUsd(runCost(run, agentRows))}
+              {issueSpend ? (
+                <span className={cn(issueSpend.usd >= issueSpend.capUsd && "text-destructive")}>
+                  {formatUsd(issueSpend.usd)} of {formatUsd(issueSpend.capUsd)} cap
+                </span>
+              ) : (
+                formatUsd(runCost(run, agentRows))
+              )}
             </span>
             {issue && (
               <Button asChild variant="outline" size="sm" className="ml-auto">

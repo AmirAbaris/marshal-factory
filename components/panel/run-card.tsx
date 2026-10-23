@@ -14,7 +14,15 @@ const cardClass = (selected: boolean) =>
     selected && "border-primary ring-1 ring-primary",
   );
 
-function AgentsAndCost({ runs, agents }: { runs: readonly RunRow[]; agents: readonly AgentRow[] }) {
+function AgentsAndCost({
+  runs,
+  agents,
+  budgetUsd,
+}: {
+  runs: readonly RunRow[];
+  agents: readonly AgentRow[];
+  budgetUsd?: number;
+}) {
   const running = agents.filter((a) => a.status === "running").length;
   const cost = runs.reduce(
     (sum, run) => sum + runCost(run, agents.filter((a) => a.session_id === run.session_id)),
@@ -27,7 +35,13 @@ function AgentsAndCost({ runs, agents }: { runs: readonly RunRow[]; agents: read
           {running > 0 ? `${running}/${agents.length}` : agents.length} agents
         </span>
       )}
-      <span className="font-mono">{formatUsd(cost)}</span>
+      <span
+        className={cn("font-mono", budgetUsd !== undefined && cost >= budgetUsd && "text-destructive")}
+        title={budgetUsd !== undefined ? "spend / cap for this issue" : undefined}
+      >
+        {formatUsd(cost)}
+        {budgetUsd !== undefined && ` / ${formatUsd(budgetUsd)}`}
+      </span>
     </>
   );
 }
@@ -41,10 +55,12 @@ export function StageCard({
   card,
   agents,
   selected,
+  budgetUsd,
 }: {
   card: BoardCard;
   agents: readonly AgentRow[];
   selected: boolean;
+  budgetUsd: number;
 }) {
   const { latest } = card;
   return (
@@ -81,7 +97,11 @@ export function StageCard({
       )}
       <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
         {latest && <ModelChip model={latest.model} />}
-        <AgentsAndCost runs={card.runs} agents={agents} />
+        <AgentsAndCost
+          runs={card.runs}
+          agents={agents}
+          budgetUsd={card.issueUrl ? budgetUsd : undefined}
+        />
         {card.issueUrl && (
           <a
             href={card.issueUrl}
