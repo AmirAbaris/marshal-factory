@@ -6,8 +6,8 @@ import { basename, dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { stageReportSchema, type FactoryEvent, type Usage } from "../lib/events";
 import { issueKeyFromBranch, REPORT_STAGE_TOOL } from "../lib/factory";
-import { writeSpend } from "../lib/spend-cache";
-import { readTranscript, sumUsage } from "../lib/transcript";
+import { rememberSessionIssue, sessionIssue, writeSpend } from "../lib/spend-cache";
+import { mainTranscript, readTranscript, subagentTranscripts, sumUsage } from "../lib/transcript";
 
 const run = promisify(execFile);
 
@@ -132,22 +132,28 @@ const USAGE_DIR = join(homedir(), ".cache/marshal-factory/usage");
 
 /**
  * A factory session's main usage only lands with turn_stop, and a factory run is one long turn.
- * So after other tool calls the reporter sends a usage snapshot, at most every 30 s per session,
- * which keeps the issue's spend, and the budget hook, close to real time.
+ * So after other tool calls, including those inside subagents (the main session waits while a
+ * foreground subagent works), the reporter sends a snapshot of the main session and every
+ * subagent transcript, at most every 30 s per session. That keeps the issue's spend, and the
+ * budget hook, close to real time.
  */
 async function usageSnapshot(
   input: HookInput,
   base: { eventId: string; sessionId: string; at: number; transcriptPath?: string },
 ): Promise<FactoryEvent | undefined> {
-  if (input.agent_id) return undefined;
   const git = await gitContext(str(input.cwd) ?? process.cwd());
-  if (!issueKeyFromBranch(git.branch)) return undefined;
+  const branchKey = issueKeyFromBranch(git.branch);
+  if (branchKey) rememberSessionIssue(base.sessionId, branchKey);
+  if (!branchKey && !sessionIssue(base.sessionId)) return undefined;
   const stamp = join(USAGE_DIR, base.sessionId.replace(/[^\w-]/g, "_"));
   if (existsSync(stamp) && base.at - statSync(stamp).mtimeMs < USAGE_EVERY_MS) return undefined;
   mkdirSync(USAGE_DIR, { recursive: true });
   writeFileSync(stamp, "");
-  const usage = await sumTranscriptUsage(input.transcript_path, false);
-  return usage.model === "unknown" ? undefined : { ...base, kind: "usage", usage };
+  const main = mainTranscript(input.transcript_path, base.sessionId);
+  const usage = await sumTranscriptUsage(main, false);
+  if (usage.model === "unknown") return undefined;
+  const agents = main ? subagentTranscripts(main, base.sessionId) : [];
+  return { ...base, kind: "usage", usage, agents };
 }
 
 const SOURCES = new Set(["startup", "resume", "compact"]);
@@ -160,6 +166,8 @@ async function toEvent(
     case "SessionStart": {
       const cwd = str(input.cwd) ?? process.cwd();
       const git = await gitContext(cwd);
+      const key = issueKeyFromBranch(git.branch);
+      if (key) rememberSessionIssue(base.sessionId, key);
       const t3 = await findT3Thread(cwd, git);
       const source = str(input.source);
       return {
@@ -241,7 +249,8 @@ async function main() {
     eventId,
     sessionId,
     at: Date.now(),
-    transcriptPath: str(input.transcript_path),
+    // Hooks inside a subagent may name its own transcript; the run records the session's.
+    transcriptPath: mainTranscript(str(input.transcript_path), sessionId),
   });
   if (!event) return;
 

@@ -6,11 +6,11 @@ import { promisify } from "node:util";
 import { and, eq, gt, inArray, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import type { IssueRow } from "../db/schema";
-import type { Stage } from "../lib/events";
+import type { Stage, Usage } from "../lib/events";
 import { loadConfig } from "../lib/config";
 import { linearClient, type LinearClient } from "../lib/linear";
 import { issueSpend } from "../lib/spend";
-import { readTranscript, sumUsage, transcriptPathFor } from "../lib/transcript";
+import { readTranscript, subagentTranscripts, sumUsage, transcriptPathFor } from "../lib/transcript";
 import { cleanupRepo } from "../lib/worktrees";
 import { claimConflict, conflictMessage } from "../lib/conflicts";
 import { nudgeMessage, watch, type ThreadState } from "../lib/watchdog";
@@ -33,7 +33,7 @@ import {
 process.chdir(join(import.meta.dirname, ".."));
 process.loadEnvFile(".env.local");
 const { db } = await import("../db/client");
-const { issues, runs } = await import("../db/schema");
+const { agents, issues, runs } = await import("../db/schema");
 
 const config = loadConfig();
 const linear = linearClient(config.linearApiKey);
@@ -375,19 +375,28 @@ async function reconcileUsage() {
     const path = transcriptPathFor(run);
     if (!path || !existsSync(path)) continue;
     const usage = sumUsage(readTranscript(path));
-    const behind =
-      usage.input > run.input_tokens ||
-      usage.output > run.output_tokens ||
-      usage.cacheRead > run.cache_read_tokens ||
-      usage.cacheWrite > run.cache_write_tokens;
-    if (!behind || usage.model === "unknown") continue;
+    if (usage.model === "unknown") continue;
+    const subagents = subagentTranscripts(path, run.session_id);
+    const rows = await db.select().from(agents).where(eq(agents.session_id, run.session_id));
+    const lags = (u: Usage, row: { input_tokens: number; output_tokens: number; cache_read_tokens: number; cache_write_tokens: number } | undefined) =>
+      !row ||
+      u.input > row.input_tokens ||
+      u.output > row.output_tokens ||
+      u.cacheRead > row.cache_read_tokens ||
+      u.cacheWrite > row.cache_write_tokens;
+    const behind = lags(usage, run) || subagents.some((s) => lags(s.usage, rows.find((r) => r.agent_id === s.agentId)));
+    if (!behind) continue;
+    const fingerprint = [usage, ...subagents.map((s) => s.usage)]
+      .map((u) => `${u.input}.${u.output}.${u.cacheRead}.${u.cacheWrite}`)
+      .join(":");
     await postEvent({
-      eventId: `reconcile:${run.session_id}:${usage.input}:${usage.output}:${usage.cacheRead}:${usage.cacheWrite}`,
+      eventId: `reconcile:${run.session_id}:${fingerprint}`,
       sessionId: run.session_id,
       // The transcript's own last write, so the watchdog never mistakes a reconcile for activity.
       at: Math.min(Math.floor(statSync(path).mtimeMs), run.last_event_at.getTime()),
       kind: "usage",
       usage,
+      agents: subagents,
       transcriptPath: path,
     });
     fixed.push(run.issue_key!);

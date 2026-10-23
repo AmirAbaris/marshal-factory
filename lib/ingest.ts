@@ -201,6 +201,48 @@ async function applyAgentLaunched(
   }
 }
 
+/**
+ * Running subagents' usage so far. Tokens only ever rise, by the same max() as agent_stop, so the
+ * later stop for the same agent never counts twice, and the status stays whatever it is.
+ */
+async function applyAgentUsage(tx: Tx, e: Extract<FactoryEvent, { kind: "usage" }>) {
+  for (const agent of e.agents ?? []) {
+    if (agent.toolUseId) {
+      await applyAgentLaunched(tx, {
+        kind: "agent_launched",
+        eventId: e.eventId,
+        sessionId: e.sessionId,
+        at: e.at,
+        toolUseId: agent.toolUseId,
+        agentId: agent.agentId,
+      });
+    }
+    const existing = await byAgentId(tx, agent.agentId);
+    if (!existing) {
+      await tx.insert(agents).values({
+        tool_use_id: pendingKey(agent.agentId),
+        session_id: e.sessionId,
+        agent_id: agent.agentId,
+        status: "running",
+        model: agent.usage.model,
+        started_at: when(e.at),
+        ...usageColumns(agent.usage),
+      });
+      continue;
+    }
+    await tx
+      .update(agents)
+      .set({
+        model: existing.model ?? agent.usage.model,
+        input_tokens: Math.max(existing.input_tokens, agent.usage.input),
+        output_tokens: Math.max(existing.output_tokens, agent.usage.output),
+        cache_read_tokens: Math.max(existing.cache_read_tokens, agent.usage.cacheRead),
+        cache_write_tokens: Math.max(existing.cache_write_tokens, agent.usage.cacheWrite),
+      })
+      .where(eq(agents.tool_use_id, existing.tool_use_id));
+  }
+}
+
 async function applyAgentStop(
   tx: Tx,
   e: Extract<FactoryEvent, { kind: "agent_stop" }>,
@@ -317,6 +359,8 @@ async function project(tx: Tx, event: FactoryEvent) {
       return applyAgentLaunched(tx, event);
     case "agent_stop":
       return applyAgentStop(tx, event);
+    case "usage":
+      return applyAgentUsage(tx, event);
     default:
       return;
   }

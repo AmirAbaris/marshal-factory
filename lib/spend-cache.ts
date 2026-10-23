@@ -24,3 +24,21 @@ export function writeSpend(spend: Record<string, number>, at = Date.now()) {
     renameSync(tmp, fileFor(key));
   }
 }
+
+const SESSIONS = join(homedir(), ".cache/marshal-factory/sessions");
+const sessionFile = (sessionId: string) => join(SESSIONS, sessionId.replace(/[^\w-]/g, "_"));
+
+/**
+ * Subagents can run in their own worktree on a non-factory branch, so the issue is looked up by
+ * session as well as by branch. The reporter records it whenever the main session is on one.
+ */
+export function rememberSessionIssue(sessionId: string, issueKey: string) {
+  mkdirSync(SESSIONS, { recursive: true });
+  writeFileSync(sessionFile(sessionId), issueKey);
+}
+
+export function sessionIssue(sessionId: string | undefined) {
+  if (!sessionId) return undefined;
+  const file = sessionFile(sessionId);
+  return existsSync(file) ? readFileSync(file, "utf8").trim() || undefined : undefined;
+}

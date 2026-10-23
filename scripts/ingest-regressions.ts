@@ -66,6 +66,20 @@ try {
   assert.equal(u.status, "idle", "a usage snapshot leaves the status alone");
   assert.ok((result.spend["FAC-9"] ?? 0) >= 2, "ingest answers with the issue's spend");
 
+  const subUsage = { ...usage, input: 500_000, model: "claude-sonnet-5-5" };
+  const before = result.spend["FAC-9"]!;
+  const running = await ingest(db, [
+    ev(21, { kind: "usage", at: t0 + 43_000, usage: bigUsage, agents: [{ agentId: `${run}-sub`, toolUseId: `${run}-tu-sub`, usage: subUsage }] }),
+  ]);
+  const [sub] = await db.select().from(agents).where(eq(agents.agent_id, `${run}-sub`));
+  assert.equal(sub.status, "running", "a subagent seen only in a usage snapshot stays running");
+  assert.equal(sub.tool_use_id, `${run}-tu-sub`, "the snapshot links the agent to its Agent tool call");
+  assert.ok(running.spend["FAC-9"]! > before + 0.9, "a running subagent counts toward the issue's spend");
+  const stopped = await ingest(db, [
+    ev(22, { kind: "agent_stop", at: t0 + 44_000, agentId: `${run}-sub`, status: "completed", usage: subUsage }),
+  ]);
+  assert.equal(stopped.spend["FAC-9"], running.spend["FAC-9"], "its SubagentStop does not count it twice");
+
   await ingest(db, [
     ev(11, { kind: "stage", at: t0 + 50_000, stage: "waiting", summary: "blocked", question: "Which breakpoint?" }),
   ]);

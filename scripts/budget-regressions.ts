@@ -20,10 +20,10 @@ write(join(repo, ".git/worktrees/w/HEAD"), "ref: refs/heads/factory/TST-1\n");
 write(join(worktree, ".git"), `gitdir: ${join(repo, ".git/worktrees/w")}\n`);
 mkdirSync(join(worktree, "src"), { recursive: true });
 
-function runHook(toolName: string, cwd: string) {
+function runHook(toolName: string, cwd: string, sessionId = "s-main") {
   const started = Date.now();
   const result = spawnSync("bun", [hook], {
-    input: JSON.stringify({ tool_name: toolName, cwd }),
+    input: JSON.stringify({ tool_name: toolName, cwd, session_id: sessionId }),
     env: { ...process.env, HOME: home },
     encoding: "utf8",
   });
@@ -43,6 +43,14 @@ try {
   assert.equal(runHook("mcp__factory-report__report_stage", worktree).code, 0, "report_stage stays allowed");
   write(join(home, "folder/.git/HEAD"), "ref: refs/heads/factory/TST-1\n");
   assert.equal(runHook("Bash", join(home, "folder")).code, 2, "a plain checkout on a factory branch is capped too");
+
+  assert.equal(runHook("Bash", repo, "s-factory").code, 0, "an unknown session on a plain branch passes");
+  write(join(home, ".cache/marshal-factory/sessions/s-factory"), "TST-1");
+  assert.equal(
+    runHook("Bash", repo, "s-factory").code,
+    2,
+    "a subagent in its own non-factory worktree is capped through its session",
+  );
 
   const plain = runHook("Bash", repo);
   assert.equal(plain.code, 0, "a session that is not on a factory branch is never blocked");

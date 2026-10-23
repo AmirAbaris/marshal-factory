@@ -47,6 +47,15 @@ export function sumUsage(transcript: string): Usage {
   return total;
 }
 
+/** The meta file can be caught mid-write; then the agent is counted by id alone until the next snapshot. */
+function toolUseIdFrom(metaPath: string) {
+  try {
+    return (JSON.parse(readFileSync(metaPath, "utf8")) as { toolUseId?: string }).toolUseId;
+  } catch {
+    return undefined;
+  }
+}
+
 export type SubagentTranscript = { agentId: string; toolUseId: string | undefined; usage: Usage };
 
 /**
@@ -61,10 +70,7 @@ export function subagentTranscripts(transcriptPath: string, sessionId: string): 
     .map((name) => {
       const agentId = name.slice("agent-".length, -".jsonl".length);
       const metaPath = join(dir, `agent-${agentId}.meta.json`);
-      const meta = existsSync(metaPath)
-        ? (JSON.parse(readFileSync(metaPath, "utf8")) as { toolUseId?: string })
-        : {};
-      return { agentId, toolUseId: meta.toolUseId, usage: sumUsage(readFileSync(join(dir, name), "utf8")) };
+      return { agentId, toolUseId: toolUseIdFrom(metaPath), usage: sumUsage(readFileSync(join(dir, name), "utf8")) };
     })
     .filter((s) => s.usage.model !== "unknown");
 }
@@ -74,4 +80,12 @@ export function transcriptPathFor(run: { session_id: string; cwd: string | null;
   if (run.transcript_path) return run.transcript_path;
   if (!run.cwd) return undefined;
   return join(homedir(), ".claude/projects", run.cwd.replace(/[/.]/g, "-"), `${run.session_id}.jsonl`);
+}
+
+/** Hooks fired inside a subagent may point at its own transcript; usage starts from the session's. */
+export function mainTranscript(path: string | undefined, sessionId: string) {
+  if (!path) return undefined;
+  const marker = `/${sessionId}/subagents/`;
+  const at = path.indexOf(marker);
+  return at === -1 ? path : `${path.slice(0, at)}/${sessionId}.jsonl`;
 }

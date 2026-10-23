@@ -110,6 +110,10 @@ export const eventSchema = z.discriminatedUnion("kind", [
     // A mid-turn snapshot of the main session's usage, so spend is known before the turn ends.
     kind: z.literal("usage"),
     usage: usageSchema,
+    /** Subagents of the session with their usage so far, so running ones count before SubagentStop. */
+    agents: z
+      .array(z.object({ agentId: z.string().min(1), toolUseId: z.string().optional(), usage: usageSchema }))
+      .optional(),
   }),
   z.object({
     ...base,
