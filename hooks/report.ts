@@ -4,7 +4,8 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { promisify } from "node:util";
-import type { FactoryEvent, Usage } from "../lib/events";
+import { stageReportSchema, type FactoryEvent, type Usage } from "../lib/events";
+import { issueKeyFromBranch, REPORT_STAGE_TOOL } from "../lib/factory";
 
 const run = promisify(execFile);
 
@@ -192,6 +193,12 @@ async function toEvent(
       };
     }
     case "PostToolUse": {
+      if (input.tool_name === REPORT_STAGE_TOOL) {
+        const report = stageReportSchema.safeParse(input.tool_input);
+        if (!report.success) return undefined;
+        const git = await gitContext(str(input.cwd) ?? process.cwd());
+        return { ...base, kind: "stage", ...report.data, issueKey: issueKeyFromBranch(git.branch) };
+      }
       const agentId = str(input.tool_response?.agentId);
       if (input.tool_name !== "Agent" || !input.tool_use_id || !agentId) return undefined;
       return { ...base, kind: "agent_launched", toolUseId: input.tool_use_id, agentId };

@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@hookform/resolvers": "^6.0.0",
+    "@modelcontextprotocol/sdk": "1.32.1",
     "@neon/env": "^1.6.4",
     "@neon/functions": "^0.11.0",
     "@neon/realtime": "0.1.2",

@@ -9,6 +9,45 @@ export const usageSchema = z.object({
 });
 export type Usage = z.infer<typeof usageSchema>;
 
+export const STAGES = [
+  "queued",
+  "triage",
+  "investigating",
+  "implementing",
+  "verifying",
+  "pr",
+  "waiting",
+  "merged",
+  "failed",
+] as const;
+export const stageSchema = z.enum(STAGES);
+export type Stage = z.infer<typeof stageSchema>;
+
+/** What a factory thread passes to `report_stage`; the hook re-parses the same shape from tool_input. */
+export const stageReportShape = {
+  stage: stageSchema.describe("The stage the run just entered."),
+  summary: z
+    .string()
+    .min(1)
+    .max(500)
+    .describe("One or two sentences on what happened. For failed, the reason."),
+  prUrl: z.url().optional().describe("Required for stage pr: the pull request URL."),
+  question: z
+    .string()
+    .min(1)
+    .max(2000)
+    .optional()
+    .describe("Required for stage waiting: the concrete question the human must answer."),
+};
+export const stageReportSchema = z
+  .object(stageReportShape)
+  .refine((r) => r.stage !== "pr" || r.prUrl, { message: "stage pr needs prUrl", path: ["prUrl"] })
+  .refine((r) => r.stage !== "waiting" || r.question, {
+    message: "stage waiting needs question",
+    path: ["question"],
+  });
+export type StageReport = z.infer<typeof stageReportSchema>;
+
 const base = {
   eventId: z.string().min(1),
   sessionId: z.string().min(1),
@@ -55,6 +94,12 @@ export const eventSchema = z.discriminatedUnion("kind", [
     kind: z.literal("turn_stop"),
     usage: usageSchema,
     lastMessage: z.string().max(500).optional(),
+  }),
+  z.object({
+    ...base,
+    kind: z.literal("stage"),
+    ...stageReportShape,
+    issueKey: z.string().optional(),
   }),
   z.object({
     ...base,
