@@ -169,6 +169,7 @@ async function resumeAnswered() {
           stage_at: now,
           stage_summary: `Moved to ${plan.state} in Linear while waiting; not resumed.`,
           question: null,
+          resume_context: null,
           stage_event_id: closed,
           synced_event_id: closed,
           linear_state: plan.state,
@@ -328,7 +329,8 @@ async function toLaunch() {
     .from(issues)
     .where(
       and(
-        or(eq(issues.stage, "queued"), isNotNull(issues.resume_context)),
+        // A waiting issue whose thread died and whose question was answered relaunches too.
+        or(eq(issues.stage, "queued"), and(eq(issues.stage, "waiting"), isNotNull(issues.resume_context))),
         isNull(issues.t3_thread_id),
         isNull(issues.session_id),
       ),
