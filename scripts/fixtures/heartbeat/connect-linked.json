@@ -1,0 +1,17 @@
+{
+  "desired": false,
+  "authenticated": true,
+  "linked": true,
+  "revoked": false,
+  "cloudUserId": "user_test",
+  "relayUrl": "https://relay.t3.codes",
+  "publishAgentActivity": true,
+  "relayClient": {
+    "status": "available",
+    "executablePath": "/opt/homebrew/bin/cloudflared",
+    "source": "path",
+    "version": "2026.10.0"
+  },
+  "linkMode": "managed",
+  "reachability": null
+}
