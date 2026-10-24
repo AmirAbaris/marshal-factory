@@ -1,4 +1,4 @@
-import { jobStagesQuery, parseJobKey, sealOnly } from "@/lib/live-queries";
+import { jobStagesQuery, parseJobKey, sealedResponse } from "@/lib/live-queries";
 
 export async function POST(
   _request: Request,
@@ -8,7 +8,5 @@ export async function POST(
   if (!key) {
     return Response.json({ error: "invalid job key" }, { status: 400 });
   }
-  return Response.json(await sealOnly(jobStagesQuery(key)), {
-    headers: { "Cache-Control": "no-store" },
-  });
+  return sealedResponse(jobStagesQuery(key));
 }

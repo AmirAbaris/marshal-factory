@@ -1,4 +1,4 @@
-import { parseSessionId, sealOnly, sessionEventsQuery } from "@/lib/live-queries";
+import { parseSessionId, sealedResponse, sessionEventsQuery } from "@/lib/live-queries";
 
 export async function POST(
   _request: Request,
@@ -8,7 +8,5 @@ export async function POST(
   if (!sessionId) {
     return Response.json({ error: "invalid session id" }, { status: 400 });
   }
-  return Response.json(await sealOnly(sessionEventsQuery(sessionId)), {
-    headers: { "Cache-Control": "no-store" },
-  });
+  return sealedResponse(sessionEventsQuery(sessionId));
 }

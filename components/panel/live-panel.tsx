@@ -1,14 +1,13 @@
 "use client";
 
-import { useLiveQuery } from "@neon/realtime-react";
-import { useCallback, useMemo, useState } from "react";
+import { useMemo } from "react";
 import type { AgentRow, EventRow, JobRow, RunRow } from "@/db/schema";
 import { Board } from "./board";
 import { boardCards } from "./cards";
 import { attemptBranch } from "@/lib/factory";
 import { groupBy, spendOf } from "./format";
 import { RunDetail } from "./run-detail";
-import { fetchSealed, type Feed } from "./sealed";
+import { useFeed, type Feed } from "./sealed";
 import { Sidebar } from "./sidebar";
 import { StatsStrip } from "./stats-strip";
 import { useAfterHydration } from "./time";
@@ -32,19 +31,9 @@ export function LivePanel({
   agents: Feed<AgentRow>;
   detail: DetailProps | undefined;
 }) {
-  const [jobsQuery] = useState(jobs.sealedQuery);
-  const [runsQuery] = useState(runs.sealedQuery);
-  const [agentsQuery] = useState(agents.sealedQuery);
-  const refreshJobs = useCallback(() => fetchSealed<JobRow>("/api/live/jobs"), []);
-  const refreshRuns = useCallback(() => fetchSealed<RunRow>("/api/live/runs"), []);
-  const refreshAgents = useCallback(() => fetchSealed<AgentRow>("/api/live/agents"), []);
-
-  const liveJobs = useLiveQuery(jobsQuery, { refreshQuery: refreshJobs, initialData: jobs.initialData });
-  const liveRuns = useLiveQuery(runsQuery, { refreshQuery: refreshRuns, initialData: runs.initialData });
-  const liveAgents = useLiveQuery(agentsQuery, { refreshQuery: refreshAgents, initialData: agents.initialData });
-  const jobRows = liveJobs.data ?? jobs.initialData;
-  const runRows = liveRuns.data ?? runs.initialData;
-  const agentRows = liveAgents.data ?? agents.initialData;
+  const { rows: jobRows } = useFeed(jobs, "/api/live/jobs");
+  const { rows: runRows, status } = useFeed(runs, "/api/live/runs");
+  const { rows: agentRows } = useFeed(agents, "/api/live/agents");
 
   const agentsBySession = useMemo(
     () => groupBy(agentRows, (a) => a.session_id),
@@ -67,7 +56,7 @@ export function LivePanel({
         cardCount={cards.length}
         unstagedCount={unstaged.length}
         liveSessions={runRows.filter((r) => r.status === "active").length}
-        connected={liveRuns.status === "live"}
+        status={status}
       />
       <main className="flex min-h-0 min-w-0 flex-col">
         <header className="flex items-center border-b px-5.5 py-3.5">

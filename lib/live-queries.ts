@@ -4,12 +4,19 @@ import { and, asc, desc, eq, getTableColumns, ne } from "drizzle-orm";
 import { db } from "@/db/client";
 import { agents, events, jobs, runs } from "@/db/schema";
 import { assertOwner } from "@/lib/auth/server";
+import { liveUpdates } from "@/lib/live-mode";
 
-export const realtime = createRealtime({
-  secret: process.env.NEON_REALTIME_SECRET!,
-  db: new URL(process.env.DATABASE_URL!).pathname.slice(1),
-  adapter: drizzleAdapter(),
-});
+const createPanelRealtime = () =>
+  createRealtime({
+    secret: process.env.NEON_REALTIME_SECRET!,
+    db: new URL(process.env.DATABASE_URL!).pathname.slice(1),
+    adapter: drizzleAdapter(),
+  });
+
+type SealableQuery = Parameters<ReturnType<typeof createPanelRealtime>["seal"]>[0]["query"];
+
+// A preview build has no Realtime secret, and createRealtime rejects a missing one.
+const realtime = liveUpdates ? createPanelRealtime() : null;
 
 export const RUN_LIMIT = 200;
 export const AGENT_OVERVIEW_LIMIT = 1000;
@@ -87,20 +94,24 @@ export async function runJobKey(sessionId: string) {
 }
 
 /** Runs the query for server rendering and seals it for the browser subscription. */
-export async function load<Q extends Parameters<typeof realtime.seal>[0]["query"]>(
+export async function load<Q extends SealableQuery>(
   query: Q,
 ) {
   await assertOwner();
   const [initialData, sealedQuery] = await Promise.all([
     query,
-    realtime.seal({ query }),
+    realtime ? realtime.seal({ query }) : null,
   ]);
   return { initialData, sealedQuery };
 }
 
-export async function sealOnly(query: Parameters<typeof realtime.seal>[0]["query"]) {
+/** Answers a live route's renewal with a fresh seal of the same query. */
+export async function sealedResponse(query: SealableQuery) {
   await assertOwner();
-  return realtime.seal({ query });
+  if (!realtime) return Response.json({ error: "Live updates are off" }, { status: 404 });
+  return Response.json(await realtime.seal({ query }), {
+    headers: { "Cache-Control": "no-store" },
+  });
 }
 
 const SESSION_ID = /^[\w.:-]{1,128}$/;

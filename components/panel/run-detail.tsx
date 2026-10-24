@@ -1,9 +1,7 @@
 "use client";
 
-import { useLiveQuery } from "@neon/realtime-react";
 import { ExternalLinkIcon, XIcon } from "lucide-react";
 import Link from "next/link";
-import { useCallback, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -15,7 +13,7 @@ import { AgentTree } from "./agent-tree";
 import { EventFeed } from "./event-feed";
 import { formatUsd, runCost, runTitle, shortId } from "./format";
 import { ModelChip } from "./model-chip";
-import { fetchSealed, type Feed } from "./sealed";
+import { useFeed, type Feed } from "./sealed";
 import { StageTimeline } from "./stage-timeline";
 import { Time } from "./time";
 import { STAGE_META } from "./stages";
@@ -38,31 +36,11 @@ export function RunDetail({
   stages: Feed<EventRow>;
 }) {
   const base = `/api/live/runs/${encodeURIComponent(run.session_id)}`;
-  // Server re-renders hand over a fresh sealed object for the same query; keep the first.
-  const [agentsQuery] = useState(agents.sealedQuery);
-  const [eventsQuery] = useState(events.sealedQuery);
-  const [stagesQuery] = useState(stages.sealedQuery);
-  const refreshAgents = useCallback(() => fetchSealed<AgentRow>(`${base}/agents`), [base]);
-  const refreshEvents = useCallback(() => fetchSealed<EventRow>(`${base}/events`), [base]);
-  const refreshStages = useCallback(() => fetchSealed<EventRow>(stagesPath), [stagesPath]);
-
-  const liveAgents = useLiveQuery(agentsQuery, {
-    refreshQuery: refreshAgents,
-    initialData: agents.initialData,
-  });
-  const liveEvents = useLiveQuery(eventsQuery, {
-    refreshQuery: refreshEvents,
-    initialData: events.initialData,
-  });
-  const liveStages = useLiveQuery(stagesQuery, {
-    refreshQuery: refreshStages,
-    initialData: stages.initialData,
-  });
-  const agentRows = liveAgents.data ?? agents.initialData;
+  const { rows: agentRows } = useFeed(agents, `${base}/agents`);
+  const { rows: eventRows } = useFeed(events, `${base}/events`);
+  const { rows: stageRows } = useFeed(stages, stagesPath);
   const stage = job?.stage ?? run.stage;
   const link = job && sourceLink(job);
-  const stageRows = liveStages.data ?? stages.initialData;
-  const eventRows = liveEvents.data ?? events.initialData;
 
   return (
     <aside className="flex min-h-0 flex-col border-l bg-card">

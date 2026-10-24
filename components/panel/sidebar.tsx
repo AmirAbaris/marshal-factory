@@ -1,17 +1,24 @@
 import Link from "next/link";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
+import type { FeedStatus } from "./sealed";
+
+const STATUS: Record<FeedStatus, { dot: string; label: string }> = {
+  live: { dot: "animate-pulse bg-success", label: "Live" },
+  connecting: { dot: "bg-warning", label: "Connecting" },
+  off: { dot: "bg-faint", label: "Live updates off in previews" },
+};
 
 export function Sidebar({
   cardCount,
   unstagedCount,
   liveSessions,
-  connected,
+  status,
 }: {
   cardCount: number;
   unstagedCount: number;
   liveSessions: number;
-  connected: boolean;
+  status: FeedStatus;
 }) {
   return (
     <nav className="flex flex-col gap-1 border-r bg-sidebar px-3 py-4">
@@ -32,13 +39,8 @@ export function Sidebar({
         Other activity <Badge variant="secondary">{unstagedCount}</Badge>
       </a>
       <div className="mt-auto flex items-center gap-2 px-2.5 py-2 text-muted-foreground">
-        <span
-          className={cn(
-            "size-1.5 rounded-full",
-            connected ? "animate-pulse bg-success" : "bg-warning",
-          )}
-        />
-        {connected ? "Live" : "Connecting"} · {liveSessions} active
+        <span className={cn("size-1.5 shrink-0 rounded-full", STATUS[status].dot)} />
+        {STATUS[status].label} · {liveSessions} active
       </div>
     </nav>
   );
