@@ -1,7 +1,6 @@
 import type { jobs } from "../db/schema";
 import { jobId } from "../lib/sources/shapes";
 
-/** A claimed Linear job as the claim would insert it, for regressions that seed jobs rows. */
 export function linearJob(
   externalId: string,
   key: string,

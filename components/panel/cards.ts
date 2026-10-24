@@ -14,7 +14,6 @@ export type BoardCard = {
   question: string | null;
   prUrl: string | null;
   sourceLink: { label: string; href: string } | null;
-  /** The cap of the current attempt; null for runs the factory never claimed. */
   budgetUsd: number | null;
   answeredAt: Date | null;
   attempt: number;

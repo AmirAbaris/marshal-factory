@@ -206,7 +206,6 @@ async function postComment({ db, client }: LinearDeps, job: Job, id: string, bod
   await client.comment(job.writeback.issueId, id, body);
 }
 
-/** Remembers the Linear state the factory set, so the next pass knows the claim was announced. */
 async function recordState({ db }: LinearDeps, job: Job, state: string, extra: { updated_at?: Date } = {}) {
   await db
     .update(jobs)

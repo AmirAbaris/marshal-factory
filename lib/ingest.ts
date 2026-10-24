@@ -319,7 +319,6 @@ async function applyStage(tx: Tx, e: Extract<FactoryEvent, { kind: "stage" }>) {
 const onCurrentAttempt = (branch: string) =>
   sql`${branch} = case when ${jobs.attempt} > 1 then 'factory/' || ${jobs.key} || '-a' || ${jobs.attempt} else 'factory/' || ${jobs.key} end`;
 
-/** A claimed job follows its runs' stage reports through lib/stages.ts and remembers its latest session. */
 async function applyToJob(tx: Tx, event: FactoryEvent) {
   if (event.kind === "session_start") {
     const key = jobKeyFromBranch(event.branch);

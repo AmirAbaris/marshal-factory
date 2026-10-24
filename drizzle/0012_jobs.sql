@@ -1,5 +1,3 @@
--- Renames issues to jobs and keeps every row. The whole change runs only while the issues table
--- still exists, in one statement, so applying this file again changes nothing.
 DO $$
 BEGIN
   IF to_regclass('public.issues') IS NULL THEN
@@ -21,7 +19,6 @@ BEGIN
   ALTER TABLE "jobs" ADD CONSTRAINT "jobs_pkey" PRIMARY KEY ("id");
   ALTER TABLE "jobs" ADD CONSTRAINT "jobs_id_check" CHECK ("jobs"."id" = "jobs"."source"::text || ':' || "jobs"."external_id");
 
-  -- Every job so far is a FAC issue worked in factory-demo, under the default 5 USD cap.
   ALTER TABLE "jobs" ADD COLUMN "repo" text NOT NULL DEFAULT 'ski043/factory-demo';
   ALTER TABLE "jobs" ALTER COLUMN "repo" DROP DEFAULT;
   ALTER TABLE "jobs" ADD COLUMN "budget_usd" double precision NOT NULL DEFAULT 5;
@@ -59,12 +56,9 @@ BEGIN
   ALTER TABLE "runs" RENAME COLUMN "issue_key" TO "job_key";
   ALTER TABLE "events" RENAME COLUMN "issue_key" TO "job_key";
   ALTER INDEX "events_issue_key_idx" RENAME TO "events_job_key_idx";
-  -- Stored stage events carry the payload field under its new name too, so they still parse.
   UPDATE "events" SET "payload" = ("payload" - 'issueKey') || jsonb_build_object('jobKey', "payload"->'issueKey')
   WHERE "payload" ? 'issueKey';
 
-  -- Every intent that named a Linear issue names its job id, claimed or not, so a stop for an
-  -- issue the factory never claimed still resolves to nothing the same way.
   ALTER TABLE "intents" ADD COLUMN "job_id" text;
   UPDATE "intents" SET "job_id" = 'linear:' || "linear_id" WHERE "linear_id" IS NOT NULL;
   UPDATE "intents" i SET "job_id" = j."id" FROM "jobs" j WHERE i."job_id" IS NULL AND i."issue_key" = j."key";

@@ -30,7 +30,6 @@ export const config = loadConfig();
 
 /** Stages where a thread is working; waiting, pr, merged and failed free the slot. */
 export const IN_FLIGHT: Stage[] = ["queued", "triage", "investigating", "implementing", "verifying"];
-/** Stages a stop applies to; pr counts too: the thread is idle, but it would still get conflict send-backs. */
 const STOPPABLE = STAGES.filter((stage) => canTransition(stage, "failed", "stop"));
 
 const run = promisify(execFile);
@@ -428,7 +427,6 @@ export async function writeBack() {
 
 const GITHUB_REMOTE = /github\.com[/:]([^/]+\/[^/]+?)(?:\.git)?$/;
 
-/** The repository threads launch in: the GitHub origin of the first configured checkout, as owner/name. */
 export async function targetRepo() {
   const checkout = config.factory.repos[0];
   if (!checkout) throw new Error("factory.repos is empty, so there is no repository to claim work for");
@@ -444,8 +442,7 @@ export async function claim({
   repo = targetRepo,
 }: { source?: SourceAdapter<JobSource>; repo?: () => Promise<string> } = {}) {
   const ready: JobDraft[] = await source.ready();
-  // Only resolved when there is work, so a runner with no checkout configured still ticks.
-  const target = ready.length > 0 ? await repo() : undefined;
+  let target: string | undefined;
   return db.transaction(async (tx) => {
     await tx.execute(sql`select pg_advisory_xact_lock(hashtext('marshal-factory linear-poll'))`);
     const [{ count }] = await tx
@@ -456,6 +453,7 @@ export async function claim({
     const claimed: string[] = [];
     for (const draft of ready) {
       if (inFlight >= config.factory.maxInFlight) break;
+      target ??= await repo();
       const now = new Date();
       const inserted = await tx
         .insert(jobs)
@@ -467,7 +465,7 @@ export async function claim({
           title: draft.title,
           url: draft.url,
           description: draft.description,
-          repo: target!,
+          repo: target,
           writeback: draft.writeback,
           source_state: draft.sourceState,
           budget_usd: config.factory.budgetUsd,
@@ -499,9 +497,8 @@ export async function claim({
             title: draft.title,
             url: draft.url,
             description: draft.description,
-            repo: target!,
+            repo: target,
             writeback: draft.writeback,
-            // What the source accumulated, such as its own comment ids, survives the new attempt.
             source_state: sql`${jobs.source_state} || excluded.source_state`,
             budget_usd: config.factory.budgetUsd,
             claimed_at: now,

@@ -11,12 +11,10 @@ import { canTransition, decideStage, type StageMove, type StageRow } from "../li
 try {
   process.loadEnvFile(".env.local");
 } catch {
-  // DATABASE_URL comes from the shell.
 }
 const { db } = await import("../db/client");
 const { events, jobs, runs } = await import("../db/schema");
 
-/** The rules lib/ingest.ts applied before lib/stages.ts: stage_at order, and a thread's report only on the current attempt, never after failed. */
 function legacyApplies(row: StageRow, move: StageMove) {
   if (row.stage_at && move.at < row.stage_at) return false;
   if (move.branch) return move.branch === attemptBranch(row.key, row.attempt) && row.stage !== "failed";
@@ -39,40 +37,39 @@ let rejected = 0;
 let replayed = 0;
 let reclaims = 0;
 const finals = [];
+const reclaimed = (row: StageRow): StageRow => ({ ...row, stage: "queued", stage_at: null, attempt: row.attempt + 1, stage_event_id: null });
+
 for (const job of claimed) {
   const start: StageRow = { key: job.key, stage: "queued", stage_at: null, attempt: 1, stage_event_id: null };
-  // `before` follows the rules ingest used to apply, `after` follows the table.
-  let before = start;
-  let after = start;
+  let asIngested = start;
+  let byTable = start;
   for (const event of history.filter((e) => e.key === job.key)) {
     const payload = event.payload as { stage: Stage; branch?: string };
-    // Retries happen in the claim, not in an event; a later attempt's event implies them.
-    const attempt = attemptOf(job.key, payload.branch ?? event.runBranch) ?? before.attempt;
-    while (attempt > before.attempt) {
+    const attempt = attemptOf(job.key, payload.branch ?? event.runBranch) ?? asIngested.attempt;
+    while (attempt > asIngested.attempt) {
       reclaims++;
-      if (!canTransition(before.stage, "queued", "reclaim")) {
+      if (!canTransition(asIngested.stage, "queued", "reclaim")) {
         rejected++;
-        disagreements.push(`REJECTED ${job.key} attempt ${before.attempt + 1}: reclaim from ${before.stage} is not in the table`);
+        disagreements.push(`REJECTED ${job.key} attempt ${asIngested.attempt + 1}: reclaim from ${asIngested.stage} is not in the table`);
       }
-      const reclaimed = { stage: "queued" as const, stage_at: null, attempt: before.attempt + 1, stage_event_id: null };
-      before = { ...before, ...reclaimed };
-      after = { ...after, ...reclaimed };
+      asIngested = reclaimed(asIngested);
+      byTable = reclaimed(byTable);
     }
     const move: StageMove = { stage: payload.stage, at: event.at, eventId: event.eventId, branch: payload.branch };
-    const applied = legacyApplies(before, move);
-    const verdict = decideStage(before, move);
+    const applied = legacyApplies(asIngested, move);
+    const verdict = decideStage(asIngested, move);
     replayed++;
-    const what = `${job.key} ${event.at.toISOString()} ${before.stage} -> ${move.stage} (${verdict.cause}, event ${event.eventId})`;
+    const what = `${job.key} ${event.at.toISOString()} ${asIngested.stage} -> ${move.stage} (${verdict.cause}, event ${event.eventId})`;
     if (applied && !verdict.apply) {
       rejected++;
       disagreements.push(`REJECTED ${what}: ${verdict.reason}; ingest applied it before`);
     }
     if (!applied && verdict.apply) disagreements.push(`NEWLY ACCEPTED ${what}; ingest ignored it before`);
     const moved = { stage: move.stage, stage_at: move.at, stage_event_id: move.eventId };
-    if (applied) before = { ...before, ...moved };
-    if (decideStage(after, move).apply) after = { ...after, ...moved };
+    if (applied) asIngested = { ...asIngested, ...moved };
+    if (decideStage(byTable, move).apply) byTable = { ...byTable, ...moved };
   }
-  finals.push({ key: job.key, "old rules": `${before.stage} a${before.attempt}`, table: `${after.stage} a${after.attempt}`, "jobs row": `${job.stage} a${job.attempt}` });
+  finals.push({ key: job.key, "old rules": `${asIngested.stage} a${asIngested.attempt}`, table: `${byTable.stage} a${byTable.attempt}`, "jobs row": `${job.stage} a${job.attempt}` });
 }
 
 console.table(finals);

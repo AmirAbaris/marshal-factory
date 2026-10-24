@@ -34,7 +34,6 @@ async function record(source: string, deliveryId: string, event: string, payload
       .returning({ id: schema.webhookDeliveries.delivery_id });
     if (fresh.length === 0) return { duplicate: true, intent: null };
     if (intent) {
-      // A merged PR names no job; the job that holds the PR is the one it is about.
       const [byPr] = intent.prUrl && !intent.jobId
         ? await tx.select({ id: schema.jobs.id }).from(schema.jobs).where(eq(schema.jobs.pr_url, intent.prUrl))
         : [];

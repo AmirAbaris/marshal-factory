@@ -5,7 +5,6 @@ import type { JobId, JobSource, SourceStateDraftOf, SourceStateOf, WritebackOf }
 
 export type { JobId, JobSource } from "./shapes";
 
-/** A jobs row after the registry parsed its source-owned columns; internal code takes only this. */
 export type Job<S extends JobSource = JobSource> = Omit<JobRow, "id" | "source" | "writeback" | "source_state"> & {
   id: JobId<S>;
   source: S;

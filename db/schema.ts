@@ -97,27 +97,18 @@ export const agents = pgTable(
   (t) => [index("agents_session_idx").on(t.session_id)],
 );
 
-/**
- * One unit of work the factory claimed, from whichever source. Ingest moves its stage through
- * lib/stages.ts; the runner and the job's source adapter own the rest.
- */
 export const jobs = pgTable(
   "jobs",
   {
-    /** `<source>:<external_id>`, such as `linear:<issue uuid>`. */
     id: text("id").primaryKey().$type<JobId>(),
     source: jobSource("source").notNull().default("linear"),
     external_id: text("external_id").notNull(),
-    /** The human key, such as FAC-7; branches are factory/<key> and factory/<key>-a<n>. */
     key: text("key").notNull().unique(),
     title: text("title").notNull(),
     url: text("url").notNull(),
     description: text("description"),
-    /** The GitHub repository the job works in, as owner/name. */
     repo: text("repo").notNull(),
-    /** Where the source wants results written; parsed by the source's schema in lib/sources/shapes.ts. */
     writeback: jsonb("writeback").notNull(),
-    /** Source-owned state; only the job's adapter writes it. */
     source_state: jsonb("source_state").notNull(),
     stage: runStage("stage").notNull().default("queued"),
     stage_at: ts("stage_at"),
@@ -137,7 +128,6 @@ export const jobs = pgTable(
     attempt: integer("attempt").notNull().default(1),
     /** Why the previous attempt failed; the next attempt's first message quotes it. */
     previous_failure: text("previous_failure"),
-    /** The USD cap of the current attempt, set from the config when the attempt is claimed. */
     budget_usd: doublePrecision("budget_usd").notNull(),
     /** When the watchdog nudged a stuck run, and in which stage; cleared once the stage moves on. */
     nudged_at: ts("nudged_at"),

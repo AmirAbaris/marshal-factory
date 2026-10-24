@@ -11,7 +11,6 @@ export const sourceFor = <S extends JobSource>(source: S): SourceAdapter<S> => S
 
 export const isJobSource = (name: string): name is JobSource => Object.hasOwn(SOURCES, name);
 
-/** Where jobs rows enter the code: the source's schemas parse what only the source understands. */
 export function parseJob(row: JobRow): Job {
   const shapes = SOURCE_SHAPES[row.source];
   const id = jobId(row.source, row.external_id);

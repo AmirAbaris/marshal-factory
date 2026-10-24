@@ -110,7 +110,6 @@ try {
   const failed = await jobRow();
   await ingest(db, [
     ev(18, { kind: "stage", at: t0 + 64_000, stage: "pr", summary: "late", jobKey, branch: `factory/${jobKey}` }),
-    // Runner events carry no branch; before jobs, these revived a failed attempt.
     { ...ev(19, { kind: "stage", at: t0 + 65_000, stage: "queued", summary: "resumed", jobKey }), eventId: `resume:${run}:c-1` },
     { ...ev(23, { kind: "stage", at: t0 + 66_000, stage: "implementing", summary: "conflict", jobKey }), eventId: `conflict:${run}:h1` },
   ]);

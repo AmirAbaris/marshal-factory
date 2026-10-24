@@ -13,7 +13,6 @@ const allowed: [Stage, Stage, Cause][] = [
   ["triage", "implementing", "report"],
   ["triage", "waiting", "report"],
   ["triage", "failed", "report"],
-  // Threads skip stages and repeat them: FAC-10 and FAC-7 went triage -> verifying, FAC-5 reported implementing twice.
   ["triage", "verifying", "report"],
   ["implementing", "implementing", "report"],
   ["investigating", "implementing", "report"],

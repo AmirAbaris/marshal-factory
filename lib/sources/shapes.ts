@@ -1,8 +1,5 @@
 import { z } from "zod";
 
-// What each source stores on its jobs rows. Client-safe: the panel reads the label, and the
-// registry parses writeback and source_state with these schemas where rows enter it.
-
 export const JOB_SOURCES = ["linear"] as const;
 export type JobSource = (typeof JOB_SOURCES)[number];
 
@@ -10,7 +7,6 @@ const linear = {
   label: "Linear",
   writeback: z.object({ kind: z.literal("linear"), issueId: z.string().min(1) }),
   sourceState: z.object({
-    /** The Linear workflow state the factory last saw or set, such as "In Progress". */
     state: z.string().nullable(),
     labels: z.array(z.string()),
     /** Every comment the factory posted on the issue; anything else on it is a human. */
@@ -37,5 +33,4 @@ export function parseJobId(value: string): { id: JobId; source: JobSource; exter
   return { id: value as JobId, source: source as JobSource, externalId: value.slice(colon + 1) };
 }
 
-/** The link the panel shows for a job's source item, such as "Linear" and the issue URL. */
 export const sourceLink = (job: { source: JobSource; url: string }) => ({ label: SOURCE_SHAPES[job.source].label, href: job.url });
