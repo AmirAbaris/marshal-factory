@@ -86,6 +86,7 @@ export const jobStagesQuery = (jobKey: string) =>
     .limit(STAGE_HISTORY_LIMIT);
 
 export async function runJobKey(sessionId: string) {
+  await assertOwner();
   const [row] = await db
     .select({ jobKey: runs.job_key })
     .from(runs)

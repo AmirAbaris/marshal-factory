@@ -57,10 +57,10 @@ for (const path of ["/", "/api/live/runs"]) {
 }
 
 const matcher = new RegExp(`^${config.matcher[0]}$`);
-for (const path of ["/", "/api/live/runs", "/api/live/jobs/FAC-7/stages", "/machines", "/authors", "/auth/settings"]) {
+for (const path of ["/", "/api/live/runs", "/api/live/jobs/FAC-7/stages", "/machines", "/authors", "/auth/settings", "/auth/sign-in-evil", "/auth/sign-upx", "/auth/forbiddenx", "/favicon.icox", "/faviconxico", "/api/authx", "/_next/staticx", "/auth/sign-in.evil"]) {
   assert.ok(matcher.test(path), `the proxy guards ${path}`);
 }
-for (const path of ["/auth/sign-in", "/auth/sign-up", "/auth/forbidden", "/api/auth/sign-in/email", "/_next/static/chunk.js", "/_next/image", "/favicon.ico"]) {
+for (const path of ["/auth/sign-in", "/auth/sign-in/", "/auth/sign-in.rsc", "/auth/sign-in.segments/_tree.segment.rsc", "/auth/sign-up", "/auth/forbidden", "/api/auth/sign-in/email", "/_next/static/chunk.js", "/_next/image", "/favicon.ico"]) {
   assert.ok(!matcher.test(path), `the proxy lets ${path} through without a session`);
 }
 
@@ -68,12 +68,17 @@ for (const who of ["anonymous", "stranger", "unverified"] as const) {
   signInAs(who);
   await assert.rejects(assertOwner(), /owner session is required/, `the seal refuses ${who}`);
 }
-const { load, runsQuery, sealedResponse } = await import("../lib/live-queries");
+const { load, runJobKey, runsQuery, sealedResponse } = await import("../lib/live-queries");
 signInAs("unverified");
 await assert.rejects(sealedResponse(runsQuery()), /owner session is required/, "an unverified owner gets no sealed query");
 await assert.rejects(load(runsQuery()), /owner session is required/, "an unverified owner gets no rows or sealed query");
+for (const who of ["anonymous", "stranger", "unverified"] as const) {
+  signInAs(who);
+  await assert.rejects(runJobKey("no-such-session"), /owner session is required/, `the job lookup refuses ${who}`);
+}
 signInAs("owner");
 await assertOwner();
+assert.equal(await runJobKey("no-such-session"), undefined, "the owner can look up a run's job");
 const sealed = await sealedResponse(runsQuery());
 assert.equal(sealed.status, 200, "the verified owner gets a sealed query");
 assert.equal(sealed.headers.get("cache-control"), "no-store");
