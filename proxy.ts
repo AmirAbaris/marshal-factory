@@ -9,7 +9,7 @@ const refreshSession = auth.middleware({ loginUrl: LOGIN });
 export async function proxy(request: NextRequest) {
   const { data } = await auth.getSession();
   const user = data?.user;
-  if (user && isOwner(user.email)) return refreshSession(request);
+  if (isOwner(user)) return refreshSession(request);
   const api = request.nextUrl.pathname.startsWith("/api/");
   if (!user) {
     return api
@@ -22,5 +22,5 @@ export async function proxy(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/((?!auth/sign-in|auth/forbidden|api/auth/|_next/static|_next/image|favicon.ico).*)"],
+  matcher: ["/((?!auth/sign-in|auth/sign-up|auth/forbidden|api/auth/|_next/static|_next/image|favicon.ico).*)"],
 };

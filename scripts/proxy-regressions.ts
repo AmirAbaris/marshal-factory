@@ -14,11 +14,12 @@ Object.assign(auth, {
 });
 const { proxy, config } = await import("../proxy");
 
-type Who = "anonymous" | "stranger" | "owner";
-const SESSIONS: Record<Who, { user: { email: string } } | null> = {
+type Who = "anonymous" | "stranger" | "unverified" | "owner";
+const SESSIONS: Record<Who, { user: { email: string; emailVerified: boolean } } | null> = {
   anonymous: null,
-  stranger: { user: { email: "stranger@example.com" } },
-  owner: { user: { email: OWNER.toUpperCase() } },
+  stranger: { user: { email: "stranger@example.com", emailVerified: true } },
+  unverified: { user: { email: OWNER, emailVerified: false } },
+  owner: { user: { email: OWNER.toUpperCase(), emailVerified: true } },
 };
 function signInAs(who: Who) {
   Object.assign(auth, { getSession: async () => ({ data: SESSIONS[who], error: null }) });
@@ -38,13 +39,16 @@ assert.equal(anonymousSeal.status, 401, "a live route without a session is unaut
 assert.deepEqual(await anonymousSeal.json(), { error: "Unauthorized" });
 assert.equal(anonymousSeal.headers.get(REFRESHED), null);
 
-const strangerPage = await request("stranger", "/");
-assert.equal(strangerPage.status, 403, "a non-owner page request is forbidden");
-assert.equal(strangerPage.headers.get("x-middleware-rewrite"), "http://localhost:3000/auth/forbidden", "a non-owner sees the forbidden page");
+for (const who of ["stranger", "unverified"] as const) {
+  const page = await request(who, "/");
+  assert.equal(page.status, 403, `a page request from the ${who} account is forbidden`);
+  assert.equal(page.headers.get("x-middleware-rewrite"), "http://localhost:3000/auth/forbidden", `the ${who} account sees the forbidden page`);
+  assert.equal(page.headers.get(REFRESHED), null);
 
-const strangerSeal = await request("stranger", "/api/live/runs", "POST");
-assert.equal(strangerSeal.status, 403, "a non-owner live route request is forbidden");
-assert.deepEqual(await strangerSeal.json(), { error: "Forbidden" });
+  const seal = await request(who, "/api/live/runs", "POST");
+  assert.equal(seal.status, 403, `a live route request from the ${who} account is forbidden`);
+  assert.deepEqual(await seal.json(), { error: "Forbidden" });
+}
 
 for (const path of ["/", "/api/live/runs"]) {
   const response = await request("owner", path, path.startsWith("/api/") ? "POST" : "GET");
@@ -56,15 +60,22 @@ const matcher = new RegExp(`^${config.matcher[0]}$`);
 for (const path of ["/", "/api/live/runs", "/api/live/jobs/FAC-7/stages", "/machines", "/authors", "/auth/settings"]) {
   assert.ok(matcher.test(path), `the proxy guards ${path}`);
 }
-for (const path of ["/auth/sign-in", "/auth/forbidden", "/api/auth/sign-in/email", "/_next/static/chunk.js", "/_next/image", "/favicon.ico"]) {
+for (const path of ["/auth/sign-in", "/auth/sign-up", "/auth/forbidden", "/api/auth/sign-in/email", "/_next/static/chunk.js", "/_next/image", "/favicon.ico"]) {
   assert.ok(!matcher.test(path), `the proxy lets ${path} through without a session`);
 }
 
-for (const who of ["anonymous", "stranger"] as const) {
+for (const who of ["anonymous", "stranger", "unverified"] as const) {
   signInAs(who);
   await assert.rejects(assertOwner(), /owner session is required/, `the seal refuses ${who}`);
 }
+const { load, runsQuery, sealedResponse } = await import("../lib/live-queries");
+signInAs("unverified");
+await assert.rejects(sealedResponse(runsQuery()), /owner session is required/, "an unverified owner gets no sealed query");
+await assert.rejects(load(runsQuery()), /owner session is required/, "an unverified owner gets no rows or sealed query");
 signInAs("owner");
 await assertOwner();
+const sealed = await sealedResponse(runsQuery());
+assert.equal(sealed.status, 200, "the verified owner gets a sealed query");
+assert.equal(sealed.headers.get("cache-control"), "no-store");
 
 console.log("proxy regressions passed");

@@ -9,5 +9,5 @@ export const auth = createNeonAuth({
 
 export const assertOwner = cache(async () => {
   const { data } = await auth.getSession();
-  if (!isOwner(data?.user?.email)) throw new Error("an owner session is required");
+  if (!isOwner(data?.user)) throw new Error("an owner session is required");
 });

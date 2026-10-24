@@ -2,6 +2,7 @@
 
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useRouter } from "next/navigation";
+import { useState } from "react";
 import { Controller, useForm } from "react-hook-form";
 import { z } from "zod";
 import { Button } from "@/components/ui/button";
@@ -9,46 +10,61 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Field, FieldError, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { authClient } from "@/lib/auth/client";
+import { attempt } from "./attempt";
+import { VerifyEmailForm } from "./verify-email-form";
 
-const schema = z.object({
-  email: z.email("Enter a valid email address"),
-  password: z.string().min(1, "Enter your password"),
-});
+type Credentials = { email: string; password: string };
 
-type Credentials = z.infer<typeof schema>;
+const MODES = {
+  "sign-in": {
+    description: "Sign in with the owner account.",
+    submit: "Sign in",
+    pending: "Signing in",
+    passwordAutoComplete: "current-password",
+    password: z.string().min(1, "Enter your password"),
+    call: (credentials: Credentials) => authClient.signIn.email(credentials),
+  },
+  "sign-up": {
+    description: "Create the owner account. You confirm the email with a code next.",
+    submit: "Create account",
+    pending: "Creating account",
+    passwordAutoComplete: "new-password",
+    password: z.string().min(8, "Use at least 8 characters"),
+    call: (credentials: Credentials) => authClient.signUp.email({ ...credentials, name: credentials.email }),
+  },
+} as const;
 
-// The Neon client throws on an HTTP error even though Better Auth documents a returned error.
-async function signIn(credentials: Credentials) {
-  try {
-    const { error } = await authClient.signIn.email(credentials);
-    return error ? (error.message ?? "Sign-in failed") : null;
-  } catch (error) {
-    return error instanceof Error ? error.message : "Sign-in failed";
-  }
-}
-
-export function SignInForm() {
+export function CredentialsForm({ mode }: { mode: keyof typeof MODES }) {
+  const config = MODES[mode];
   const router = useRouter();
+  const [verifying, setVerifying] = useState<string | null>(null);
   const form = useForm<Credentials>({
-    resolver: zodResolver(schema),
+    resolver: zodResolver(z.object({ email: z.email("Enter a valid email address"), password: config.password })),
     defaultValues: { email: "", password: "" },
   });
 
   async function onSubmit(credentials: Credentials) {
-    const failure = await signIn(credentials);
-    if (failure) {
-      form.setError("root", { message: failure });
+    const failed = await attempt(() => config.call(credentials), `${config.submit} failed`);
+    if (failed && !failed.unverified) {
+      form.setError("root", { message: failed.message });
+      return;
+    }
+    // A new account, or a sign-in the server refused for an unconfirmed email, has just been sent a code.
+    if (failed || mode === "sign-up") {
+      setVerifying(credentials.email);
       return;
     }
     router.replace("/");
     router.refresh();
   }
 
+  if (verifying) return <VerifyEmailForm email={verifying} />;
+
   return (
     <Card className="w-full max-w-sm">
       <CardHeader>
         <CardTitle>Marshal Factory</CardTitle>
-        <CardDescription>Sign in with the owner account.</CardDescription>
+        <CardDescription>{config.description}</CardDescription>
       </CardHeader>
       <CardContent>
         <form onSubmit={form.handleSubmit(onSubmit)} noValidate>
@@ -74,7 +90,7 @@ export function SignInForm() {
                     {...field}
                     id="password"
                     type="password"
-                    autoComplete="current-password"
+                    autoComplete={config.passwordAutoComplete}
                     aria-invalid={fieldState.invalid}
                   />
                   <FieldError errors={[fieldState.error]} />
@@ -83,7 +99,7 @@ export function SignInForm() {
             />
             <FieldError errors={[form.formState.errors.root]} />
             <Button type="submit" disabled={form.formState.isSubmitting}>
-              {form.formState.isSubmitting ? "Signing in" : "Sign in"}
+              {form.formState.isSubmitting ? config.pending : config.submit}
             </Button>
           </FieldGroup>
         </form>
