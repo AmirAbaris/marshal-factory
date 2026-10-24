@@ -31,23 +31,51 @@ export class LinearError extends Error {
   }
 }
 
-/** Linear stores a comment under the id we pass, so a replayed create fails instead of duplicating. */
+/** Linear stores a create under the id we pass, so a replayed create fails instead of duplicating. */
 export function commentId(...parts: string[]) {
   const hex = createHash("sha256").update(`marshal-factory\n${parts.join("\n")}`).digest("hex");
   const variant = ((parseInt(hex[16]!, 16) & 0x3) | 0x8).toString(16);
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-${variant}${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
 }
 
-export function linearClient(apiKey: string) {
+const ATTEMPTS = 3;
+const BACKOFF_MS = 250;
+
+const realFetch: typeof fetch = (input, init) => {
+  forbidInTest("the Linear API");
+  return fetch(input, init);
+};
+
+export type LinearOptions = { fetch?: typeof fetch; sleep?: (ms: number) => Promise<void> };
+
+// A reset can arrive after Linear applied the write, so every mutation must converge when replayed.
+export function linearClient(apiKey: string, { fetch: fetchImpl = realFetch, sleep = (ms) => new Promise((r) => setTimeout(r, ms)) }: LinearOptions = {}) {
+  async function withRetries(send: () => Promise<Response>) {
+    for (let attempt = 1; ; attempt++) {
+      let res: Response | undefined;
+      try {
+        res = await send();
+      } catch (error) {
+        if (attempt === ATTEMPTS) throw error;
+      }
+      if (res && (attempt === ATTEMPTS || (res.status < 500 && res.status !== 429))) return res;
+      await sleep(BACKOFF_MS * 2 ** (attempt - 1) * (0.5 + Math.random()));
+    }
+  }
+
   async function gql<T>(query: string, variables: Record<string, unknown>, schema: z.ZodType<T>) {
-    forbidInTest("the Linear API");
-    const res = await fetch(ENDPOINT, {
-      method: "POST",
-      headers: { authorization: apiKey, "content-type": "application/json" },
-      body: JSON.stringify({ query, variables }),
-      signal: AbortSignal.timeout(TIMEOUT_MS),
-    });
-    const json = (await res.json()) as {
+    const body = JSON.stringify({ query, variables });
+    const res = await withRetries(() =>
+      fetchImpl(ENDPOINT, {
+        method: "POST",
+        headers: { authorization: apiKey, "content-type": "application/json" },
+        body,
+        signal: AbortSignal.timeout(TIMEOUT_MS),
+      }),
+    );
+    const json = (await res.json().catch(() => {
+      throw new LinearError(`Linear answered ${res.status}`, undefined);
+    })) as {
       data?: unknown;
       errors?: { message: string; extensions?: { userPresentableMessage?: string; code?: string } }[];
     };
@@ -169,24 +197,35 @@ export function linearClient(apiKey: string) {
 
     /** The team's label of that name, or a workspace label, created on the team if neither exists. */
     async labelId(teamId: string, name: string) {
-      const data = await gql(
-        `query($name: String!) { issueLabels(filter: { name: { eqIgnoreCase: $name } }) { nodes { id team { id } } } }`,
-        { name },
-        z.object({
-          issueLabels: z.object({
-            nodes: z.array(z.object({ id: z.string(), team: z.object({ id: z.string() }).nullable() })),
+      const find = async () => {
+        const data = await gql(
+          `query($name: String!) { issueLabels(filter: { name: { eqIgnoreCase: $name } }) { nodes { id team { id } } } }`,
+          { name },
+          z.object({
+            issueLabels: z.object({
+              nodes: z.array(z.object({ id: z.string(), team: z.object({ id: z.string() }).nullable() })),
+            }),
           }),
-        }),
-      );
-      const found =
-        data.issueLabels.nodes.find((l) => l.team?.id === teamId) ?? data.issueLabels.nodes.find((l) => !l.team);
-      if (found) return found.id;
-      const created = await gql(
-        `mutation($input: IssueLabelCreateInput!) { issueLabelCreate(input: $input) { issueLabel { id } } }`,
-        { input: { name, teamId, color: "#eb5757" } },
-        z.object({ issueLabelCreate: z.object({ issueLabel: z.object({ id: z.string() }) }) }),
-      );
-      return created.issueLabelCreate.issueLabel.id;
+        );
+        return (data.issueLabels.nodes.find((l) => l.team?.id === teamId) ?? data.issueLabels.nodes.find((l) => !l.team))?.id;
+      };
+      const found = await find();
+      if (found) return found;
+      const id = commentId("label", teamId, name.toLowerCase());
+      try {
+        await gql(
+          `mutation($input: IssueLabelCreateInput!) { issueLabelCreate(input: $input) { success } }`,
+          { input: { id, name, teamId, color: "#eb5757" } },
+          z.object({ issueLabelCreate: z.object({ success: z.literal(true) }) }),
+        );
+        return id;
+      } catch (error) {
+        if (error instanceof LinearError && error.code === "conflict") {
+          const existing = await find();
+          if (existing) return existing;
+        }
+        throw error;
+      }
     },
 
     /** Returns false when a comment with this id already exists. */
