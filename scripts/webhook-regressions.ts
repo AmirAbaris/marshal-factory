@@ -1,7 +1,13 @@
 import "./test-guard";
 import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
-import { githubIntent, linearIntent, verifyGithub, verifyLinear } from "../lib/webhooks";
+import { sourceFor } from "../lib/sources";
+import { githubIntent, verifyGithub } from "../lib/webhooks";
+
+const { webhook } = sourceFor("linear");
+if (!webhook) throw new Error("the linear source has no webhook");
+const headers = (signature: string | null) => new Headers(signature ? { "linear-signature": signature } : {});
+const verifyLinear = (raw: string, signature: string | null, secret: string, at: number) => webhook.verify(raw, headers(signature), secret, at);
 
 const secret = "s3cret";
 const sign = (body: string) => createHmac("sha256", secret).update(body).digest("hex");
@@ -17,6 +23,7 @@ assert.equal(verifyGithub("{}", `sha256=${sign("{}")}`, secret).ok, true);
 assert.equal(verifyGithub("{}", sign("{}"), secret).ok, false, "GitHub signatures need the sha256= prefix");
 
 const opts = { teamKey: "FAC", label: "factory" };
+const linearIntent = (body: unknown, scope: typeof opts) => webhook.intent(body, scope);
 const issue = (over: Record<string, unknown> = {}, updatedFrom?: Record<string, unknown>) => ({
   action: "update",
   type: "Issue",
@@ -49,6 +56,16 @@ assert.deepEqual(
   linearIntent({ action: "create", type: "Comment", data: { id: "c1", issueId: "i1", body: "1: (b)" } }, opts),
   { kind: "answer", linearId: "i1" },
 );
+
+const delivered = JSON.stringify({ ...issue({}, { labelIds: [] }), webhookTimestamp: now - 1_000 });
+assert.deepEqual(verifyLinear(delivered, sign(delivered), secret, now), { ok: true }, "a signed delivery passes the source's webhook");
+assert.deepEqual(
+  webhook.intent(JSON.parse(delivered), opts),
+  { kind: "claim", issueKey: "FAC-11", linearId: "i1" },
+  "and the source's webhook turns it into the claim intent",
+);
+assert.equal(webhook.deliveryHeader, "Linear-Delivery");
+assert.equal(webhook.eventHeader, "Linear-Event");
 
 assert.deepEqual(
   githubIntent("pull_request", { action: "closed", pull_request: { html_url: "https://g/p/1", merged: true } }),

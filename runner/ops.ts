@@ -15,7 +15,7 @@ import { claimConflict, conflictMessage, unclaimedRunsWithPr } from "../lib/conf
 import { attemptBranch } from "../lib/factory";
 import { nudgeMessage, watch, type ThreadState } from "../lib/watchdog";
 import { forbidInTest } from "../lib/test-mode";
-import { DELETED } from "../lib/webhooks";
+import { DELETED } from "../lib/sources/linear";
 import { runWithInput } from "../lib/exec";
 import { bindingOf, canReclaimSql, PENDING, stopDeliverableSql } from "./binding";
 import {
