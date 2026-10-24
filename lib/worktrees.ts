@@ -6,6 +6,8 @@ import { z } from "zod";
 import type { JobRow } from "../db/schema";
 import { planCleanup, type BranchState } from "./cleanup";
 import { attemptBranch, jobKeyFromBranch } from "./factory";
+import type { RepoName } from "./github/app";
+import { github } from "./github/pulls";
 
 type ClaimedJob = Pick<JobRow, "key" | "attempt" | "stage" | "stage_at" | "claimed_at">;
 
@@ -54,16 +56,18 @@ export async function linkedWorktrees(repo: string) {
   return byBranch;
 }
 
-const prSchema = z.array(
-  z.object({ state: z.string(), headRefOid: z.string(), mergedAt: z.string().nullable(), closedAt: z.string().nullable() }),
-);
+const GITHUB_REMOTE = /github\.com[/:]([^/]+\/[^/]+?)(?:\.git)?$/;
 
-async function outcomeOf(repo: string, branch: string, job: ClaimedJob | undefined, head: string | null) {
-  const prs = prSchema.parse(
-    JSON.parse(await sh("gh", ["pr", "list", "--head", branch, "--state", "all", "--json", "state,headRefOid,mergedAt,closedAt"], repo)),
-  );
-  const merged = prs.find((p) => p.state === "MERGED");
-  const mergedAtHead = Boolean(merged && head && merged.headRefOid === head);
+export async function checkoutRepo(checkout: string): Promise<RepoName> {
+  const repo = GITHUB_REMOTE.exec(await sh("git", ["remote", "get-url", "origin"], checkout))?.[1];
+  if (!repo) throw new Error(`${checkout} has no GitHub origin`);
+  return repo as RepoName;
+}
+
+async function outcomeOf(repo: RepoName, branch: string, job: ClaimedJob | undefined, head: string | null) {
+  const prs = await github.pullsForHead(repo, branch);
+  const merged = prs.find((p) => p.state === "merged");
+  const mergedAtHead = Boolean(merged && head && merged.headSha === head);
   // A claimed job's own stage decides; a merged PR on its branch does not end a run that is still going.
   // An earlier attempt's branch is finished once the job was claimed again.
   if (job && branch !== attemptBranch(job.key, job.attempt)) {
@@ -73,9 +77,9 @@ async function outcomeOf(repo: string, branch: string, job: ClaimedJob | undefin
     const outcome = job.stage === "merged" ? "merged" : job.stage === "failed" ? "failed" : "open";
     return { outcome: outcome as "merged" | "failed" | "open", outcomeAt: job.stage_at, mergedAtHead };
   }
-  if (merged) return { outcome: "merged" as const, outcomeAt: new Date(merged.mergedAt!), mergedAtHead };
-  const closed = prs.find((p) => p.state === "CLOSED");
-  if (closed) return { outcome: "failed" as const, outcomeAt: new Date(closed.closedAt!), mergedAtHead };
+  if (merged) return { outcome: "merged" as const, outcomeAt: merged.mergedAt, mergedAtHead };
+  const closed = prs.find((p) => p.state === "closed");
+  if (closed) return { outcome: "failed" as const, outcomeAt: closed.closedAt, mergedAtHead };
   return { outcome: prs.length ? ("open" as const) : ("unknown" as const), outcomeAt: null, mergedAtHead };
 }
 
@@ -106,7 +110,8 @@ export async function cleanupRepo(
   { now = new Date(), dryRun = false } = {},
 ): Promise<CleanupReport> {
   const report: CleanupReport = { removed: [], held: [], archive: [] };
-  const [trees, threads, branchList] = await Promise.all([
+  const [remote, trees, threads, branchList] = await Promise.all([
+    checkoutRepo(repo),
     linkedWorktrees(repo),
     projectThreads(repo),
     sh("git", ["branch", "--list", "factory/*", "--format=%(refname:short)"], repo),
@@ -118,57 +123,62 @@ export async function cleanupRepo(
   for (const branch of branches) {
     const key = jobKeyFromBranch(branch);
     if (!key) continue;
-    if (branch === checkedOut) {
-      report.held.push({ key, reason: "checked out in the main repo" });
-      continue;
-    }
-    const worktreePath = trees.get(branch) ?? null;
-    const branchThreads = threads.filter(
-      (t) => t.branch === branch || (worktreePath !== null && t.worktreePath === worktreePath),
-    );
-    const local = localBranches.has(branch);
-    const head = local ? await sh("git", ["rev-parse", branch], repo) : null;
-    const state: BranchState = {
-      key,
-      branch,
-      worktreePath,
-      localBranch: local,
-      ...(await outcomeOf(repo, branch, jobsByKey.get(key), head)),
-      dirtyFiles: worktreePath && existsSync(worktreePath) ? await countLines("git", ["status", "--porcelain"], worktreePath) : 0,
-      unpushedCommits: local ? await countLines("git", ["rev-list", branch, "--not", "--remotes"], repo) : 0,
-      threadRunning: branchThreads.some((t) => t.running),
-    };
-    const plan = planCleanup(state, now, graceDays);
-    if (plan.kind === "hold") report.held.push({ key, reason: plan.reason });
-    if (plan.kind === "remove" && dryRun) {
-      report.removed.push({ key, worktree: worktreePath, freedKb: worktreePath && existsSync(worktreePath) ? await sizeKb(worktreePath) : 0 });
-    } else if (plan.kind === "remove") {
-      let freedKb = 0;
-      if (worktreePath) {
-        if (existsSync(worktreePath)) freedKb = await sizeKb(worktreePath);
-        try {
-          await sh("git", ["worktree", "remove", "--force", worktreePath], repo);
-        } catch (error) {
-          report.held.push({ key, reason: `git worktree remove failed: ${(error as Error).message.split("\n")[0]}` });
-          continue;
-        }
-        // Git let go of it; ignored build output can still keep the directory alive.
-        if (existsSync(worktreePath)) rmSync(worktreePath, { recursive: true, force: true });
-        await sh("git", ["worktree", "prune"], repo);
+    // One branch failing (GitHub, git) holds just that branch; the rest of the repo is still cleaned.
+    try {
+      if (branch === checkedOut) {
+        report.held.push({ key, reason: "checked out in the main repo" });
+        continue;
       }
-      if (local) {
-        try {
-          await sh("git", ["branch", "-D", branch], repo);
-        } catch (error) {
-          report.held.push({ key, reason: `git branch -D failed: ${(error as Error).message.split("\n")[0]}` });
-          continue;
+      const worktreePath = trees.get(branch) ?? null;
+      const branchThreads = threads.filter(
+        (t) => t.branch === branch || (worktreePath !== null && t.worktreePath === worktreePath),
+      );
+      const local = localBranches.has(branch);
+      const head = local ? await sh("git", ["rev-parse", branch], repo) : null;
+      const state: BranchState = {
+        key,
+        branch,
+        worktreePath,
+        localBranch: local,
+        ...(await outcomeOf(remote, branch, jobsByKey.get(key), head)),
+        dirtyFiles: worktreePath && existsSync(worktreePath) ? await countLines("git", ["status", "--porcelain"], worktreePath) : 0,
+        unpushedCommits: local ? await countLines("git", ["rev-list", branch, "--not", "--remotes"], repo) : 0,
+        threadRunning: branchThreads.some((t) => t.running),
+      };
+      const plan = planCleanup(state, now, graceDays);
+      if (plan.kind === "hold") report.held.push({ key, reason: plan.reason });
+      if (plan.kind === "remove" && dryRun) {
+        report.removed.push({ key, worktree: worktreePath, freedKb: worktreePath && existsSync(worktreePath) ? await sizeKb(worktreePath) : 0 });
+      } else if (plan.kind === "remove") {
+        let freedKb = 0;
+        if (worktreePath) {
+          if (existsSync(worktreePath)) freedKb = await sizeKb(worktreePath);
+          try {
+            await sh("git", ["worktree", "remove", "--force", worktreePath], repo);
+          } catch (error) {
+            report.held.push({ key, reason: `git worktree remove failed: ${(error as Error).message.split("\n")[0]}` });
+            continue;
+          }
+          // Git let go of it; ignored build output can still keep the directory alive.
+          if (existsSync(worktreePath)) rmSync(worktreePath, { recursive: true, force: true });
+          await sh("git", ["worktree", "prune"], repo);
         }
+        if (local) {
+          try {
+            await sh("git", ["branch", "-D", branch], repo);
+          } catch (error) {
+            report.held.push({ key, reason: `git branch -D failed: ${(error as Error).message.split("\n")[0]}` });
+            continue;
+          }
+        }
+        report.removed.push({ key, worktree: worktreePath, freedKb });
       }
-      report.removed.push({ key, worktree: worktreePath, freedKb });
-    }
-    const finished = plan.kind === "remove" || plan.reason === "already clean";
-    if (finished) {
-      for (const t of branchThreads) if (!t.archived) report.archive.push({ key, threadId: t.threadId });
+      const finished = plan.kind === "remove" || plan.reason === "already clean";
+      if (finished) {
+        for (const t of branchThreads) if (!t.archived) report.archive.push({ key, threadId: t.threadId });
+      }
+    } catch (error) {
+      report.held.push({ key, reason: `cleanup failed: ${(error as Error).message.split("\n")[0]}` });
     }
   }
   return report;

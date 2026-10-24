@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { createHmac, randomUUID } from "node:crypto";
+import { readAppFile } from "../lib/github/app";
 
 // Exercises the deployed webhook routes: a signed GitHub merge for a throwaway non-factory PR,
 // its replay, and bad signatures on both routes.
@@ -15,7 +16,7 @@ async function github(body: object, delivery: string, signature?: string) {
       "content-type": "application/json",
       "x-github-event": "pull_request",
       "x-github-delivery": delivery,
-      "x-hub-signature-256": signature ?? `sha256=${sign(process.env.GITHUB_WEBHOOK_SECRET!, raw)}`,
+      "x-hub-signature-256": signature ?? `sha256=${sign(process.env.GITHUB_APP_WEBHOOK_SECRET || readAppFile().webhook_secret, raw)}`,
     },
     body: raw,
   });

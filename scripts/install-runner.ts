@@ -31,7 +31,7 @@ if (process.argv.includes("--uninstall")) {
 }
 
 // launchd starts with a bare PATH, so carry the directories of every tool the runner calls.
-const tools = ["bun", "git", "gh"].map(which);
+const tools = ["bun", "git"].map(which);
 // T3 exports its CLI path only to sessions it starts; the daemon gets it from here.
 // T3 installs its launcher at ~/.t3/bin/t3 and puts it on the login shell's PATH; launchd has neither.
 const t3 = process.env.T3CODE_CLI_PATH ?? [join(homedir(), ".t3/bin/t3")].find(existsSync) ?? which("t3");

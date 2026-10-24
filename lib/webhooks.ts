@@ -13,7 +13,8 @@ export function sameHex(given: string, expected: string) {
 export type Verdict = { ok: true } | { ok: false; reason: string };
 
 /** `X-Hub-Signature-256` is `sha256=` plus the hex HMAC-SHA256 of the raw body. */
-export function verifyGithub(rawBody: string, signature: string | null, secret: string): Verdict {
+export function verifyGithub(rawBody: string, signature: string | null, secret: string | undefined): Verdict {
+  if (!secret) return { ok: false, reason: "no webhook secret configured" };
   if (!signature || !sameHex(signature, `sha256=${hmacHex(secret, rawBody)}`)) {
     return { ok: false, reason: "bad signature" };
   }
