@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { migrateRefusal } from "../lib/migrate-guard";
+import { endpointOf } from "../lib/test-mode";
 
 const PRODUCTION = "postgresql://u:p@ep-odd-field-b95xpf9v.c-2.eu-central-1.aws.neon.tech/neondb?sslmode=require";
 const PRODUCTION_POOLED = "postgresql://u:p@ep-odd-field-b95xpf9v-pooler.c-2.eu-central-1.aws.neon.tech/neondb?sslmode=require";
@@ -26,6 +27,28 @@ assert.equal(
   null,
   "a production build migrates production",
 );
+
+const PRODUCTION_HOST = "ep-odd-field-b95xpf9v.c-2.eu-central-1.aws.neon.tech";
+const GENERIC = "postgresql://u:p@c-2.eu-central-1.aws.neon.tech/neondb?sslmode=require";
+const viaPreview = (url: string) => ({ ...preview, DATABASE_URL_UNPOOLED: url });
+const refusesProduction = (url: string, message: string) =>
+  assert.match(migrateRefusal(viaPreview(url)) ?? "", /DATABASE_URL_UNPOOLED (points at the production branch|names more than one endpoint)/, message);
+
+refusesProduction(PRODUCTION.replace("ep-odd-field-b95xpf9v", "EP-ODD-FIELD-B95XPF9V"), "an uppercase production host counts as production");
+refusesProduction(`${PREVIEW}&host=${PRODUCTION_HOST}`, "a host parameter that overrides the URL host counts");
+refusesProduction(`${PREVIEW}&host=${PRODUCTION_HOST.toUpperCase()}`, "an uppercase host parameter counts");
+refusesProduction(`${GENERIC}&options=endpoint%3Dep-odd-field-b95xpf9v`, "an endpoint option on a generic host counts");
+refusesProduction(`${GENERIC}&options=-c%20search_path%3Dpublic%20endpoint%3DEP-ODD-FIELD-B95XPF9V`, "an endpoint among other options counts");
+refusesProduction(`${PREVIEW}&options=endpoint%3Dep-odd-field-b95xpf9v`, "an endpoint option that disagrees with the host refuses");
+refusesProduction(GENERIC.replace("u:p@", "u:endpoint%3Dep-odd-field-b95xpf9v%3Bp@"), "an endpoint in the password counts");
+assert.match(migrateRefusal(viaPreview(`${PREVIEW}&hostaddr=192.0.2.1`)) ?? "", /hostaddr/, "a hostaddr hides the endpoint, so it refuses");
+assert.match(migrateRefusal(viaPreview("postgresql://u:p@/neondb?sslmode=require")) ?? "", /names no host/, "an empty host would fall back to PGHOST, so it refuses");
+assert.match(migrateRefusal(viaPreview(`${PREVIEW}&host=a.neon.tech,${PRODUCTION_HOST}`)) ?? "", /names more than one endpoint/, "a host list refuses");
+
+assert.equal(endpointOf(PREVIEW.replace("ep-preview-branch-a1b2c3d4", "EP-PREVIEW-BRANCH-A1B2C3D4")), "ep-preview-branch-a1b2c3d4", "endpoints compare in lowercase");
+assert.equal(endpointOf(`${GENERIC}&options=endpoint%3Dep-preview-branch-a1b2c3d4`), "ep-preview-branch-a1b2c3d4");
+assert.equal(migrateRefusal(viaPreview(`${GENERIC}&options=endpoint%3Dep-preview-branch-a1b2c3d4`)), null, "a preview may select its own endpoint by option");
+assert.equal(migrateRefusal(viaPreview(`${PREVIEW}&options=endpoint%3Dep-preview-branch-a1b2c3d4`)), null, "an option that agrees with the host is fine");
 
 function guard(env: Record<string, string>) {
   try {

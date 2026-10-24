@@ -15,8 +15,8 @@ export function migrateRefusal(env: Record<string, string | undefined>): string 
     let endpoint: string;
     try {
       endpoint = endpointOf(url);
-    } catch {
-      return `${name} is not a valid URL`;
+    } catch (error) {
+      return `${name} ${(error as Error).message}`;
     }
     if (PRODUCTION_ENDPOINTS.has(endpoint)) return `${name} points at the production branch (${endpoint}) in a ${target} build`;
   }
