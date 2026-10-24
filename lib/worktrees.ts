@@ -123,57 +123,62 @@ export async function cleanupRepo(
   for (const branch of branches) {
     const key = jobKeyFromBranch(branch);
     if (!key) continue;
-    if (branch === checkedOut) {
-      report.held.push({ key, reason: "checked out in the main repo" });
-      continue;
-    }
-    const worktreePath = trees.get(branch) ?? null;
-    const branchThreads = threads.filter(
-      (t) => t.branch === branch || (worktreePath !== null && t.worktreePath === worktreePath),
-    );
-    const local = localBranches.has(branch);
-    const head = local ? await sh("git", ["rev-parse", branch], repo) : null;
-    const state: BranchState = {
-      key,
-      branch,
-      worktreePath,
-      localBranch: local,
-      ...(await outcomeOf(remote, branch, jobsByKey.get(key), head)),
-      dirtyFiles: worktreePath && existsSync(worktreePath) ? await countLines("git", ["status", "--porcelain"], worktreePath) : 0,
-      unpushedCommits: local ? await countLines("git", ["rev-list", branch, "--not", "--remotes"], repo) : 0,
-      threadRunning: branchThreads.some((t) => t.running),
-    };
-    const plan = planCleanup(state, now, graceDays);
-    if (plan.kind === "hold") report.held.push({ key, reason: plan.reason });
-    if (plan.kind === "remove" && dryRun) {
-      report.removed.push({ key, worktree: worktreePath, freedKb: worktreePath && existsSync(worktreePath) ? await sizeKb(worktreePath) : 0 });
-    } else if (plan.kind === "remove") {
-      let freedKb = 0;
-      if (worktreePath) {
-        if (existsSync(worktreePath)) freedKb = await sizeKb(worktreePath);
-        try {
-          await sh("git", ["worktree", "remove", "--force", worktreePath], repo);
-        } catch (error) {
-          report.held.push({ key, reason: `git worktree remove failed: ${(error as Error).message.split("\n")[0]}` });
-          continue;
-        }
-        // Git let go of it; ignored build output can still keep the directory alive.
-        if (existsSync(worktreePath)) rmSync(worktreePath, { recursive: true, force: true });
-        await sh("git", ["worktree", "prune"], repo);
+    // One branch failing (GitHub, git) holds just that branch; the rest of the repo is still cleaned.
+    try {
+      if (branch === checkedOut) {
+        report.held.push({ key, reason: "checked out in the main repo" });
+        continue;
       }
-      if (local) {
-        try {
-          await sh("git", ["branch", "-D", branch], repo);
-        } catch (error) {
-          report.held.push({ key, reason: `git branch -D failed: ${(error as Error).message.split("\n")[0]}` });
-          continue;
+      const worktreePath = trees.get(branch) ?? null;
+      const branchThreads = threads.filter(
+        (t) => t.branch === branch || (worktreePath !== null && t.worktreePath === worktreePath),
+      );
+      const local = localBranches.has(branch);
+      const head = local ? await sh("git", ["rev-parse", branch], repo) : null;
+      const state: BranchState = {
+        key,
+        branch,
+        worktreePath,
+        localBranch: local,
+        ...(await outcomeOf(remote, branch, jobsByKey.get(key), head)),
+        dirtyFiles: worktreePath && existsSync(worktreePath) ? await countLines("git", ["status", "--porcelain"], worktreePath) : 0,
+        unpushedCommits: local ? await countLines("git", ["rev-list", branch, "--not", "--remotes"], repo) : 0,
+        threadRunning: branchThreads.some((t) => t.running),
+      };
+      const plan = planCleanup(state, now, graceDays);
+      if (plan.kind === "hold") report.held.push({ key, reason: plan.reason });
+      if (plan.kind === "remove" && dryRun) {
+        report.removed.push({ key, worktree: worktreePath, freedKb: worktreePath && existsSync(worktreePath) ? await sizeKb(worktreePath) : 0 });
+      } else if (plan.kind === "remove") {
+        let freedKb = 0;
+        if (worktreePath) {
+          if (existsSync(worktreePath)) freedKb = await sizeKb(worktreePath);
+          try {
+            await sh("git", ["worktree", "remove", "--force", worktreePath], repo);
+          } catch (error) {
+            report.held.push({ key, reason: `git worktree remove failed: ${(error as Error).message.split("\n")[0]}` });
+            continue;
+          }
+          // Git let go of it; ignored build output can still keep the directory alive.
+          if (existsSync(worktreePath)) rmSync(worktreePath, { recursive: true, force: true });
+          await sh("git", ["worktree", "prune"], repo);
         }
+        if (local) {
+          try {
+            await sh("git", ["branch", "-D", branch], repo);
+          } catch (error) {
+            report.held.push({ key, reason: `git branch -D failed: ${(error as Error).message.split("\n")[0]}` });
+            continue;
+          }
+        }
+        report.removed.push({ key, worktree: worktreePath, freedKb });
       }
-      report.removed.push({ key, worktree: worktreePath, freedKb });
-    }
-    const finished = plan.kind === "remove" || plan.reason === "already clean";
-    if (finished) {
-      for (const t of branchThreads) if (!t.archived) report.archive.push({ key, threadId: t.threadId });
+      const finished = plan.kind === "remove" || plan.reason === "already clean";
+      if (finished) {
+        for (const t of branchThreads) if (!t.archived) report.archive.push({ key, threadId: t.threadId });
+      }
+    } catch (error) {
+      report.held.push({ key, reason: `cleanup failed: ${(error as Error).message.split("\n")[0]}` });
     }
   }
   return report;

@@ -18,6 +18,7 @@ const ops = await import("./ops");
 const { launchQueued } = await import("./launch");
 const { recheckScheduler } = await import("./recheck");
 const { everyAtMost, serialQueue } = await import("./queue");
+const { isolated, reconcile } = await import("./reconcile");
 const { stopDeliverable } = await import("./binding");
 type IntentRow = typeof intents.$inferSelect;
 
@@ -58,7 +59,7 @@ async function handle(intent: IntentRow) {
 
 const recheck = recheckScheduler({
   settled: ops.pullRequestsSettled,
-  check: async () => ({ conflicts: await ops.checkPullRequests() }),
+  check: ops.checkPullRequests,
   enqueue: (name, step) => void serial(name, step),
   schedule: (run, ms) => void setTimeout(run, ms),
   now: Date.now,
@@ -101,14 +102,7 @@ async function openIntents() {
   return db.select().from(intents).where(isNull(intents.handled_at)).orderBy(asc(intents.created_at));
 }
 
-/** Everything a missed webhook could have changed, plus the timer's checks. */
-async function reconcile() {
-  return {
-    ...(await tick()),
-    cleaned: await ops.cleanup(),
-    launched: await launchQueued(logWorktree),
-  };
-}
+const startupReconcile = () => reconcile({ tick, cleanup: () => ops.cleanup(), launch: () => launchQueued(logWorktree) });
 
 /**
  * The checks that need no event, every tickSeconds. Claiming is here too because a slot frees up
@@ -116,36 +110,34 @@ async function reconcile() {
  */
 async function tick() {
   // Each check on its own: one failing (Linear or GitHub down) must not skip the others this tick.
-  const each = async <T>(step: () => Promise<T>) =>
-    step().catch((error: unknown) => ({ error: error instanceof Error ? error.message : String(error) }));
   return {
-    claimed: await each(async () => {
+    claimed: await isolated(async () => {
       const claimed = await ops.claim();
       await ops.announceClaims();
       return claimed;
     }),
     // An answer can land before its question reached Linear, and its intent then finds nothing.
-    resumed: await each(ops.resumeAnswered),
+    resumed: await isolated(ops.resumeAnswered),
     // Stops whose webhook never arrived; before deliverStops, so a new stop is messaged this tick.
-    stopsReconciled: await each(() => ops.reconcileStops()),
-    stopsDelivered: await each(() => ops.deliverStops()),
-    pullRequests: await each(ops.checkPullRequests),
-    reconciled: await each(ops.reconcileUsage),
-    overBudget: await each(ops.enforceBudget),
-    watched: await each(ops.watchdog),
-    synced: await each(async () => ops.writeBack()),
+    stopsReconciled: await isolated(() => ops.reconcileStops()),
+    stopsDelivered: await isolated(() => ops.deliverStops()),
+    pullRequests: await isolated(ops.checkPullRequests),
+    reconciled: await isolated(ops.reconcileUsage),
+    overBudget: await isolated(ops.enforceBudget),
+    watched: await isolated(ops.watchdog),
+    synced: await isolated(async () => ops.writeBack()),
   };
 }
 
 if (process.argv.includes("--once")) {
-  await serial("reconcile", reconcile);
+  await serial("reconcile", startupReconcile);
   takeIntents(await openIntents());
   await queue.idle();
   process.exit(0);
 }
 
 log("start", { pid: process.pid, tickSeconds: ops.config.factory.tickSeconds });
-await serial("reconcile", reconcile);
+await serial("reconcile", startupReconcile);
 takeIntents(await openIntents());
 
 const realtime = createRealtime({

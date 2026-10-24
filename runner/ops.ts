@@ -41,30 +41,40 @@ const T3 = process.env.T3CODE_CLI_PATH ?? "t3";
 /**
  * Follows every factory PR: a merged one moves its job to merged, and one that conflicts with
  * main while its job sits in pr sends the thread back to merge main. The conflict is handled
- * once per PR head, so a pass never repeats the request while the thread works on it.
+ * once per PR head, so a pass never repeats the request while the thread works on it. Each PR is
+ * checked on its own: one that fails (an uninstalled repo, a bad URL, a GitHub hiccup) is reported
+ * and the next timer pass retries it, while the rest of this pass goes on.
  */
 export async function checkPullRequests() {
   const open = parseJobs(
     await db
       .select()
       .from(jobs)
-      .where(and(isNotNull(jobs.pr_url), ne(jobs.stage, "merged"))),
+      .where(and(isNotNull(jobs.pr_url), ne(jobs.stage, "merged")))
+      .orderBy(asc(jobs.key)),
   );
   const conflicts: string[] = [];
+  const errors: { key: string; prUrl: string; error: string }[] = [];
+  const each = async (key: string, prUrl: string, step: () => Promise<void>) =>
+    step().catch((error: unknown) => void errors.push({ key, prUrl, error: error instanceof Error ? error.message : String(error) }));
+
   for (const job of open) {
-    const pr = await github.pullRequest(job.pr_url!);
-    if (pr.state === "open" && pr.mergeable === "conflicting" && job.stage === "pr") {
-      if (await sendBackForConflict(job, pr.headSha)) conflicts.push(job.key);
-      continue;
-    }
-    if (pr.state !== "merged") continue;
-    await postMerged(job.key, job.pr_url!, job.session_id ?? runnerEventId("merged", job.external_id));
+    await each(job.key, job.pr_url!, async () => {
+      const pr = await github.pullRequest(job.pr_url!);
+      if (pr.state === "open" && pr.mergeable === "conflicting" && job.stage === "pr") {
+        if (await sendBackForConflict(job, pr.headSha)) conflicts.push(job.key);
+        return;
+      }
+      if (pr.state === "merged") await postMerged(job.key, job.pr_url!, job.session_id ?? runnerEventId("merged", job.external_id));
+    });
   }
 
   for (const run of await unclaimedRunsWithPr(db)) {
-    if ((await github.pullRequest(run.pr_url!)).state === "merged") await postMerged(run.job_key!, run.pr_url!, run.session_id);
+    await each(run.job_key!, run.pr_url!, async () => {
+      if ((await github.pullRequest(run.pr_url!)).state === "merged") await postMerged(run.job_key!, run.pr_url!, run.session_id);
+    });
   }
-  return conflicts;
+  return { conflicts, errors };
 }
 
 /** A merge goes in as a stage event, so the run, the job, the timeline and the write-back all follow it. */
@@ -82,7 +92,7 @@ async function postMerged(jobKey: string, prUrl: string, sessionId: string) {
 }
 
 async function sendBackForConflict(job: Job, head: string) {
-  // Ask T3 first: a CLI error then aborts the pass before anything is claimed.
+  // Ask T3 first: a CLI error then fails this PR's check before anything is claimed.
   const thread = await threads.state(job.t3_thread_id);
   if (!(await claimConflict(db, job.id, head))) return false;
   const release = () => db.update(jobs).set({ conflict_head: job.conflict_head }).where(eq(jobs.id, job.id));
@@ -564,15 +574,27 @@ export async function cleanup(dryRun = false) {
   const all = await db.select().from(jobs);
   const byKey = new Map(all.map((j) => [j.key, j]));
   // One after the other: both edit the same repo's worktree list and refs, and git locks them.
+  // Each on its own, so a repo GitHub or T3 cannot answer for still gets its subagent worktrees cleaned.
   const reports = [];
+  const errors: { repo: string; step: string; error: string }[] = [];
+  const steps = [
+    ["factory", (repo: string) => cleanupRepo(repo, byKey, config.factory.cleanupGraceDays, { dryRun })],
+    ["subagents", (repo: string) => cleanupSubagentWorktrees(repo, config.factory.subagentIdleHours, { dryRun })],
+  ] as const;
   for (const repo of config.factory.repos) {
-    reports.push(await cleanupRepo(repo, byKey, config.factory.cleanupGraceDays, { dryRun }));
-    reports.push(await cleanupSubagentWorktrees(repo, config.factory.subagentIdleHours, { dryRun }));
+    for (const [step, clean] of steps) {
+      try {
+        reports.push(await clean(repo));
+      } catch (error) {
+        errors.push({ repo, step, error: error instanceof Error ? error.message : String(error) });
+      }
+    }
   }
   return {
     removed: reports.flatMap((r) => r.removed),
     held: reports.flatMap((r) => r.held),
     archive: reports.flatMap((r) => r.archive),
+    errors,
   };
 }
 
