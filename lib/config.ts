@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
+import { inTestMode } from "./test-mode";
 
 export const CONFIG_PATH = join(homedir(), ".config/marshal-factory/config.json");
 
@@ -51,5 +52,13 @@ export function loadLimits(): FactoryLimits {
 }
 
 export function loadConfig(): FactoryConfig {
+  if (inTestMode()) {
+    return configSchema.parse({
+      linearApiKey: "test-only",
+      ingestUrl: "https://ingest.invalid/ingest",
+      secret: "test-only",
+      factory: {},
+    });
+  }
   return configSchema.parse(JSON.parse(readFileSync(CONFIG_PATH, "utf8")));
 }

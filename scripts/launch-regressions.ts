@@ -1,16 +1,22 @@
+import "./test-guard";
 import assert from "node:assert/strict";
 import { eq } from "drizzle-orm";
 
-process.loadEnvFile(".env.local");
 const { db } = await import("../db/client");
 const { issues } = await import("../db/schema");
-const { bindThread, claimLaunch, deliverStops, pendingLaunches, reconcileStops, releaseLaunch } = await import("../runner/ops");
+const { bindThread, claimLaunch, deliverStops, pendingLaunches, reconcileStops, linear, releaseLaunch, threads } = await import("../runner/ops");
 const { canReclaim, canReclaimSql, stopDeliverable, stopDeliverableSql } = await import("../runner/binding");
 const { and, sql } = await import("drizzle-orm");
 const { launchEntries, maybeStarted, MaybeStartedError, parseThreadId } = await import("../runner/launch");
 const { runWithInput } = await import("../lib/exec");
 const { everyAtMost, serialQueue } = await import("../runner/queue");
 const { recheckScheduler } = await import("../runner/recheck");
+
+const sent: { threadId: string; message: string }[] = [];
+threads.state = async () => "running";
+threads.send = async (threadId, message) => void sent.push({ threadId, message });
+
+await assert.rejects(linear.team("FAC"), /Linear API was called during a regression run/, "the real Linear client refuses to run in a regression");
 
 const id = `launch-regress-${Date.now()}`;
 const now = new Date();
@@ -47,8 +53,14 @@ try {
     assert.equal(await sqlSays(stopDeliverableSql), cell.delivers, `${cell.name}: SQL agrees on deliverable`);
     assert.equal(canReclaim(row!), cell.reclaim, `${cell.name}: retry claim allowed`);
     assert.equal(await sqlSays(sql`coalesce(${canReclaimSql}, false)`), cell.reclaim, `${cell.name}: SQL agrees on retry claim`);
+    sent.length = 0;
     assert.deepEqual(await deliverStops(id), cell.delivers ? [id] : [], `${cell.name}: deliverStops`);
     assert.deepEqual(await deliverStops(id), [], `${cell.name}: a second deliverStops sends nothing`);
+    assert.deepEqual(
+      sent.map((m) => m.threadId),
+      cell.delivers ? [cell.row.t3_thread_id] : [],
+      `${cell.name}: the stop message reaches the bound thread once`,
+    );
   }
 
   // The guard as the retry claim uses it, inside ON CONFLICT DO UPDATE.
@@ -65,7 +77,9 @@ try {
 
   // Transitions out of "pending, stopped": the thread appears, or recovery finds none.
   await db.update(issues).set({ ...stop, t3_thread_id: "pending:6", stop_sent_to: null }).where(eq(issues.linear_id, id));
+  sent.length = 0;
   assert.deepEqual(await bindThread(id, "mcp:regress-late"), { bound: id, threadId: "mcp:regress-late", stopped: true }, "binding delivers the owed stop at once");
+  assert.deepEqual(sent.map((m) => m.threadId), ["mcp:regress-late"], "to the thread it just bound");
   assert.equal(canReclaim((await db.select().from(issues).where(eq(issues.linear_id, id)))[0]!), true, "and then a retry may claim");
   await db.update(issues).set({ ...stop, t3_thread_id: "pending:7", stop_sent_to: null }).where(eq(issues.linear_id, id));
   await releaseLaunch(id, "pending:7");

@@ -14,6 +14,7 @@ import { cleanupRepo, cleanupSubagentWorktrees } from "../lib/worktrees";
 import { claimConflict, conflictMessage, unclaimedRunsWithPr } from "../lib/conflicts";
 import { attemptBranch } from "../lib/factory";
 import { nudgeMessage, watch, type ThreadState } from "../lib/watchdog";
+import { forbidInTest } from "../lib/test-mode";
 import { DELETED } from "../lib/webhooks";
 import { runWithInput } from "../lib/exec";
 import { bindingOf, canReclaimSql, PENDING, stopDeliverableSql } from "./binding";
@@ -94,6 +95,7 @@ async function postComment(issue: IssueRow, id: string, body: string) {
 const prSchema = z.object({ state: z.string(), mergeable: z.string(), headRefOid: z.string() });
 
 async function prState(url: string) {
+  forbidInTest("gh");
   const { stdout } = await run("gh", ["pr", "view", url, "--json", "state,mergeable,headRefOid"], {
     timeout: 20_000,
   });
@@ -143,7 +145,7 @@ async function postMerged(issueKey: string, prUrl: string, sessionId: string) {
 
 async function sendBackForConflict(issue: IssueRow, head: string) {
   // Ask T3 first: a CLI error then aborts the pass before anything is claimed.
-  const thread = await threadState(issue.t3_thread_id);
+  const thread = await threads.state(issue.t3_thread_id);
   if (!(await claimConflict(db, issue.linear_id, head))) return false;
   const release = () =>
     db.update(issues).set({ conflict_head: issue.conflict_head }).where(eq(issues.linear_id, issue.linear_id));
@@ -162,7 +164,7 @@ async function sendBackForConflict(issue: IssueRow, head: string) {
       });
       return true;
     }
-    await sendToThread(issue.t3_thread_id!, conflictMessage(issue.key, issue.pr_url!));
+    await threads.send(issue.t3_thread_id!, conflictMessage(issue.key, issue.pr_url!));
   } catch (error) {
     await release();
     throw error;
@@ -181,6 +183,7 @@ async function sendBackForConflict(issue: IssueRow, head: string) {
 }
 
 async function postEvent(event: Record<string, unknown>) {
+  forbidInTest("the deployed ingest function");
   const res = await fetch(config.ingestUrl, {
     method: "POST",
     headers: { authorization: `Bearer ${config.secret}`, "content-type": "application/json" },
@@ -191,7 +194,8 @@ async function postEvent(event: Record<string, unknown>) {
 }
 
 /** Gone means T3 no longer has the thread, it is archived, or its worktree left the disk. */
-export async function threadState(threadId: string | null): Promise<ThreadState> {
+async function showThread(threadId: string | null): Promise<ThreadState> {
+  forbidInTest("t3 thread show");
   if (!threadId) return "gone";
   // A launch in progress; the runner records the real id or clears the marker.
   if (bindingOf(threadId) === "pending") return "running";
@@ -217,11 +221,15 @@ export async function threadState(threadId: string | null): Promise<ThreadState>
   return thread.activeRunId ? "running" : "stopped";
 }
 
-const threadAlive = async (threadId: string | null) => (await threadState(threadId)) !== "gone";
+export const threads = {
+  state: showThread,
+  async send(threadId: string, message: string) {
+    forbidInTest("t3 thread send");
+    await runWithInput(T3, ["thread", "send", threadId, "-"], message, 30_000);
+  },
+};
 
-export async function sendToThread(threadId: string, message: string) {
-  await runWithInput(T3, ["thread", "send", threadId, "-"], message, 30_000);
-}
+const threadAlive = async (threadId: string | null) => (await threads.state(threadId)) !== "gone";
 
 /**
  * Hands answers to waiting questions back to the run that asked. The reply ids are claimed in
@@ -265,7 +273,7 @@ export async function resumeAnswered() {
 
     if (alive) {
       try {
-        await sendToThread(issue.t3_thread_id!, resumeMessage(issue.key, plan.question, plan.answer));
+        await threads.send(issue.t3_thread_id!, resumeMessage(issue.key, plan.question, plan.answer));
       } catch (error) {
         await db
           .update(issues)
@@ -315,7 +323,7 @@ export async function watchdog() {
         lastEventAt: lastEventAt ?? issue.updated_at,
         nudgedAt: issue.nudged_at,
         nudgedStage: issue.nudged_stage,
-        thread: await threadState(issue.t3_thread_id),
+        thread: await threads.state(issue.t3_thread_id),
         now,
       },
       config.factory,
@@ -339,7 +347,7 @@ export async function watchdog() {
         .returning({ key: issues.key });
       if (claimed.length === 0) continue;
       try {
-        await sendToThread(issue.t3_thread_id!, nudgeMessage(issue.key, issue.stage, action.idleMinutes));
+        await threads.send(issue.t3_thread_id!, nudgeMessage(issue.key, issue.stage, action.idleMinutes));
       } catch (error) {
         await db
           .update(issues)
@@ -762,8 +770,8 @@ export async function deliverStops(linearId?: string) {
       .returning({ key: issues.key });
     if (!claimed) continue;
     try {
-      if ((await threadState(threadId)) !== "gone") {
-        await sendToThread(
+      if ((await threads.state(threadId)) !== "gone") {
+        await threads.send(
           threadId,
           `Stop working on ${issue.key}. ${issue.stage_summary} Do not push, do not open or update a PR. End the turn now.`,
         );

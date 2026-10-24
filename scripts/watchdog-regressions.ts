@@ -1,3 +1,4 @@
+import "./test-guard";
 import assert from "node:assert/strict";
 import { factorySchema } from "../lib/config";
 import { watch, type WatchInput } from "../lib/watchdog";

@@ -1,7 +1,7 @@
+import "./test-guard";
 import assert from "node:assert/strict";
 import { eq, inArray } from "drizzle-orm";
 
-process.loadEnvFile(".env.local");
 const { db } = await import("../db/client");
 const { agents, events, issues, runs } = await import("../db/schema");
 const { ingest } = await import("../lib/ingest");

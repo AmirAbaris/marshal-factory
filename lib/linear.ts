@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
+import { forbidInTest } from "./test-mode";
 
 const ENDPOINT = "https://api.linear.app/graphql";
 const TIMEOUT_MS = 15_000;
@@ -39,6 +40,7 @@ export function commentId(...parts: string[]) {
 
 export function linearClient(apiKey: string) {
   async function gql<T>(query: string, variables: Record<string, unknown>, schema: z.ZodType<T>) {
+    forbidInTest("the Linear API");
     const res = await fetch(ENDPOINT, {
       method: "POST",
       headers: { authorization: apiKey, "content-type": "application/json" },
