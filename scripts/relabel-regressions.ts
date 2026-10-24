@@ -39,9 +39,9 @@ await adapter.announceClaim(job("retry-cleared", 2));
 assert.deepEqual(names("retry-cleared"), ["bug", "factory"], "a retry claim succeeds when the human already removed factory-failed");
 assert.equal(issueState.get("retry-cleared"), "S:In Progress", "and the issue moves to In Progress");
 
-issueLabels.set("retry-kept", [label("factory"), label("factory-failed")]);
+issueLabels.set("retry-kept", [label("factory"), { id: "workspace:ff", name: "Factory-Failed" }]);
 await adapter.announceClaim(job("retry-kept", 2));
-assert.deepEqual(names("retry-kept"), ["factory"], "a retry claim still removes factory-failed when it is there");
+assert.deepEqual(names("retry-kept"), ["factory"], "a retry claim removes the factory-failed label the issue carries, whatever its id or case");
 
 issueLabels.set("failed-unlabeled", [label("bug")]);
 await adapter.writeBack(job("failed-unlabeled", 1, "failed"), { stage: "failed", eventId: "e-1" });
