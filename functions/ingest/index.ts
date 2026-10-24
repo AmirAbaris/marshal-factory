@@ -5,7 +5,9 @@ import { Pool } from "pg";
 import * as schema from "../../db/schema";
 import { ingestBodySchema } from "../../lib/events";
 import { ingest } from "../../lib/ingest";
-import { githubIntent, linearIntent, verifyGithub, verifyLinear, type IntentDraft } from "../../lib/webhooks";
+import { isJobSource, sourceFor } from "../../lib/sources";
+import type { JobSource } from "../../lib/sources/types";
+import { githubIntent, verifyGithub, type IntentDraft } from "../../lib/webhooks";
 
 const pool = new Pool({ connectionString: process.env.DATABASE_URL, max: 5 });
 attachDatabasePool(pool);
@@ -45,18 +47,20 @@ async function record(source: string, deliveryId: string, event: string, payload
   });
 }
 
-async function linearWebhook(request: Request) {
+async function sourceWebhook(source: JobSource, request: Request) {
+  const { webhook } = sourceFor(source);
+  if (!webhook) return Response.json({ error: "not found" }, { status: 404 });
   const raw = await request.text();
-  const verdict = verifyLinear(raw, request.headers.get("linear-signature"), process.env.LINEAR_WEBHOOK_SECRET!);
+  const verdict = webhook.verify(raw, request.headers, process.env[webhook.secretEnv]!);
   if (!verdict.ok) return Response.json({ error: verdict.reason }, { status: 401 });
-  const deliveryId = request.headers.get("linear-delivery");
-  if (!deliveryId) return Response.json({ error: "missing Linear-Delivery" }, { status: 400 });
+  const deliveryId = request.headers.get(webhook.deliveryHeader);
+  if (!deliveryId) return Response.json({ error: `missing ${webhook.deliveryHeader}` }, { status: 400 });
   const body = JSON.parse(raw) as unknown;
-  const intent = linearIntent(body, {
+  const intent = webhook.intent(body, {
     teamKey: process.env.FACTORY_TEAM_KEY ?? "FAC",
     label: process.env.FACTORY_LABEL ?? "factory",
   });
-  return Response.json(await record("linear", deliveryId, request.headers.get("linear-event") ?? "?", body, intent));
+  return Response.json(await record(source, deliveryId, request.headers.get(webhook.eventHeader) ?? "?", body, intent));
 }
 
 async function githubWebhook(request: Request) {
@@ -82,13 +86,14 @@ async function ingestEvents(request: Request) {
 
 const ROUTES: Record<string, (request: Request) => Promise<Response>> = {
   "/ingest": ingestEvents,
-  "/webhooks/linear": linearWebhook,
   "/webhooks/github": githubWebhook,
 };
 
 const handler = {
   async fetch(request: Request): Promise<Response> {
-    const route = ROUTES[new URL(request.url).pathname];
+    const path = new URL(request.url).pathname;
+    const source = /^\/webhooks\/([^/]+)$/.exec(path)?.[1];
+    const route = ROUTES[path] ?? (source && isJobSource(source) ? (req: Request) => sourceWebhook(source, req) : undefined);
     if (!route || request.method !== "POST") return Response.json({ error: "not found" }, { status: 404 });
     try {
       return await route(request);

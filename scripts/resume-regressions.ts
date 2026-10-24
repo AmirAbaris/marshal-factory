@@ -4,9 +4,8 @@ import { eq } from "drizzle-orm";
 
 const { db } = await import("../db/client");
 const { issues } = await import("../db/schema");
-const { claimReplies, planResume, resumeCommentId, stageCommentId, claimCommentId } = await import(
-  "../lib/resume"
-);
+const { claimReplies } = await import("../lib/resume");
+const { planResume, resumeCommentId, stageCommentId, claimCommentId } = await import("../lib/sources/linear");
 
 const id = `resume-regress-${Date.now()}`;
 const stageEventId = "evt-waiting";

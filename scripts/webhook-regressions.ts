@@ -1,7 +1,13 @@
 import "./test-guard";
 import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
-import { githubIntent, linearIntent, verifyGithub, verifyLinear } from "../lib/webhooks";
+import { sourceFor } from "../lib/sources";
+import { githubIntent, verifyGithub } from "../lib/webhooks";
+
+const { webhook } = sourceFor("linear");
+if (!webhook) throw new Error("the linear source has no webhook");
+const headers = (signature: string | null) => new Headers(signature ? { "linear-signature": signature } : {});
+const verifyLinear = (raw: string, signature: string | null, secret: string, at: number) => webhook.verify(raw, headers(signature), secret, at);
 
 const secret = "s3cret";
 const sign = (body: string) => createHmac("sha256", secret).update(body).digest("hex");
@@ -17,6 +23,7 @@ assert.equal(verifyGithub("{}", `sha256=${sign("{}")}`, secret).ok, true);
 assert.equal(verifyGithub("{}", sign("{}"), secret).ok, false, "GitHub signatures need the sha256= prefix");
 
 const opts = { teamKey: "FAC", label: "factory" };
+const linearIntent = (body: unknown, scope: typeof opts) => webhook.intent(body, scope);
 const issue = (over: Record<string, unknown> = {}, updatedFrom?: Record<string, unknown>) => ({
   action: "update",
   type: "Issue",
@@ -50,6 +57,16 @@ assert.deepEqual(
   { kind: "answer", linearId: "i1" },
 );
 
+const delivered = JSON.stringify({ ...issue({}, { labelIds: [] }), webhookTimestamp: now - 1_000 });
+assert.deepEqual(verifyLinear(delivered, sign(delivered), secret, now), { ok: true }, "a signed delivery passes the source's webhook");
+assert.deepEqual(
+  webhook.intent(JSON.parse(delivered), opts),
+  { kind: "claim", issueKey: "FAC-11", linearId: "i1" },
+  "and the source's webhook turns it into the claim intent",
+);
+assert.equal(webhook.deliveryHeader, "Linear-Delivery");
+assert.equal(webhook.eventHeader, "Linear-Event");
+
 assert.deepEqual(
   githubIntent("pull_request", { action: "closed", pull_request: { html_url: "https://g/p/1", merged: true } }),
   { kind: "merged", prUrl: "https://g/p/1" },
@@ -58,4 +75,32 @@ assert.equal(githubIntent("pull_request", { action: "closed", pull_request: { ht
 assert.equal(githubIntent("push", { ref: "refs/heads/main", repository: { default_branch: "main" } })?.kind, "recheck_conflicts");
 assert.equal(githubIntent("push", { ref: "refs/heads/factory/FAC-1", repository: { default_branch: "main" } }), null);
 assert.equal(githubIntent("ping", {}), null);
+
+process.env.LINEAR_WEBHOOK_SECRET = secret;
+const { default: ingestFunction } = await import("../functions/ingest/index");
+const { db } = await import("../db/client");
+const { intents, webhookDeliveries } = await import("../db/schema");
+const { eq } = await import("drizzle-orm");
+const deliveryId = `webhook-regress-${Date.now()}`;
+const post = (raw: string, signature: string, delivery: string | null = deliveryId) =>
+  ingestFunction.fetch(
+    new Request("http://function/webhooks/linear", {
+      method: "POST",
+      headers: { "linear-signature": signature, "linear-event": "Issue", ...(delivery ? { "linear-delivery": delivery } : {}) },
+      body: raw,
+    }),
+  );
+const fresh = JSON.stringify({ ...issue({}, { labelIds: [] }), webhookTimestamp: Date.now() });
+try {
+  assert.equal((await post(fresh, "0".repeat(64))).status, 401, "a bad signature is rejected by the routed source");
+  assert.equal((await post(fresh, sign(fresh), null)).status, 400, "a delivery without an id is rejected");
+  assert.deepEqual(await (await post(fresh, sign(fresh))).json(), { duplicate: false, intent: "claim" }, "a signed delivery records the claim intent");
+  assert.deepEqual(await (await post(fresh, sign(fresh))).json(), { duplicate: true, intent: null }, "a redelivery records nothing");
+  assert.equal((await ingestFunction.fetch(new Request("http://function/webhooks/nope", { method: "POST", body: "{}" }))).status, 404);
+  assert.equal((await db.select().from(intents).where(eq(intents.id, `linear:${deliveryId}`))).length, 1, "exactly one intent row");
+} finally {
+  await db.delete(intents).where(eq(intents.id, `linear:${deliveryId}`));
+  await db.delete(webhookDeliveries).where(eq(webhookDeliveries.delivery_id, `linear:${deliveryId}`));
+}
 console.log("webhook regressions passed");
+process.exit(0);

@@ -7,7 +7,8 @@ import { db } from "../db/client";
 import { agents, issues, runs, type IssueRow } from "../db/schema";
 import type { Stage, Usage } from "../lib/events";
 import { loadConfig } from "../lib/config";
-import { linearClient, type LinearClient } from "../lib/linear";
+import { sourceFor } from "../lib/sources";
+import type { JobSource, SourceAdapter } from "../lib/sources/types";
 import { branchSpend } from "../lib/spend";
 import { readTranscript, subagentTranscripts, sumUsage, transcriptPathFor } from "../lib/transcript";
 import { cleanupRepo, cleanupSubagentWorktrees } from "../lib/worktrees";
@@ -15,82 +16,22 @@ import { claimConflict, conflictMessage, unclaimedRunsWithPr } from "../lib/conf
 import { attemptBranch } from "../lib/factory";
 import { nudgeMessage, watch, type ThreadState } from "../lib/watchdog";
 import { forbidInTest } from "../lib/test-mode";
-import { DELETED } from "../lib/webhooks";
 import { runWithInput } from "../lib/exec";
 import { bindingOf, canReclaimSql, PENDING, stopDeliverableSql } from "./binding";
-import {
-  claimCommentId,
-  claimReplies,
-  planResume,
-  qaBlock,
-  resumeCommentId,
-  resumeMessage,
-  stageCommentId,
-} from "../lib/resume";
+import { claimReplies, qaBlock, resumeMessage } from "../lib/resume";
 
 
 // The factory's deterministic work. The runner calls these from webhook intents, its timer and
 // its startup reconcile; every one of them is idempotent, so calling one twice changes nothing.
 
 export const config = loadConfig();
-export const linear = linearClient(config.linearApiKey);
-
-let team: Team | undefined;
-export const linearTeam = async () => (team ??= await linear.team(config.factory.teamKey));
 
 /** Stages where a thread is working; waiting, pr, merged and failed free the slot. */
 export const IN_FLIGHT: Stage[] = ["queued", "triage", "investigating", "implementing", "verifying"];
 
-export type Team = Awaited<ReturnType<LinearClient["team"]>>;
-
-const stateId = (team: Team, name: string) => {
-  const state = team.states.find((s) => s.name === name);
-  if (!state) throw new Error(`Linear team ${config.factory.teamKey} has no state ${name}`);
-  return state.id;
-};
-
-/** What reaches Linear when an issue enters a stage. Stages without an entry stay in the panel. */
-type WriteBack = {
-  state?: string;
-  labels?: { add?: string[]; remove?: string[] };
-  comment?: (issue: IssueRow) => string;
-};
-const FAILED_LABEL = "factory-failed";
-
-const WRITE_BACK: Partial<Record<Stage, WriteBack>> = {
-  pr: {
-    state: "In Review",
-    comment: (i) => `marshal-factory has a pull request ready for review: ${i.pr_url}\n\n${i.stage_summary ?? ""}`.trim(),
-  },
-  waiting: {
-    comment: (i) =>
-      `marshal-factory stopped and needs an answer before it can continue:\n\n${i.question ?? i.stage_summary}`,
-  },
-  // Back to Todo without the factory label, so the runner does not pick it up again in a loop.
-  // Adding the label again retries it as a new attempt.
-  failed: {
-    state: "Todo",
-    labels: { add: [FAILED_LABEL], remove: [config.factory.label] },
-    comment: (i) =>
-      `marshal-factory gave up on this issue (attempt ${i.attempt}): ${i.stage_summary}\n\nAdd the \`${config.factory.label}\` label again to retry.`,
-  },
-  merged: { state: "Done" },
-};
-
 const run = promisify(execFile);
 // The LaunchAgent sets T3CODE_CLI_PATH; otherwise t3 must be on PATH.
 const T3 = process.env.T3CODE_CLI_PATH ?? "t3";
-
-/** Records the id before posting, so a crash in between can never make our own comment look like a reply. */
-async function postComment(issue: IssueRow, id: string, body: string) {
-  await db
-    .update(issues)
-    .set({
-      factory_comment_ids: sql`case when ${issues.factory_comment_ids} ? ${id} then ${issues.factory_comment_ids} else ${issues.factory_comment_ids} || jsonb_build_array(${id}::text) end`,
-    })
-    .where(eq(issues.linear_id, issue.linear_id));
-  await linear.comment(issue.linear_id, id, body);
-}
 
 const prSchema = z.object({ state: z.string(), mergeable: z.string(), headRefOid: z.string() });
 
@@ -239,7 +180,7 @@ export async function resumeAnswered() {
   const waiting = await db.select().from(issues).where(eq(issues.stage, "waiting"));
   const resumed: string[] = [];
   for (const issue of waiting) {
-    const plan = planResume(issue, await linear.issueWithComments(issue.linear_id));
+    const plan = await sourceFor("linear").replies(issue);
     if (plan.kind === "wait") continue;
 
     const now = new Date();
@@ -264,7 +205,6 @@ export async function resumeAnswered() {
     }
 
     const replyIds = plan.replies.map((r) => r.id);
-    const ackId = resumeCommentId(issue.linear_id, replyIds);
     const alive = await threadAlive(issue.t3_thread_id);
     // A dead thread is unlinked in the same update that claims the replies, so the relaunch
     // cannot be lost to a later failure in this pass.
@@ -273,7 +213,7 @@ export async function resumeAnswered() {
 
     if (alive) {
       try {
-        await threads.send(issue.t3_thread_id!, resumeMessage(issue.key, plan.question, plan.answer));
+        await threads.send(issue.t3_thread_id!, resumeMessage(sourceFor("linear").describe(issue), plan.question, plan.answer));
       } catch (error) {
         await db
           .update(issues)
@@ -296,7 +236,7 @@ export async function resumeAnswered() {
       answer: plan.answer.slice(0, 4000),
       issueKey: issue.key,
     });
-    await postComment(issue, ackId, "Answer received, resuming.");
+    await sourceFor("linear").acknowledgeReplies(issue, replyIds);
     resumed.push(`${issue.key}:${alive ? "sent" : "relaunch"}`);
   }
   return resumed;
@@ -454,13 +394,7 @@ export async function enforceBudget() {
   return over;
 }
 
-async function labelChanges(team: Team, labels: WriteBack["labels"]) {
-  if (!labels) return {};
-  const ids = (names: string[] = []) => Promise.all(names.map((name) => linear.labelId(team.id, name)));
-  return { addedLabelIds: await ids(labels.add), removedLabelIds: await ids(labels.remove) };
-}
-
-export async function writeBack(team: Team) {
+export async function writeBack() {
   const pending = await db
     .select()
     .from(issues)
@@ -472,32 +406,23 @@ export async function writeBack(team: Team) {
     );
   const synced: string[] = [];
   for (const issue of pending) {
-    const action = WRITE_BACK[issue.stage];
-    if (action?.state || action?.labels) {
-      await linear.update(issue.linear_id, {
-        ...(action.state ? { stateId: stateId(team, action.state) } : {}),
-        ...(await labelChanges(team, action.labels)),
-      });
-    }
-    if (action?.comment) {
-      await postComment(issue, stageCommentId(issue.linear_id, issue.stage_event_id!), action.comment(issue));
-    }
+    const written = await sourceFor("linear").writeBack(issue, { stage: issue.stage, eventId: issue.stage_event_id! });
     // Only this event counts as synced; a newer one that landed meanwhile goes next pass.
     await db
       .update(issues)
       .set({
         synced_event_id: issue.stage_event_id,
-        ...(action?.state ? { linear_state: action.state } : {}),
+        ...(written?.sourceState ? { linear_state: written.sourceState } : {}),
       })
       .where(and(eq(issues.linear_id, issue.linear_id), eq(issues.stage_event_id, issue.stage_event_id!)));
-    if (action) synced.push(`${issue.key}:${issue.stage}`);
+    if (written) synced.push(`${issue.key}:${issue.stage}`);
   }
   return synced;
 }
 
 /** Claims ready issues up to the in-flight cap. The row insert is the claim; the advisory lock serializes claimers. */
 export async function claim() {
-  const ready = await linear.readyIssues(config.factory.teamKey, config.factory.label);
+  const ready = await sourceFor("linear").ready();
   return db.transaction(async (tx) => {
     await tx.execute(sql`select pg_advisory_xact_lock(hashtext('marshal-factory linear-poll'))`);
     const [{ count }] = await tx
@@ -512,13 +437,13 @@ export async function claim() {
       const inserted = await tx
         .insert(issues)
         .values({
-          linear_id: issue.id,
-          key: issue.identifier,
+          linear_id: issue.externalId,
+          key: issue.key,
           title: issue.title,
           url: issue.url,
           description: issue.description,
-          linear_state: issue.state.name,
-          labels: issue.labels.nodes.map((l) => l.name),
+          linear_state: issue.sourceState,
+          labels: issue.labels,
           claimed_at: now,
           updated_at: now,
         })
@@ -547,8 +472,8 @@ export async function claim() {
             title: issue.title,
             url: issue.url,
             description: issue.description,
-            linear_state: issue.state.name,
-            labels: issue.labels.nodes.map((l) => l.name),
+            linear_state: issue.sourceState,
+            labels: issue.labels,
             claimed_at: now,
             updated_at: now,
           },
@@ -558,30 +483,20 @@ export async function claim() {
         .returning({ key: issues.key });
       if (inserted.length === 0) continue;
       inFlight++;
-      claimed.push(issue.identifier);
+      claimed.push(issue.key);
     }
     return { claimed, inFlight };
   });
 }
 
 /** Moves claimed issues to In Progress with a pickup comment; retried every pass until it sticks. */
-export async function announceClaims(team: Team) {
+export async function announceClaims() {
   const unannounced = await db
     .select()
     .from(issues)
     .where(and(eq(issues.stage, "queued"), ne(issues.linear_state, "In Progress")));
   for (const issue of unannounced) {
-    await linear.update(issue.linear_id, {
-      stateId: stateId(team, "In Progress"),
-      ...(issue.attempt > 1 ? await labelChanges(team, { remove: [FAILED_LABEL] }) : {}),
-    });
-    await postComment(
-      issue,
-      claimCommentId(issue.linear_id, issue.attempt),
-      issue.attempt > 1
-        ? `Picked up by marshal-factory again (attempt ${issue.attempt}, branch ${attemptBranch(issue.key, issue.attempt)}).`
-        : "Picked up by marshal-factory.",
-    );
+    await sourceFor("linear").announceClaim(issue);
     await db
       .update(issues)
       .set({ linear_state: "In Progress", updated_at: new Date() })
@@ -591,7 +506,7 @@ export async function announceClaims(team: Team) {
 
 function launchMessage(issue: IssueRow) {
   return [
-    `Work Linear issue ${issue.key}: ${issue.title}`,
+    `Work ${sourceFor("linear").describe(issue)}: ${issue.title}`,
     issue.url,
     "",
     "This is an unattended marshal-factory run. Follow the factory playbook in .agents/playbooks/factory.md. Report every stage with the report_stage tool, never ask in this thread, never merge.",
@@ -682,14 +597,10 @@ export async function pullRequestsSettled() {
  * so nothing is written back.
  */
 export async function stopIssue(linearId: string, detail: string) {
-  // A stop intent can come from an unrelated label change; act only if Linear really took the issue away.
-  let unlabeledInProgress = false;
-  if (detail !== DELETED) {
-    const { state } = await linear.issueWithComments(linearId);
-    const stillLabeled = (await linear.labelsOf(linearId)).some((l) => l.toLowerCase() === config.factory.label.toLowerCase());
-    if (stillLabeled && !["canceled", "completed"].includes(state.type)) return "still labeled";
-    unlabeledInProgress = state.type === "started";
-  }
+  // A stop intent can come from an unrelated label change; act only if the source really took the issue away.
+  const check = await sourceFor("linear").confirmStop(linearId, detail);
+  if (!check.stop) return "still labeled";
+  const unlabeledInProgress = check.reopen;
 
   // A stage report can land between the read and the claim; read again and retry the claim.
   for (let tries = 0; tries < 3; tries++) {
@@ -730,7 +641,7 @@ async function finishStop(issue: IssueRow, unlabeledInProgress: boolean) {
     issueKey: issue.key,
   });
   // Back to Todo, so adding the label again retries it as a new attempt, as for any failure.
-  if (unlabeledInProgress) await linear.setState(issue.linear_id, stateId(await linearTeam(), "Todo"));
+  if (unlabeledInProgress) await sourceFor("linear").reopen(issue);
   return "stopped";
 }
 
@@ -788,50 +699,33 @@ export async function deliverStops(linearId?: string) {
   return delivered;
 }
 
-type LinearIssueState = Awaited<ReturnType<typeof linear.issuesByIds>>[number];
-
-/** Why Linear says a claimed issue should stop, or undefined while it is still the factory's. */
-export function stopReason(node: LinearIssueState | undefined, label: string) {
-  if (!node) return DELETED;
-  if (node.trashed || node.archivedAt) return "the issue was archived or deleted in Linear";
-  if (["canceled", "completed"].includes(node.state.type)) return `issue moved to ${node.state.name} in Linear`;
-  if (!node.labels.nodes.some((l) => l.name.toLowerCase() === label.toLowerCase())) {
-    return `the ${label} label was removed in Linear`;
-  }
-  return undefined;
-}
-
 /**
  * A missed stop webhook must not leave a run going. Each tick reads every claimed, unfinished
  * issue from Linear in one query and records a stop through stopIssue, the webhook's own path,
  * for any that lost the label, was closed, or is gone. A failed fetch decides nothing.
  */
 export async function reconcileStops({
-  fetch = (ids: string[]) => linear.issuesByIds(ids),
+  source = sourceFor("linear"),
   stop = stopIssue,
   only,
 }: {
-  fetch?: (ids: string[]) => Promise<LinearIssueState[]>;
+  source?: SourceAdapter<JobSource>;
   stop?: (linearId: string, detail: string) => Promise<string>;
   /** Restricts the check to these issues; the regression script uses it to stay off live ones. */
   only?: string[];
 } = {}) {
   const unfinished = inArray(issues.stage, [...IN_FLIGHT, "waiting", "pr"]);
-  const open = await db
-    .select({ linearId: issues.linear_id, key: issues.key })
-    .from(issues)
-    .where(only ? and(unfinished, inArray(issues.linear_id, only)) : unfinished);
+  const open = await db.select().from(issues).where(only ? and(unfinished, inArray(issues.linear_id, only)) : unfinished);
   if (open.length === 0) return [];
-  let nodes: LinearIssueState[];
+  let wanted: Awaited<ReturnType<typeof source.stopWanted>>;
   try {
-    nodes = await fetch(open.map((i) => i.linearId));
+    wanted = await source.stopWanted(open);
   } catch (error) {
     return { unknown: error instanceof Error ? error.message : String(error) };
   }
   const stopped = [];
-  for (const issue of open) {
-    const reason = stopReason(nodes.find((n) => n.id === issue.linearId), config.factory.label);
-    if (reason) stopped.push({ key: issue.key, reason, result: await stop(issue.linearId, reason) });
+  for (const { job, reason } of wanted) {
+    stopped.push({ key: job.key, reason, result: await stop(job.linear_id, reason) });
   }
   return stopped;
 }

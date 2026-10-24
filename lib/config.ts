@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { z } from "zod";
 import { inTestMode } from "./test-mode";
 
-export const CONFIG_PATH = join(homedir(), ".config/marshal-factory/config.json");
+export const CONFIG_PATH = process.env.MARSHAL_FACTORY_CONFIG ?? join(homedir(), ".config/marshal-factory/config.json");
 
 /** Every factory limit lives here, with defaults; the config file overrides any of them. */
 export const factorySchema = z
@@ -47,7 +47,7 @@ export type FactoryConfig = z.infer<typeof configSchema>;
 
 /** Just the limits, for readers that hold no secrets: the panel and the budget hook. */
 export function loadLimits(): FactoryLimits {
-  const raw = existsSync(CONFIG_PATH) ? JSON.parse(readFileSync(CONFIG_PATH, "utf8")).factory : undefined;
+  const raw = existsSync(/* turbopackIgnore: true */ CONFIG_PATH) ? JSON.parse(readFileSync(/* turbopackIgnore: true */ CONFIG_PATH, "utf8")).factory : undefined;
   return factorySchema.parse(raw ?? {});
 }
 
@@ -60,5 +60,5 @@ export function loadConfig(): FactoryConfig {
       factory: {},
     });
   }
-  return configSchema.parse(JSON.parse(readFileSync(CONFIG_PATH, "utf8")));
+  return configSchema.parse(JSON.parse(readFileSync(/* turbopackIgnore: true */ CONFIG_PATH, "utf8")));
 }
