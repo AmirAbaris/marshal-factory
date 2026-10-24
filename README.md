@@ -41,6 +41,12 @@ runner daemon (launchd) ◄─────────────────�
 - **Merge conflicts.** A push to main makes the runner wait for GitHub to recompute mergeability, then read every open factory PR with `gh`. When a PR in stage `pr` turns `CONFLICTING`, its thread is told to merge `origin/main`, resolve, rerun checks and report `pr` again, and the run moves back to Implementing. This happens once per PR head.
 - **Watchdog.** The runner's timer checks issues in a working stage. One that has been quiet for `stuckAfterMinutes`, or whose thread stopped and stayed quiet for `stoppedGraceMinutes`, gets one nudge asking the thread to continue and report its stage. If it is still stuck in the same stage `failAfterNudgeMinutes` later, the issue fails, Linear gets the reason, and the slot frees up. A thread T3 no longer has fails at once.
 
+## Testing
+
+`bun run test:regressions` runs every `scripts/*-regressions.ts` against a Neon branch it creates from production for that run, and deletes the branch when the run ends. The branch expires after 2 hours, so a crashed run cannot leak one. Pass a name prefix to run a subset, for example `bun run test:regressions ingest`. It needs the `neon` CLI signed in, and the project id from `.neon` or `NEON_PROJECT_ID`.
+
+Each script starts with `import "./test-guard"`, which exits before any write unless the harness started it and `DATABASE_URL` points at the harness's branch. The `.env.local` database is always refused. During a regression the real Linear client, `gh`, `t3 thread` commands and the deployed ingest URL throw (`lib/test-mode.ts`); tests use fakes such as `threads` in `runner/ops.ts`.
+
 ## Research
 
 Background reports from the initial investigation live in [`docs/research/`](docs/research/).

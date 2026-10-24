@@ -1,3 +1,4 @@
+import "./test-guard";
 import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
 import { githubIntent, linearIntent, verifyGithub, verifyLinear } from "../lib/webhooks";

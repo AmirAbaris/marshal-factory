@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { runWithInput, type ExecError } from "../lib/exec";
 import { promisify } from "node:util";
 import { z } from "zod";
+import { forbidInTest } from "../lib/test-mode";
 import { PENDING } from "./binding";
 import { bindThread, claimLaunch, config, pendingLaunches, releaseLaunch, toLaunch } from "./ops";
 
@@ -22,6 +23,7 @@ export function parseThreadId(stdout: string) {
 }
 
 async function startThread(repo: string, branch: string, title: string, message: string) {
+  forbidInTest("t3 thread start");
   const stdout = await runWithInput(
     T3,
     [

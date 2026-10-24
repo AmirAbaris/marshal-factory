@@ -1,7 +1,7 @@
+import "./test-guard";
 import assert from "node:assert/strict";
 import { eq, inArray } from "drizzle-orm";
 
-process.loadEnvFile(".env.local");
 const { db } = await import("../db/client");
 const { issues } = await import("../db/schema");
 const { claimConflict, unclaimedRunsWithPr } = await import("../lib/conflicts");
