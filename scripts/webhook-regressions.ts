@@ -75,4 +75,32 @@ assert.equal(githubIntent("pull_request", { action: "closed", pull_request: { ht
 assert.equal(githubIntent("push", { ref: "refs/heads/main", repository: { default_branch: "main" } })?.kind, "recheck_conflicts");
 assert.equal(githubIntent("push", { ref: "refs/heads/factory/FAC-1", repository: { default_branch: "main" } }), null);
 assert.equal(githubIntent("ping", {}), null);
+
+process.env.LINEAR_WEBHOOK_SECRET = secret;
+const { default: ingestFunction } = await import("../functions/ingest/index");
+const { db } = await import("../db/client");
+const { intents, webhookDeliveries } = await import("../db/schema");
+const { eq } = await import("drizzle-orm");
+const deliveryId = `webhook-regress-${Date.now()}`;
+const post = (raw: string, signature: string, delivery: string | null = deliveryId) =>
+  ingestFunction.fetch(
+    new Request("http://function/webhooks/linear", {
+      method: "POST",
+      headers: { "linear-signature": signature, "linear-event": "Issue", ...(delivery ? { "linear-delivery": delivery } : {}) },
+      body: raw,
+    }),
+  );
+const fresh = JSON.stringify({ ...issue({}, { labelIds: [] }), webhookTimestamp: Date.now() });
+try {
+  assert.equal((await post(fresh, "0".repeat(64))).status, 401, "a bad signature is rejected by the routed source");
+  assert.equal((await post(fresh, sign(fresh), null)).status, 400, "a delivery without an id is rejected");
+  assert.deepEqual(await (await post(fresh, sign(fresh))).json(), { duplicate: false, intent: "claim" }, "a signed delivery records the claim intent");
+  assert.deepEqual(await (await post(fresh, sign(fresh))).json(), { duplicate: true, intent: null }, "a redelivery records nothing");
+  assert.equal((await ingestFunction.fetch(new Request("http://function/webhooks/nope", { method: "POST", body: "{}" }))).status, 404);
+  assert.equal((await db.select().from(intents).where(eq(intents.id, `linear:${deliveryId}`))).length, 1, "exactly one intent row");
+} finally {
+  await db.delete(intents).where(eq(intents.id, `linear:${deliveryId}`));
+  await db.delete(webhookDeliveries).where(eq(webhookDeliveries.delivery_id, `linear:${deliveryId}`));
+}
 console.log("webhook regressions passed");
+process.exit(0);
