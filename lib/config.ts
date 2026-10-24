@@ -33,7 +33,7 @@ export const factorySchema = z
     model: z.string().default("claude-opus-5-5"),
     /** How often the runner's timer runs the watchdog, the cost-cap backstop and usage reconcile. */
     tickSeconds: z.number().positive().default(90),
-    /** Ids of the webhooks scripts/install-webhooks.ts created: `linear`, and one per GitHub repo. */
+    /** Ids of the webhooks scripts/install-webhooks.ts created. It records `linear`; GitHub deliveries come from the GitHub App. */
     webhooks: z.record(z.string(), z.union([z.string(), z.number()])).default({}),
   })
   .prefault({});
