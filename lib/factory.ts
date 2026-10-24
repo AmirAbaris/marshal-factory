@@ -4,7 +4,7 @@ export const REPORT_TOOL = "report_stage";
 export const REPORT_STAGE_TOOL = `mcp__${REPORT_SERVER}__${REPORT_TOOL}`;
 
 /** factory/FAC-5 is the first attempt at FAC-5; factory/FAC-5-a2 the second. */
-export function issueKeyFromBranch(branch: string | undefined) {
+export function jobKeyFromBranch(branch: string | undefined) {
   return branch?.match(/^factory\/([A-Za-z][A-Za-z0-9]*-\d+)(?:-a\d+)?$/)?.[1];
 }
 

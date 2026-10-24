@@ -1,5 +1,6 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { z } from "zod";
+import type { JobId } from "./sources/shapes";
 
 export const hmacHex = (secret: string, body: string) => createHmac("sha256", secret).update(body).digest("hex");
 
@@ -21,8 +22,7 @@ export function verifyGithub(rawBody: string, signature: string | null, secret: 
 
 export type IntentDraft = {
   kind: "claim" | "stop" | "answer" | "merged" | "recheck_conflicts";
-  issueKey?: string;
-  linearId?: string;
+  jobId?: JobId;
   prUrl?: string;
   detail?: string;
 };
