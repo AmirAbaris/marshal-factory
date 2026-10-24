@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-// The reporter writes what ingest last said an issue has spent; the budget hook only reads it.
+// The reporter writes what ingest last said a job's attempt has spent; the budget hook only reads it.
 const DIR = join(homedir(), ".cache/marshal-factory/spend");
 
 export type CachedSpend = { usd: number; at: number };

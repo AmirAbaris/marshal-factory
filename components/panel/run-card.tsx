@@ -59,12 +59,10 @@ export function StageCard({
   card,
   agents,
   selected,
-  budgetUsd,
 }: {
   card: BoardCard;
   agents: readonly AgentRow[];
   selected: boolean;
-  budgetUsd: number;
 }) {
   const { latest } = card;
   return (
@@ -73,13 +71,13 @@ export function StageCard({
         <Link
           href={`/?run=${latest.session_id}`}
           scroll={false}
-          aria-label={`Open ${card.issueKey ?? card.title}`}
+          aria-label={`Open ${card.jobKey ?? card.title}`}
           className="absolute inset-0 rounded-lg"
         />
       )}
       <div className="flex items-center gap-1.5 font-mono text-xs text-faint">
         {latest?.status === "active" && <Spinner className="size-2.5" />}
-        {card.issueKey ?? card.id.slice(0, 8)}
+        {card.jobKey ?? card.id.slice(0, 8)}
       </div>
       <div className="line-clamp-2 font-medium">{card.title}</div>
       {card.nudgedAt && (
@@ -110,16 +108,16 @@ export function StageCard({
           runs={card.attemptRuns}
           allRuns={card.runs}
           agents={agents}
-          budgetUsd={card.issueUrl ? budgetUsd : undefined}
+          budgetUsd={card.budgetUsd ?? undefined}
         />
-        {card.issueUrl && (
+        {card.sourceLink && (
           <a
-            href={card.issueUrl}
+            href={card.sourceLink.href}
             target="_blank"
             rel="noreferrer"
             className="relative underline-offset-2 hover:underline"
           >
-            Linear
+            {card.sourceLink.label}
           </a>
         )}
         {card.prUrl && (
@@ -154,7 +152,7 @@ export function RunCard({
     >
       <div className="flex items-center gap-1.5 font-mono text-xs text-faint">
         {run.status === "active" && <Spinner className="size-2.5" />}
-        {run.issue_key ?? shortId(run.session_id)}
+        {run.job_key ?? shortId(run.session_id)}
       </div>
       <div className="line-clamp-2 font-medium">{runTitle(run)}</div>
       <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">

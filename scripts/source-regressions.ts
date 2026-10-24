@@ -3,9 +3,10 @@ import assert from "node:assert/strict";
 import { asc } from "drizzle-orm";
 
 const { db } = await import("../db/client");
-const { issues } = await import("../db/schema");
+const { jobs } = await import("../db/schema");
 const ops = await import("../runner/ops");
-const { SOURCES } = await import("../lib/sources");
+const { jobId, parseJobs, SOURCES } = await import("../lib/sources");
+const { linearJob } = await import("./fixtures");
 const { createLinearAdapter } = await import("../lib/sources/linear");
 const { factorySchema } = await import("../lib/config");
 
@@ -159,71 +160,85 @@ const EXPECTED = {
         "key": "SRC-1",
         "stage": "pr",
         "attempt": 1,
-        "linear_state": "In Review",
+        "state": "In Review",
         "synced_event_id": "e-pr",
         "labels": [],
         "previous_failure": null,
-        "comments": 1
+        "comments": 1,
+        "repo": "ski043/factory-demo",
+        "budget_usd": 5
       },
       {
         "key": "SRC-2",
         "stage": "waiting",
         "attempt": 1,
-        "linear_state": null,
+        "state": null,
         "synced_event_id": "e-wait",
         "labels": [],
         "previous_failure": null,
-        "comments": 1
+        "comments": 1,
+        "repo": "ski043/factory-demo",
+        "budget_usd": 5
       },
       {
         "key": "SRC-3",
         "stage": "failed",
         "attempt": 2,
-        "linear_state": "Todo",
+        "state": "Todo",
         "synced_event_id": "e-fail",
         "labels": [],
         "previous_failure": null,
-        "comments": 1
+        "comments": 1,
+        "repo": "ski043/factory-demo",
+        "budget_usd": 5
       },
       {
         "key": "SRC-4",
         "stage": "merged",
         "attempt": 1,
-        "linear_state": "Done",
+        "state": "Done",
         "synced_event_id": "e-merged",
         "labels": [],
         "previous_failure": null,
-        "comments": 0
+        "comments": 0,
+        "repo": "ski043/factory-demo",
+        "budget_usd": 5
       },
       {
         "key": "SRC-5",
         "stage": "triage",
         "attempt": 1,
-        "linear_state": null,
+        "state": null,
         "synced_event_id": "e-triage",
         "labels": [],
         "previous_failure": null,
-        "comments": 0
+        "comments": 0,
+        "repo": "ski043/factory-demo",
+        "budget_usd": 5
       },
       {
         "key": "SRC-6",
         "stage": "queued",
         "attempt": 1,
-        "linear_state": "In Progress",
+        "state": "In Progress",
         "synced_event_id": null,
         "labels": [],
         "previous_failure": null,
-        "comments": 1
+        "comments": 1,
+        "repo": "ski043/factory-demo",
+        "budget_usd": 5
       },
       {
         "key": "SRC-7",
         "stage": "queued",
         "attempt": 2,
-        "linear_state": "In Progress",
+        "state": "In Progress",
         "synced_event_id": null,
         "labels": [],
         "previous_failure": null,
-        "comments": 1
+        "comments": 1,
+        "repo": "ski043/factory-demo",
+        "budget_usd": 5
       }
     ]
   },
@@ -247,27 +262,31 @@ const EXPECTED = {
         "key": "SRC-8",
         "stage": "queued",
         "attempt": 1,
-        "linear_state": "Todo",
+        "state": "Todo",
         "synced_event_id": null,
         "labels": [
           "factory",
           "bug"
         ],
         "previous_failure": null,
-        "comments": 0
+        "comments": 0,
+        "repo": "test-owner/claimed-repo",
+        "budget_usd": 5
       },
       {
         "key": "SRC-9",
         "stage": "queued",
         "attempt": 2,
-        "linear_state": "Todo",
+        "state": "Todo",
         "synced_event_id": null,
         "labels": [
           "factory",
           "bug"
         ],
         "previous_failure": "earlier failure",
-        "comments": 0
+        "comments": 0,
+        "repo": "test-owner/claimed-repo",
+        "budget_usd": 5
       }
     ]
   },
@@ -323,30 +342,30 @@ const EXPECTED = {
   }
 };
 
-const now = new Date();
-const base = { title: "t", url: "u", claimed_at: now, updated_at: now };
 const snapshot = async () =>
-  (await db.select().from(issues).orderBy(asc(issues.key))).map((i) => ({
-    key: i.key,
-    stage: i.stage,
-    attempt: i.attempt,
-    linear_state: i.linear_state,
-    synced_event_id: i.synced_event_id,
-    labels: i.labels,
-    previous_failure: i.previous_failure,
-    comments: i.factory_comment_ids.length,
+  parseJobs(await db.select().from(jobs).orderBy(asc(jobs.key))).map((j) => ({
+    key: j.key,
+    stage: j.stage,
+    attempt: j.attempt,
+    state: j.source_state.state,
+    synced_event_id: j.synced_event_id,
+    labels: j.source_state.labels,
+    previous_failure: j.previous_failure,
+    comments: j.source_state.factoryCommentIds.length,
+    repo: j.repo,
+    budget_usd: j.budget_usd,
   }));
 
 try {
-  await db.delete(issues);
-  await db.insert(issues).values([
-    { ...base, linear_id: "src-pr", key: "SRC-1", stage: "pr", stage_event_id: "e-pr", pr_url: "https://g/pr/1", stage_summary: "done" },
-    { ...base, linear_id: "src-wait", key: "SRC-2", stage: "waiting", stage_event_id: "e-wait", question: "Which layout?" },
-    { ...base, linear_id: "src-fail", key: "SRC-3", stage: "failed", attempt: 2, stage_event_id: "e-fail", stage_summary: "boom" },
-    { ...base, linear_id: "src-merged", key: "SRC-4", stage: "merged", stage_event_id: "e-merged" },
-    { ...base, linear_id: "src-triage", key: "SRC-5", stage: "triage", stage_event_id: "e-triage" },
-    { ...base, linear_id: "src-q1", key: "SRC-6", stage: "queued", linear_state: "Todo" },
-    { ...base, linear_id: "src-q2", key: "SRC-7", stage: "queued", attempt: 2, linear_state: "Todo" },
+  await db.delete(jobs);
+  await db.insert(jobs).values([
+    linearJob("src-pr", "SRC-1", { stage: "pr", stage_event_id: "e-pr", pr_url: "https://g/pr/1", stage_summary: "done" }),
+    linearJob("src-wait", "SRC-2", { stage: "waiting", stage_event_id: "e-wait", question: "Which layout?" }),
+    linearJob("src-fail", "SRC-3", { stage: "failed", attempt: 2, stage_event_id: "e-fail", stage_summary: "boom" }),
+    linearJob("src-merged", "SRC-4", { stage: "merged", stage_event_id: "e-merged" }),
+    linearJob("src-triage", "SRC-5", { stage: "triage", stage_event_id: "e-triage" }),
+    linearJob("src-q1", "SRC-6", { stage: "queued", state: "Todo" }),
+    linearJob("src-q2", "SRC-7", { stage: "queued", attempt: 2, state: "Todo" }),
   ]);
   const synced = await ops.writeBack();
   await ops.announceClaims();
@@ -359,15 +378,15 @@ try {
   );
   assert.deepEqual(calls, [], "and sends nothing to Linear");
 
-  await db.delete(issues);
-  await db.insert(issues).values({ ...base, linear_id: "src-retry", key: "SRC-9", stage: "failed", stage_summary: "earlier failure", stage_event_id: "e-r", synced_event_id: "e-r" });
+  await db.delete(jobs);
+  await db.insert(jobs).values(linearJob("src-retry", "SRC-9", { stage: "failed", stage_summary: "earlier failure", stage_event_id: "e-r", synced_event_id: "e-r" }));
   readyNodes = [node("src-new", "SRC-8"), node("src-retry", "SRC-9")];
   calls.length = 0;
-  const claimed = await ops.claim();
+  const claimed = await ops.claim({ repo: async () => "test-owner/claimed-repo" });
   const claim = { claimed, calls: structuredClone(calls), rows: await snapshot() };
 
   calls.length = 0;
-  const stillLabeled = await ops.stopIssue("src-new", "the factory label was removed in Linear");
+  const stillLabeled = await ops.stopJob(jobId("linear", "src-new"), "the factory label was removed in Linear");
   const stopCheck = { stillLabeled, calls: structuredClone(calls) };
 
   calls.length = 0;
@@ -377,7 +396,7 @@ try {
   thread = { state: { name: "Canceled", type: "canceled" }, labels: ["Factory"] };
   const canceled = await adapter.confirmStop("src-new", "issue moved to Canceled in Linear");
   const deleted = await adapter.confirmStop("src-new", "the issue was deleted in Linear");
-  await adapter.reopen({ linear_id: "src-new" } as never);
+  await adapter.reopen({ writeback: { kind: "linear", issueId: "src-new" } } as never);
   const confirm = { unlabeled, canceled, deleted, calls: structuredClone(calls) };
 
   assert.deepEqual({ writes, claim, stopCheck, confirm }, EXPECTED);
@@ -386,6 +405,6 @@ try {
   console.error(error);
   process.exitCode = 1;
 } finally {
-  await db.delete(issues);
+  await db.delete(jobs);
   process.exit(process.exitCode ?? 0);
 }

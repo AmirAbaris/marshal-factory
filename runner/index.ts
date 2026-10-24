@@ -13,7 +13,7 @@ const { createRealtime } = await import("@neon/realtime/server");
 const { drizzleAdapter } = await import("@neon/realtime-drizzle");
 const { asc, eq, getTableColumns, isNull } = await import("drizzle-orm");
 const { db } = await import("../db/client");
-const { intents, issues } = await import("../db/schema");
+const { intents, jobs } = await import("../db/schema");
 const ops = await import("./ops");
 const { launchQueued } = await import("./launch");
 const { recheckScheduler } = await import("./recheck");
@@ -42,7 +42,7 @@ async function handle(intent: IntentRow) {
       return { claimed, launched: await launchQueued(logWorktree) };
     }
     case "stop":
-      return { stop: await ops.stopIssue(intent.linear_id!, intent.detail ?? "stopped in Linear") };
+      return { stop: await ops.stopJob(intent.job_id!, intent.detail ?? "stopped in Linear") };
     case "answer":
       return {
         resumed: await ops.resumeAnswered(),
@@ -94,7 +94,7 @@ async function runIntent(intent: IntentRow) {
       result: JSON.stringify(result).slice(0, 2000),
     })
     .where(eq(intents.id, intent.id));
-  return { id: intent.id, key: intent.issue_key, latencyMs, attempts, ...result };
+  return { id: intent.id, job: intent.job_id, latencyMs, attempts, ...result };
 }
 
 async function openIntents() {
@@ -157,7 +157,7 @@ const realtime = createRealtime({
 
 /**
  * Realtime does not promise every change, so a snapshot is read as the current state: open
- * intents are taken, and issues whose stage has not reached Linear yet get a write-back.
+ * intents are taken, and jobs whose stage has not reached their source yet get a write-back.
  */
 let resubscribing = false;
 async function subscribe() {
@@ -167,8 +167,8 @@ async function subscribe() {
   intentsLive.onChange((snapshot) => {
     if (snapshot.status === "live" && snapshot.data) takeIntents(snapshot.data);
   });
-  const issuesLive = await realtime.subscribe(db.select(getTableColumns(issues)).from(issues));
-  issuesLive.onChange((snapshot) => {
+  const jobsLive = await realtime.subscribe(db.select(getTableColumns(jobs)).from(jobs));
+  jobsLive.onChange((snapshot) => {
     if (snapshot.status !== "live") return;
     const rows = snapshot.data ?? [];
     if (rows.some((i) => i.stage_event_id && i.stage_event_id !== i.synced_event_id)) {
@@ -177,14 +177,14 @@ async function subscribe() {
     // A thread's own session start can bind it (ingest), outside bindThread; deliver its stop now.
     if (rows.some(stopDeliverable)) void serial("deliverStops", () => ops.deliverStops());
   });
-  for (const subscription of [intentsLive, issuesLive]) {
+  for (const subscription of [intentsLive, jobsLive]) {
     subscription.onStateChange((state) => {
       log("realtime", { status: state.status, error: state.error?.message });
       // An error is final for a subscription; start over once, with fresh ones for both.
       if (state.status === "error" && !resubscribing) {
         resubscribing = true;
         intentsLive.unsubscribe();
-        issuesLive.unsubscribe();
+        jobsLive.unsubscribe();
         setTimeout(() => {
           resubscribing = false;
           void subscribe().catch((e: unknown) => log("realtime:error", { error: String(e) }));

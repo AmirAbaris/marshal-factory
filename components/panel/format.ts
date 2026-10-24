@@ -42,4 +42,4 @@ export function groupBy<T>(rows: readonly T[], key: (row: T) => string) {
 }
 
 export const runTitle = (run: RunRow) =>
-  run.title ?? run.issue_key ?? (run.repo ? `${run.repo} session` : "Session");
+  run.title ?? run.job_key ?? (run.repo ? `${run.repo} session` : "Session");

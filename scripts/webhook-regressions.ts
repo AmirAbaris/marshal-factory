@@ -38,7 +38,7 @@ const issue = (over: Record<string, unknown> = {}, updatedFrom?: Record<string, 
     ...over,
   },
 });
-assert.deepEqual(linearIntent(issue({}, { labelIds: [] }), opts), { kind: "claim", issueKey: "FAC-11", linearId: "i1" }, "labeled in Todo means claim");
+assert.deepEqual(linearIntent(issue({}, { labelIds: [] }), opts), { kind: "claim", jobId: "linear:i1" }, "labeled in Todo means claim");
 assert.equal(linearIntent(issue({ state: { type: "started", name: "In Progress" } }), opts), null, "a started issue is not claimed again");
 assert.equal(linearIntent(issue({ identifier: "ALE-3", team: { key: "ALE" } }), opts), null, "other teams are ignored");
 assert.equal(linearIntent(issue({ labels: [], labelIds: [] }, { labelIds: ["l1"] }), opts)?.kind, "stop", "removing the label stops");
@@ -54,14 +54,14 @@ assert.equal(
 );
 assert.deepEqual(
   linearIntent({ action: "create", type: "Comment", data: { id: "c1", issueId: "i1", body: "1: (b)" } }, opts),
-  { kind: "answer", linearId: "i1" },
+  { kind: "answer", jobId: "linear:i1" },
 );
 
 const delivered = JSON.stringify({ ...issue({}, { labelIds: [] }), webhookTimestamp: now - 1_000 });
 assert.deepEqual(verifyLinear(delivered, sign(delivered), secret, now), { ok: true }, "a signed delivery passes the source's webhook");
 assert.deepEqual(
   webhook.intent(JSON.parse(delivered), opts),
-  { kind: "claim", issueKey: "FAC-11", linearId: "i1" },
+  { kind: "claim", jobId: "linear:i1" },
   "and the source's webhook turns it into the claim intent",
 );
 assert.equal(webhook.deliveryHeader, "Linear-Delivery");

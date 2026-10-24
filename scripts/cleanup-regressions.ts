@@ -5,7 +5,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { planCleanup, type BranchState } from "../lib/cleanup";
-import { attemptBranch, issueKeyFromBranch } from "../lib/factory";
+import { attemptBranch, jobKeyFromBranch } from "../lib/factory";
 import { linkedWorktrees } from "../lib/worktrees";
 
 const now = new Date("2026-10-23T12:00:00Z");
@@ -34,10 +34,10 @@ assert.deepEqual(planCleanup({ ...merged, unpushedCommits: 1, mergedAtHead: true
 assert.equal(planCleanup({ ...merged, threadRunning: true }, now, 3).kind, "hold", "a running thread keeps its worktree");
 assert.deepEqual(planCleanup({ ...merged, worktreePath: null, localBranch: false }, now, 3), { kind: "skip", reason: "already clean" });
 
-assert.equal(issueKeyFromBranch("factory/FAC-5"), "FAC-5");
-assert.equal(issueKeyFromBranch(attemptBranch("FAC-5", 2)), "FAC-5", "a retry branch maps back to its issue");
+assert.equal(jobKeyFromBranch("factory/FAC-5"), "FAC-5");
+assert.equal(jobKeyFromBranch(attemptBranch("FAC-5", 2)), "FAC-5", "a retry branch maps back to its job");
 assert.equal(attemptBranch("FAC-5", 1), "factory/FAC-5");
-assert.equal(issueKeyFromBranch("worktree-agent-abc"), undefined);
+assert.equal(jobKeyFromBranch("worktree-agent-abc"), undefined);
 
 const dir = mkdtempSync(join(tmpdir(), "cleanup-"));
 try {

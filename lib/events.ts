@@ -101,7 +101,8 @@ export const eventSchema = z.discriminatedUnion("kind", [
     ...base,
     kind: z.literal("stage"),
     ...stageReportShape,
-    issueKey: z.string().optional(),
+    jobKey: z.string().optional(),
+    issueKey: z.undefined({ error: "issueKey was renamed to jobKey" }).optional(),
     /** The branch the reporting thread was on; absent on events the runner posts itself. */
     branch: z.string().optional(),
     /** Set by the runner when a human answered a waiting question and the run resumes. */

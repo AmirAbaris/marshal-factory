@@ -1,4 +1,6 @@
+import { sql } from "drizzle-orm";
 import {
+  check,
   doublePrecision,
   index,
   integer,
@@ -9,12 +11,14 @@ import {
   timestamp,
 } from "drizzle-orm/pg-core";
 import { STAGES } from "../lib/events";
+import { JOB_SOURCES, type JobId } from "../lib/sources/shapes";
 
 // Keys equal column names: the Neon Realtime Drizzle adapter requires it.
 // Token counters are float8 because int8 and numeric reach live subscribers as strings.
 
 export const runStatus = pgEnum("run_status", ["active", "idle", "ended"]);
 export const runStage = pgEnum("run_stage", STAGES);
+export const jobSource = pgEnum("job_source", JOB_SOURCES);
 export const agentStatus = pgEnum("agent_status", [
   "running",
   "completed",
@@ -39,13 +43,15 @@ export const events = pgTable(
     session_id: text("session_id").notNull(),
     kind: text("kind").notNull(),
     at: ts("at").notNull(),
-    // Set on stage events, so an issue's stage history spans every session that worked on it.
-    issue_key: text("issue_key"),
+    // Set on stage events, so a job's stage history spans every session that worked on it.
+    job_key: text("job_key"),
     payload: jsonb("payload").notNull(),
+    /** Why ingest refused this stage event; null when the job and the run took it. */
+    refusal: text("refusal"),
   },
   (t) => [
     index("events_session_at_idx").on(t.session_id, t.at),
-    index("events_issue_key_idx").on(t.issue_key),
+    index("events_job_key_idx").on(t.job_key),
   ],
 );
 
@@ -56,7 +62,7 @@ export const runs = pgTable(
     cwd: text("cwd"),
     repo: text("repo"),
     branch: text("branch"),
-    issue_key: text("issue_key"),
+    job_key: text("job_key"),
     t3_thread_id: text("t3_thread_id"),
     title: text("title"),
     status: runStatus("status").notNull().default("active"),
@@ -93,28 +99,28 @@ export const agents = pgTable(
   (t) => [index("agents_session_idx").on(t.session_id)],
 );
 
-/** One Linear issue the factory claimed. Ingest keeps its stage; the poller owns the rest. */
-export const issues = pgTable(
-  "issues",
+export const jobs = pgTable(
+  "jobs",
   {
-    linear_id: text("linear_id").primaryKey(),
+    id: text("id").primaryKey().$type<JobId>(),
+    source: jobSource("source").notNull().default("linear"),
+    external_id: text("external_id").notNull(),
     key: text("key").notNull().unique(),
     title: text("title").notNull(),
     url: text("url").notNull(),
     description: text("description"),
-    linear_state: text("linear_state"),
-    labels: jsonb("labels").$type<string[]>().notNull().default([]),
+    repo: text("repo").notNull(),
+    writeback: jsonb("writeback").notNull(),
+    source_state: jsonb("source_state").notNull(),
     stage: runStage("stage").notNull().default("queued"),
     stage_at: ts("stage_at"),
     stage_summary: text("stage_summary"),
     question: text("question"),
     pr_url: text("pr_url"),
-    /** The stage event the issue's stage came from; write-back keys its Linear comment on it. */
+    /** The stage event the job's stage came from; write-back keys its source comment on it. */
     stage_event_id: text("stage_event_id"),
     synced_event_id: text("synced_event_id"),
-    /** Ids of every Linear comment the factory posted here; anything else on the issue is a human. */
-    factory_comment_ids: jsonb("factory_comment_ids").$type<string[]>().notNull().default([]),
-    /** Reply comments already handed to a thread; the replay guard for resumes. */
+    /** Reply ids already handed to a thread; the replay guard for resumes. */
     delivered_reply_ids: jsonb("delivered_reply_ids").$type<string[]>().notNull().default([]),
     answered_at: ts("answered_at"),
     answer: text("answer"),
@@ -124,6 +130,7 @@ export const issues = pgTable(
     attempt: integer("attempt").notNull().default(1),
     /** Why the previous attempt failed; the next attempt's first message quotes it. */
     previous_failure: text("previous_failure"),
+    budget_usd: doublePrecision("budget_usd").notNull(),
     /** When the watchdog nudged a stuck run, and in which stage; cleared once the stage moves on. */
     nudged_at: ts("nudged_at"),
     nudged_stage: runStage("nudged_stage"),
@@ -136,7 +143,10 @@ export const issues = pgTable(
     claimed_at: ts("claimed_at").notNull(),
     updated_at: ts("updated_at").notNull(),
   },
-  (t) => [index("issues_claimed_at_idx").on(t.claimed_at)],
+  (t) => [
+    index("jobs_claimed_at_idx").on(t.claimed_at),
+    check("jobs_id_check", sql`${t.id} = ${t.source}::text || ':' || ${t.external_id}`),
+  ],
 );
 
 /** Every webhook delivery, keyed by its id, so a redelivery is recognised and changes nothing. */
@@ -159,8 +169,7 @@ export const intents = pgTable(
   {
     id: text("id").primaryKey(),
     kind: intentKind("kind").notNull(),
-    issue_key: text("issue_key"),
-    linear_id: text("linear_id"),
+    job_id: text("job_id").$type<JobId>(),
     pr_url: text("pr_url"),
     detail: text("detail"),
     created_at: ts("created_at").notNull(),
@@ -175,5 +184,5 @@ export const intents = pgTable(
 export type EventRow = typeof events.$inferSelect;
 export type RunRow = typeof runs.$inferSelect;
 export type AgentRow = typeof agents.$inferSelect;
-export type IssueRow = typeof issues.$inferSelect;
+export type JobRow = typeof jobs.$inferSelect;
 export type IntentRow = typeof intents.$inferSelect;

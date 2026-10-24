@@ -1,25 +1,26 @@
 import { and, eq, isNotNull, isNull, ne, notInArray, or } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import type * as schema from "../db/schema";
-import { issues, runs } from "../db/schema";
+import { jobs, runs } from "../db/schema";
+import type { JobId } from "./sources/shapes";
 
 /** Claims a conflicting PR head for one send-back; false when this head was already handled. */
-export async function claimConflict(db: NodePgDatabase<typeof schema>, linearId: string, head: string) {
+export async function claimConflict(db: NodePgDatabase<typeof schema>, id: JobId, head: string) {
   const claimed = await db
-    .update(issues)
+    .update(jobs)
     .set({ conflict_head: head })
     .where(
       and(
-        eq(issues.linear_id, linearId),
-        eq(issues.stage, "pr"),
-        or(isNull(issues.conflict_head), ne(issues.conflict_head, head)),
+        eq(jobs.id, id),
+        eq(jobs.stage, "pr"),
+        or(isNull(jobs.conflict_head), ne(jobs.conflict_head, head)),
       ),
     )
-    .returning({ key: issues.key });
+    .returning({ key: jobs.key });
   return claimed.length > 0;
 }
 
-/** Hand-started runs: a PR and an issue key, but no claimed issue that the PR check would see. */
+/** Hand-started runs: a PR and a job key, but no claimed job that the PR check would see. */
 export function unclaimedRunsWithPr(db: NodePgDatabase<typeof schema>) {
   return db
     .select()
@@ -27,9 +28,9 @@ export function unclaimedRunsWithPr(db: NodePgDatabase<typeof schema>) {
     .where(
       and(
         isNotNull(runs.pr_url),
-        isNotNull(runs.issue_key),
+        isNotNull(runs.job_key),
         or(isNull(runs.stage), ne(runs.stage, "merged")),
-        notInArray(runs.issue_key, db.select({ key: issues.key }).from(issues)),
+        notInArray(runs.job_key, db.select({ key: jobs.key }).from(jobs)),
       ),
     );
 }

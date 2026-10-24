@@ -1,10 +1,11 @@
-import { and, eq, inArray, isNotNull, isNull, lte, ne, or, sql } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, sql } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import * as schema from "../db/schema";
-import { agents, events, issues, runs } from "../db/schema";
+import { agents, events, jobs, runs } from "../db/schema";
 import type { FactoryEvent, Usage } from "./events";
-import { issueKeyFromBranch } from "./factory";
+import { jobKeyFromBranch } from "./factory";
 import { branchSpend } from "./spend";
+import { decideStage, type StageVerdict } from "./stages";
 
 type Db = NodePgDatabase<typeof schema>;
 type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
@@ -22,7 +23,6 @@ const RUN_STATUS: Record<FactoryEvent["kind"], RunStatus | null> = {
   stage: null,
   session_end: "ended",
 };
-
 
 const when = (ms: number) => new Date(ms);
 
@@ -47,7 +47,7 @@ async function upsertRun(tx: Tx, event: FactoryEvent) {
           cwd: event.cwd,
           repo: event.repo,
           branch: event.branch,
-          issue_key: issueKeyFromBranch(event.branch),
+          job_key: jobKeyFromBranch(event.branch),
           t3_thread_id: event.t3ThreadId,
           title: event.title,
           model: event.model,
@@ -87,7 +87,7 @@ async function upsertRun(tx: Tx, event: FactoryEvent) {
             }
           : {}),
         ...Object.fromEntries(
-          ["cwd", "repo", "branch", "issue_key", "t3_thread_id", "title", "model", "transcript_path"]
+          ["cwd", "repo", "branch", "job_key", "t3_thread_id", "title", "model", "transcript_path"]
             .filter((name) => name in meta)
             .map((name) => [name, keep(name)]),
         ),
@@ -290,7 +290,7 @@ async function applyStage(tx: Tx, e: Extract<FactoryEvent, { kind: "stage" }>) {
       session_id: e.sessionId,
       started_at: at,
       last_event_at: at,
-      issue_key: e.issueKey,
+      job_key: e.jobKey,
       branch: e.branch,
       stage: e.stage,
       stage_at: at,
@@ -303,7 +303,7 @@ async function applyStage(tx: Tx, e: Extract<FactoryEvent, { kind: "stage" }>) {
       set: {
         started_at: sql.raw(`least(runs."started_at", excluded."started_at")`),
         last_event_at: sql.raw(`greatest(runs."last_event_at", excluded."last_event_at")`),
-        issue_key: sql.raw(`coalesce(runs."issue_key", excluded."issue_key")`),
+        job_key: sql.raw(`coalesce(runs."job_key", excluded."job_key")`),
         branch: sql.raw(`coalesce(runs."branch", excluded."branch")`),
         stage: ifNewerStage("stage"),
         stage_summary: ifNewerStage("stage_summary"),
@@ -314,53 +314,64 @@ async function applyStage(tx: Tx, e: Extract<FactoryEvent, { kind: "stage" }>) {
     });
 }
 
-/** A claimed issue follows its runs' stage reports, newest first, and remembers its latest session. */
-/** True for the issue's current attempt branch, so an older attempt's thread cannot move a retry. */
+/** True for the job's current attempt branch, so an older attempt's thread cannot move a retry. */
 const onCurrentAttempt = (branch: string) =>
-  sql`${branch} = case when ${issues.attempt} > 1 then 'factory/' || ${issues.key} || '-a' || ${issues.attempt} else 'factory/' || ${issues.key} end`;
+  sql`${branch} = case when ${jobs.attempt} > 1 then 'factory/' || ${jobs.key} || '-a' || ${jobs.attempt} else 'factory/' || ${jobs.key} end`;
 
-async function applyToIssue(tx: Tx, event: FactoryEvent) {
-  if (event.kind === "session_start") {
-    const key = issueKeyFromBranch(event.branch);
-    if (!key) return;
-    await tx
-      .update(issues)
-      .set({
-        session_id: event.sessionId,
-        t3_thread_id: sql`coalesce(${event.t3ThreadId ?? null}, ${issues.t3_thread_id})`,
-        updated_at: when(event.at),
-      })
-      .where(and(eq(issues.key, key), onCurrentAttempt(event.branch!)));
-  }
-  if (event.kind === "stage" && event.issueKey) {
-    const at = when(event.at);
-    await tx
-      .update(issues)
-      .set({
-        stage: event.stage,
-        stage_at: at,
-        stage_summary: event.summary,
-        question: event.question ?? null,
-        pr_url: sql`coalesce(${event.prUrl ?? null}, ${issues.pr_url})`,
-        stage_event_id: event.eventId,
-        updated_at: at,
-      })
-      .where(
-        and(
-          eq(issues.key, event.issueKey),
-          or(isNull(issues.stage_at), lte(issues.stage_at, at)),
-          // Reports from a thread carry its branch; the runner's own events target the current attempt.
-          // A failed attempt stays failed: a stopped or timed-out thread that reports again does not revive it.
-          ...(event.branch ? [onCurrentAttempt(event.branch), ne(issues.stage, "failed")] : []),
-        ),
-      );
-  }
+async function linkSession(tx: Tx, event: Extract<FactoryEvent, { kind: "session_start" }>) {
+  const key = jobKeyFromBranch(event.branch);
+  if (!key) return;
+  await tx
+    .update(jobs)
+    .set({
+      session_id: event.sessionId,
+      t3_thread_id: sql`coalesce(${event.t3ThreadId ?? null}, ${jobs.t3_thread_id})`,
+      updated_at: when(event.at),
+    })
+    .where(and(eq(jobs.key, key), onCurrentAttempt(event.branch!)));
 }
 
-async function project(tx: Tx, event: FactoryEvent) {
-  await applyToIssue(tx, event);
-  if (event.kind === "stage") return applyStage(tx, event);
-  await upsertRun(tx, event);
+/** Moves the claimed job the event names; undefined when it names none. */
+async function moveJob(tx: Tx, event: Extract<FactoryEvent, { kind: "stage" }>): Promise<StageVerdict | undefined> {
+  if (!event.jobKey) return;
+  const [job] = await tx.select().from(jobs).where(eq(jobs.key, event.jobKey)).for("update");
+  if (!job) return;
+  const at = when(event.at);
+  const verdict = decideStage(job, { stage: event.stage, at, eventId: event.eventId, branch: event.branch });
+  if (verdict.outcome !== "apply") return verdict;
+  await tx
+    .update(jobs)
+    .set({
+      stage: event.stage,
+      stage_at: at,
+      stage_summary: event.summary,
+      question: event.question ?? null,
+      pr_url: sql`coalesce(${event.prUrl ?? null}, ${jobs.pr_url})`,
+      stage_event_id: event.eventId,
+      updated_at: at,
+    })
+    .where(eq(jobs.id, job.id));
+  return verdict;
+}
+
+export type StageRefusal = { eventId: string; reason: string };
+
+async function project(tx: Tx, event: FactoryEvent): Promise<StageRefusal | undefined> {
+  if (event.kind !== "stage") {
+    if (event.kind === "session_start") await linkSession(tx, event);
+    await upsertRun(tx, event);
+    await applyAgentEvent(tx, event);
+    return;
+  }
+  const verdict = await moveJob(tx, event);
+  if (verdict?.outcome === "refuse") {
+    await tx.update(events).set({ refusal: verdict.reason }).where(eq(events.event_id, event.eventId));
+    return { eventId: event.eventId, reason: verdict.reason };
+  }
+  await applyStage(tx, event);
+}
+
+async function applyAgentEvent(tx: Tx, event: FactoryEvent) {
   switch (event.kind) {
     case "agent_start":
       return applyAgentStart(tx, event);
@@ -378,8 +389,10 @@ async function project(tx: Tx, event: FactoryEvent) {
 export type IngestResult = {
   received: number;
   inserted: number;
-  /** USD spent so far per factory branch (one attempt at an issue) touched by the batch; the reporter caches it for the budget hook. */
+  /** USD spent so far per factory branch (one attempt at a job) touched by the batch; the reporter caches it for the budget hook. */
   spend: Record<string, number>;
+  /** Stage events the transition table refused; stored, but neither the job nor the run moved. */
+  refused: StageRefusal[];
 };
 
 /**
@@ -405,7 +418,7 @@ export async function ingest(
           session_id: e.sessionId,
           kind: e.kind,
           at: when(e.at),
-          issue_key: e.kind === "stage" ? e.issueKey : undefined,
+          job_key: e.kind === "stage" ? e.jobKey : undefined,
           payload: e,
         })),
       )
@@ -413,15 +426,17 @@ export async function ingest(
       .returning({ event_id: events.event_id });
 
     const fresh = new Set(stored.map((row) => row.event_id));
+    const refused: StageRefusal[] = [];
     for (const event of batch) {
       if (!fresh.delete(event.eventId)) continue;
-      await project(tx, event);
+      const refusal = await project(tx, event);
+      if (refusal) refused.push(refusal);
     }
     const branches = await tx
       .selectDistinct({ branch: runs.branch })
       .from(runs)
-      .where(and(inArray(runs.session_id, sessionIds), isNotNull(runs.issue_key), isNotNull(runs.branch)));
+      .where(and(inArray(runs.session_id, sessionIds), isNotNull(runs.job_key), isNotNull(runs.branch)));
     const spend = await branchSpend(tx, branches.map((b) => b.branch!));
-    return { received: batch.length, inserted: stored.length, spend };
+    return { received: batch.length, inserted: stored.length, spend, refused };
   });
 }

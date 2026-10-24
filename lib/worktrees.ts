@@ -3,9 +3,11 @@ import { existsSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { z } from "zod";
-import type { IssueRow } from "../db/schema";
+import type { JobRow } from "../db/schema";
 import { planCleanup, type BranchState } from "./cleanup";
-import { attemptBranch, issueKeyFromBranch } from "./factory";
+import { attemptBranch, jobKeyFromBranch } from "./factory";
+
+type ClaimedJob = Pick<JobRow, "key" | "attempt" | "stage" | "stage_at" | "claimed_at">;
 
 const run = promisify(execFile);
 const T3 = process.env.T3CODE_CLI_PATH ?? "t3";
@@ -56,20 +58,20 @@ const prSchema = z.array(
   z.object({ state: z.string(), headRefOid: z.string(), mergedAt: z.string().nullable(), closedAt: z.string().nullable() }),
 );
 
-async function outcomeOf(repo: string, branch: string, issue: IssueRow | undefined, head: string | null) {
+async function outcomeOf(repo: string, branch: string, job: ClaimedJob | undefined, head: string | null) {
   const prs = prSchema.parse(
     JSON.parse(await sh("gh", ["pr", "list", "--head", branch, "--state", "all", "--json", "state,headRefOid,mergedAt,closedAt"], repo)),
   );
   const merged = prs.find((p) => p.state === "MERGED");
   const mergedAtHead = Boolean(merged && head && merged.headRefOid === head);
-  // A claimed issue's own stage decides; a merged PR on its branch does not end a run that is still going.
-  // An earlier attempt's branch is finished once the issue was claimed again.
-  if (issue && branch !== attemptBranch(issue.key, issue.attempt)) {
-    return { outcome: "failed" as const, outcomeAt: issue.claimed_at, mergedAtHead };
+  // A claimed job's own stage decides; a merged PR on its branch does not end a run that is still going.
+  // An earlier attempt's branch is finished once the job was claimed again.
+  if (job && branch !== attemptBranch(job.key, job.attempt)) {
+    return { outcome: "failed" as const, outcomeAt: job.claimed_at, mergedAtHead };
   }
-  if (issue) {
-    const outcome = issue.stage === "merged" ? "merged" : issue.stage === "failed" ? "failed" : "open";
-    return { outcome: outcome as "merged" | "failed" | "open", outcomeAt: issue.stage_at, mergedAtHead };
+  if (job) {
+    const outcome = job.stage === "merged" ? "merged" : job.stage === "failed" ? "failed" : "open";
+    return { outcome: outcome as "merged" | "failed" | "open", outcomeAt: job.stage_at, mergedAtHead };
   }
   if (merged) return { outcome: "merged" as const, outcomeAt: new Date(merged.mergedAt!), mergedAtHead };
   const closed = prs.find((p) => p.state === "CLOSED");
@@ -99,7 +101,7 @@ export type CleanupReport = {
  */
 export async function cleanupRepo(
   repo: string,
-  issuesByKey: Map<string, IssueRow>,
+  jobsByKey: Map<string, ClaimedJob>,
   graceDays: number,
   { now = new Date(), dryRun = false } = {},
 ): Promise<CleanupReport> {
@@ -114,7 +116,7 @@ export async function cleanupRepo(
 
   const checkedOut = await sh("git", ["branch", "--show-current"], repo);
   for (const branch of branches) {
-    const key = issueKeyFromBranch(branch);
+    const key = jobKeyFromBranch(branch);
     if (!key) continue;
     if (branch === checkedOut) {
       report.held.push({ key, reason: "checked out in the main repo" });
@@ -131,7 +133,7 @@ export async function cleanupRepo(
       branch,
       worktreePath,
       localBranch: local,
-      ...(await outcomeOf(repo, branch, issuesByKey.get(key), head)),
+      ...(await outcomeOf(repo, branch, jobsByKey.get(key), head)),
       dirtyFiles: worktreePath && existsSync(worktreePath) ? await countLines("git", ["status", "--porcelain"], worktreePath) : 0,
       unpushedCommits: local ? await countLines("git", ["rev-list", branch, "--not", "--remotes"], repo) : 0,
       threadRunning: branchThreads.some((t) => t.running),

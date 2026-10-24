@@ -31,8 +31,18 @@ const fakeClient = {
 };
 const adapter = createLinearAdapter(() => ({ client: fakeClient as never, db, limits: factorySchema.parse({}) }));
 const names = (id: string) => (issueLabels.get(id) ?? []).map((l) => l.name).sort();
-const job = (linear_id: string, attempt: number, stage = "queued") =>
-  ({ linear_id, key: "REL-1", attempt, stage, stage_summary: "boom", factory_comment_ids: [] }) as never;
+const job = (issueId: string, attempt: number, stage = "queued") =>
+  ({
+    id: `linear:${issueId}`,
+    source: "linear",
+    external_id: issueId,
+    key: "REL-1",
+    attempt,
+    stage,
+    stage_summary: "boom",
+    writeback: { kind: "linear", issueId },
+    source_state: { state: "Todo", labels: [], factoryCommentIds: [] },
+  }) as never;
 
 issueLabels.set("retry-cleared", [label("factory"), label("bug")]);
 await adapter.announceClaim(job("retry-cleared", 2));

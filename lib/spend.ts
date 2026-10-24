@@ -7,7 +7,7 @@ import { costUsd } from "./pricing";
 type Reader = Pick<NodePgDatabase<typeof schema>, "select">;
 
 /**
- * USD per factory branch: every run on it, main session plus subagents. Each attempt at an issue
+ * USD per factory branch: every run on it, main session plus subagents. Each attempt at a job
  * gets its own branch, so this is the spend of one attempt, which is what the cap limits.
  */
 export async function branchSpend(db: Reader, branches: readonly string[]) {

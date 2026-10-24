@@ -1,7 +1,7 @@
 import { and, eq, isNotNull, sql } from "drizzle-orm";
-import { issues, type IssueRow } from "../db/schema";
+import { jobs, type JobRow } from "../db/schema";
 
-// How an issue relates to its T3 thread, and when a stop is still owed to it.
+// How a job relates to its T3 thread, and when a stop is still owed to it.
 //
 //   binding   t3_thread_id is null (none), a `pending:` launch marker, or a real thread id (bound)
 //   stopped   stage failed by a stop (its stage event id starts with `stop:`)
@@ -10,10 +10,10 @@ import { issues, type IssueRow } from "../db/schema";
 //
 // A stop is delivered only to a bound thread. Every runner binding goes through bindThread, which
 // delivers an owed stop right after it binds; a binding made by ingest (the thread's own session
-// start) is caught by the runner's issue subscription and its timer. A new attempt is refused
+// start) is caught by the runner's jobs subscription and its timer. A new attempt is refused
 // while any launch is pending or a stop is owed, so no thread is left running unbound.
 
-type Row = Pick<IssueRow, "stage" | "stage_event_id" | "t3_thread_id" | "stop_sent_to">;
+type Row = Pick<JobRow, "stage" | "stage_event_id" | "t3_thread_id" | "stop_sent_to">;
 
 export const PENDING = "pending:";
 
@@ -36,11 +36,11 @@ export const canReclaim = (i: Row) => i.stage === "failed" && bindingOf(i.t3_thr
 
 // The same rules as SQL, for the queries that claim rows. scripts/launch-regressions.ts checks
 // that each one agrees with its predicate above in every state.
-const stoppedSql = and(eq(issues.stage, "failed"), sql`${issues.stage_event_id} like 'stop:%'`);
-const pendingSql = sql`${issues.t3_thread_id} like 'pending:%'`;
-const boundSql = and(isNotNull(issues.t3_thread_id), sql`${issues.t3_thread_id} not like 'pending:%'`);
-const unsentSql = sql`${issues.stop_sent_to} is distinct from ${issues.t3_thread_id}`;
+const stoppedSql = and(eq(jobs.stage, "failed"), sql`${jobs.stage_event_id} like 'stop:%'`);
+const pendingSql = sql`${jobs.t3_thread_id} like 'pending:%'`;
+const boundSql = and(isNotNull(jobs.t3_thread_id), sql`${jobs.t3_thread_id} not like 'pending:%'`);
+const unsentSql = sql`${jobs.stop_sent_to} is distinct from ${jobs.t3_thread_id}`;
 
 export const stopOwedSql = sql`(${stoppedSql} and (${pendingSql} or (${boundSql} and ${unsentSql})))`;
 export const stopDeliverableSql = and(stoppedSql, boundSql, unsentSql);
-export const canReclaimSql = sql`(${issues.stage} = 'failed' and (${issues.t3_thread_id} is null or not ${pendingSql}) and not coalesce(${stopOwedSql}, false))`;
+export const canReclaimSql = sql`(${jobs.stage} = 'failed' and (${jobs.t3_thread_id} is null or not ${pendingSql}) and not coalesce(${stopOwedSql}, false))`;

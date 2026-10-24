@@ -21,7 +21,7 @@ export type WatchAction =
 const minutes = (ms: number) => ms / 60_000;
 
 /**
- * Decides what a working issue needs. A run is stuck when it has been quiet past the threshold,
+ * Decides what a working job needs. A run is stuck when it has been quiet past the threshold,
  * or its thread stopped and stayed quiet past a short grace. The first time it gets a nudge; if
  * it is still stuck in the same stage after the second threshold, it fails.
  */

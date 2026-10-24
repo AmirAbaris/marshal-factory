@@ -85,6 +85,20 @@
       "when": 1792792530641,
       "tag": "0011_stop_sent_to",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1792869777139,
+      "tag": "0012_jobs",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1792872987205,
+      "tag": "0013_event_refusal",
+      "breakpoints": true
     }
   ]
 }

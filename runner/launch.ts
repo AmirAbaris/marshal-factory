@@ -136,7 +136,7 @@ export async function launchEntries(entries: readonly LaunchEntry[], deps: Launc
 }
 
 /**
- * Starts a T3 thread for every queued issue that has none, on a worktree cut from freshly fetched
+ * Starts a T3 thread for every queued job that has none, on a worktree cut from freshly fetched
  * origin/main. Each launch is claimed with a pending marker first, so a crash or timeout after T3
  * created the thread can never start a second one on the same branch.
  */

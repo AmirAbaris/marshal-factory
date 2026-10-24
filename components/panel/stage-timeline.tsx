@@ -5,29 +5,33 @@ import { MAIN_PATH, STAGE_META } from "./stages";
 import { Time } from "./time";
 
 type StageEvent = Extract<FactoryEvent, { kind: "stage" }>;
+type Report = { event: StageEvent; refusal: string | null };
 
 type Step = {
   key: string;
   stage: Stage;
   event: StageEvent | undefined;
-  state: "done" | "now" | "todo";
+  refusal: string | null;
+  state: "done" | "now" | "todo" | "refused";
 };
 
-/** Every report in order, then the main-path stages still ahead of the current one. */
-function steps(reports: readonly StageEvent[]): Step[] {
+/** Every report in order, then the main-path stages still ahead of the current one. A refused report never becomes current. */
+function steps(reports: readonly Report[]): Step[] {
+  const now = reports.findLastIndex((r) => !r.refusal);
   const reported = reports.map(
-    (event, i): Step => ({
+    ({ event, refusal }, i): Step => ({
       key: event.eventId,
       stage: event.stage,
       event,
-      state: i === reports.length - 1 ? "now" : "done",
+      refusal,
+      state: refusal ? "refused" : i === now ? "now" : "done",
     }),
   );
-  const current = MAIN_PATH.indexOf(reports.at(-1)!.stage);
+  const current = now === -1 ? -1 : MAIN_PATH.indexOf(reports[now]!.event.stage);
   const ahead = current === -1 ? [] : MAIN_PATH.slice(current + 1);
   return [
     ...reported,
-    ...ahead.map((stage): Step => ({ key: stage, stage, event: undefined, state: "todo" })),
+    ...ahead.map((stage): Step => ({ key: stage, stage, event: undefined, refusal: null, state: "todo" })),
   ];
 }
 
@@ -39,14 +43,14 @@ const DOT: Partial<Record<Stage, string>> = {
 export function StageTimeline({ events }: { events: readonly EventRow[] }) {
   const reports = events.flatMap((row) => {
     const parsed = eventSchema.safeParse(row.payload);
-    return parsed.success && parsed.data.kind === "stage" ? [parsed.data] : [];
+    return parsed.success && parsed.data.kind === "stage" ? [{ event: parsed.data, refusal: row.refusal }] : [];
   });
   if (reports.length === 0) {
     return <p className="text-muted-foreground">No stage reported yet.</p>;
   }
   return (
     <ol className="ml-1.5 flex flex-col">
-      {steps(reports).map(({ key, stage, event, state }) => (
+      {steps(reports).map(({ key, stage, event, refusal, state }) => (
         <li
           key={key}
           data-state={state}
@@ -59,11 +63,12 @@ export function StageTimeline({ events }: { events: readonly EventRow[] }) {
               state === "done" && "bg-success",
               state === "now" && "bg-primary ring-4 ring-primary/20",
               state === "now" && DOT[stage],
+              state === "refused" && "bg-transparent ring-1 ring-destructive/60",
             )}
           />
           <div className="flex justify-between">
-            <b className={cn("font-medium", state === "todo" && "text-faint")}>
-              {event?.answer ? "Answer received · resumed" : STAGE_META[stage].label}
+            <b className={cn("font-medium", (state === "todo" || state === "refused") && "text-faint")}>
+              {refusal ? `Refused · ${STAGE_META[stage].label}` : event?.answer ? "Answer received · resumed" : STAGE_META[stage].label}
             </b>
             {event && (
               <span className="font-mono text-xs text-faint">
@@ -71,14 +76,14 @@ export function StageTimeline({ events }: { events: readonly EventRow[] }) {
               </span>
             )}
           </div>
-          {event?.answer ? (
+          {event?.answer && !refusal ? (
             <blockquote className="mt-1 border-l-2 border-success/60 pl-2 whitespace-pre-wrap text-muted-foreground">
               {event.answer}
             </blockquote>
           ) : (
             event && (
               <p className="mt-0.5 whitespace-pre-wrap text-muted-foreground">
-                {event.question ?? event.summary}
+                {refusal ?? event.question ?? event.summary}
               </p>
             )
           )}
