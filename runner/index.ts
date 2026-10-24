@@ -15,6 +15,7 @@ const { asc, eq, getTableColumns, isNull } = await import("drizzle-orm");
 const { db } = await import("../db/client");
 const { intents, jobs } = await import("../db/schema");
 const ops = await import("./ops");
+const { createBeat, inventoryCollectors, systemCollectors, thisMachine } = await import("./heartbeat");
 const { launchQueued } = await import("./launch");
 const { recheckScheduler } = await import("./recheck");
 const { everyAtMost, serialQueue } = await import("./queue");
@@ -129,14 +130,29 @@ async function tick() {
   };
 }
 
+const machine = await thisMachine();
+const beat = createBeat({
+  machine,
+  heartbeatCollectors: systemCollectors(async () => ({
+    max: ops.config.factory.maxInFlight,
+    inFlight: await ops.machineInFlight(machine.id),
+  })),
+  inventoryCollectors: inventoryCollectors(),
+  inventoryMs: ops.config.factory.inventoryMinutes * 60_000,
+  log,
+});
+
 if (process.argv.includes("--once")) {
+  await beat();
   await serial("reconcile", startupReconcile);
   takeIntents(await openIntents());
   await queue.idle();
   process.exit(0);
 }
 
-log("start", { pid: process.pid, tickSeconds: ops.config.factory.tickSeconds });
+log("start", { pid: process.pid, tickSeconds: ops.config.factory.tickSeconds, machineId: machine.id, machineName: machine.name });
+await beat();
+setInterval(() => void beat(), ops.config.factory.tickSeconds * 1000);
 await serial("reconcile", startupReconcile);
 takeIntents(await openIntents());
 

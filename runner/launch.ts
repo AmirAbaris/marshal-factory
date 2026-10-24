@@ -4,6 +4,7 @@ import { promisify } from "node:util";
 import { z } from "zod";
 import { forbidInTest } from "../lib/test-mode";
 import { PENDING } from "./binding";
+import { thisMachine } from "./heartbeat";
 import { bindThread, claimLaunch, config, pendingLaunches, releaseLaunch, toLaunch } from "./ops";
 
 const run = promisify(execFile);
@@ -149,7 +150,7 @@ export async function launchQueued(onWorktree: (check: Record<string, unknown>) 
   await sh("git", ["fetch", "origin", "--prune"], repo);
   const origin = await sh("git", ["rev-parse", "origin/main"], repo);
   const launched = await launchEntries(pending, {
-    claim: claimLaunch,
+    claim: async (key, marker) => claimLaunch(key, marker, (await thisMachine()).id),
     start: (entry) => startThread(repo, entry.branch, entry.threadTitle, entry.message),
     bind: bindThread,
     release: releaseLaunch,

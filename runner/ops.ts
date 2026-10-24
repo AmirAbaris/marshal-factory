@@ -485,6 +485,7 @@ export async function claim({
             stage_event_id: null,
             synced_event_id: null,
             t3_thread_id: null,
+            machine_id: null,
             session_id: null,
             nudged_at: null,
             nudged_stage: null,
@@ -678,17 +679,25 @@ async function finishStop(job: Job, reopen: boolean) {
 }
 
 /** Marks a queued job as being launched; false when another launch already holds it. */
-export async function claimLaunch(key: string, marker: string) {
+export async function claimLaunch(key: string, marker: string, machineId: string) {
   const claimed = await db
     .update(jobs)
-    .set({ t3_thread_id: marker })
+    .set({ t3_thread_id: marker, machine_id: machineId })
     .where(and(eq(jobs.key, key), isNull(jobs.t3_thread_id), isNull(jobs.session_id)))
     .returning({ key: jobs.key });
   return claimed.length > 0;
 }
 
 export async function releaseLaunch(key: string, marker: string) {
-  await db.update(jobs).set({ t3_thread_id: null }).where(and(eq(jobs.key, key), eq(jobs.t3_thread_id, marker)));
+  await db.update(jobs).set({ t3_thread_id: null, machine_id: null }).where(and(eq(jobs.key, key), eq(jobs.t3_thread_id, marker)));
+}
+
+export async function machineInFlight(machineId: string) {
+  const [{ count }] = await db
+    .select({ count: sql<number>`count(*)::int` })
+    .from(jobs)
+    .where(and(eq(jobs.machine_id, machineId), inArray(jobs.stage, IN_FLIGHT)));
+  return count;
 }
 
 export async function pendingLaunches() {

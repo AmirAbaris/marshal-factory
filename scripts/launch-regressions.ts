@@ -26,13 +26,13 @@ const id = `launch-regress-${Date.now()}`;
 const jid = jobId("linear", id);
 await db.insert(jobs).values(linearJob(id, id));
 try {
-  assert.equal(await claimLaunch(id, "pending:1"), true, "the first launch claims the job");
-  assert.equal(await claimLaunch(id, "pending:2"), false, "a second launch, after a crash or timeout, does not");
+  assert.equal(await claimLaunch(id, "pending:1", "test-machine"), true, "the first launch claims the job");
+  assert.equal(await claimLaunch(id, "pending:2", "test-machine"), false, "a second launch, after a crash or timeout, does not");
   assert.deepEqual((await pendingLaunches()).find((p) => p.key === id), { key: id, marker: "pending:1", branch: `factory/${id}`, stage: "queued" });
   await releaseLaunch(id, "pending:2");
   assert.equal((await db.select().from(jobs).where(eq(jobs.key, id)))[0]!.t3_thread_id, "pending:1", "only the holder's marker is released");
   await releaseLaunch(id, "pending:1");
-  assert.equal(await claimLaunch(id, "pending:3"), true, "a released job can launch again");
+  assert.equal(await claimLaunch(id, "pending:3", "test-machine"), true, "a released job can launch again");
   // The binding × stop state space (runner/binding.ts). Each cell checks the predicate, its SQL
   // twin, what deliverStops does, and whether a retry claim may start a new attempt.
   const stop = { stage: "failed" as const, stage_event_id: `stop:${id}:1:x`, stage_summary: "Stopped: test." };
