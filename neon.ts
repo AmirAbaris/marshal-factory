@@ -2,7 +2,8 @@ import { defineConfig } from "@neon/config/v1";
 import { readAppFile } from "./lib/github/app";
 
 export default defineConfig({
-  preview: { realtime: { allowedOrigins: ["http://localhost:3000"] } },
+  auth: true,
+  preview: { realtime: { allowedOrigins: ["*"] } },
   functions: {
     ingest: {
       name: "factory ingest",

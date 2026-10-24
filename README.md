@@ -42,6 +42,14 @@ runner daemon (launchd) ◄─────────────────�
 - **Merge conflicts.** A push to main makes the runner wait for GitHub to recompute mergeability, then read every open factory PR through the GitHub App. When a PR in stage `pr` turns conflicting, its thread is told to merge `origin/main`, resolve, rerun checks and report `pr` again, and the run moves back to Implementing. This happens once per PR head.
 - **Watchdog.** The runner's timer checks issues in a working stage. One that has been quiet for `stuckAfterMinutes`, or whose thread stopped and stayed quiet for `stoppedGraceMinutes`, gets one nudge asking the thread to continue and report its stage. If it is still stuck in the same stage `failAfterNudgeMinutes` later, the issue fails, Linear gets the reason, and the slot frees up. A thread T3 no longer has fails at once.
 
+## Panel access and deploys
+
+- **Sign-in.** Neon Auth (`auth: true` in `neon.ts`) holds the users. `proxy.ts` sends a request without a session to `/auth/sign-in`, answers `/api/*` with 401, and shows a 403 page to an account whose email is not in `FACTORY_OWNER_EMAILS` (comma-separated, case-insensitive). An unset or empty list admits nobody. `lib/live-queries.ts` checks the owner again before it seals a query, so only the owner ever holds a Realtime credential.
+- **Owner account.** Sign-up stays off. To create the owner on a branch, run `neon neon-auth config email-password update --disable-sign-up false`, sign up through `POST /api/auth/sign-up/email`, then run the command again with `--disable-sign-up true`.
+- **Environment.** The panel needs `DATABASE_URL`, `DATABASE_URL_UNPOOLED`, `NEON_AUTH_BASE_URL`, `NEON_AUTH_COOKIE_SECRET` (`openssl rand -base64 32`), `NEON_REALTIME_URL`, `NEXT_PUBLIC_NEON_REALTIME_URL`, `NEON_REALTIME_SECRET` and `FACTORY_OWNER_EMAILS`. `next build` fails without the cookie secret.
+- **Realtime origins.** The allowed origins are `*`, because Vercel preview URLs change per branch. The sealed query is the credential, and only the owner can get one.
+- **Vercel.** `vercel.json` turns off automatic deploys from `main` and runs `bun run db:migrate` before `bun run build`, so each preview migrates its own Neon branch. Production deploys happen only through `vercel deploy --prod`.
+
 ## Testing
 
 `bun run test:regressions` runs every `scripts/*-regressions.ts` against a Neon branch it creates from production for that run, and deletes the branch when the run ends. The branch expires after 2 hours, so a crashed run cannot leak one. Pass a name prefix to run a subset, for example `bun run test:regressions ingest`. It needs the `neon` CLI signed in, and the project id from `.neon` or `NEON_PROJECT_ID`.
