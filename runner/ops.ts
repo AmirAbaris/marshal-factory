@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { existsSync, statSync } from "node:fs";
 import { promisify } from "node:util";
-import { and, eq, gt, inArray, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "../db/client";
 import { agents, jobs, runs } from "../db/schema";
@@ -521,7 +521,8 @@ export async function claim({
 
 /** Tells each queued job's source it was picked up; the adapter skips jobs it already announced. */
 export async function announceClaims() {
-  for (const job of parseJobs(await db.select().from(jobs).where(eq(jobs.stage, "queued")))) {
+  const queued = await db.select().from(jobs).where(eq(jobs.stage, "queued")).orderBy(asc(jobs.claimed_at), asc(jobs.key));
+  for (const job of parseJobs(queued)) {
     await sourceFor(job.source).announceClaim(job);
   }
 }
