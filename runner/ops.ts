@@ -7,8 +7,8 @@ import { db } from "../db/client";
 import { agents, issues, runs, type IssueRow } from "../db/schema";
 import type { Stage, Usage } from "../lib/events";
 import { loadConfig } from "../lib/config";
-import { linearClient, type LinearClient } from "../lib/linear";
 import { sourceFor } from "../lib/sources";
+import type { JobSource, SourceAdapter } from "../lib/sources/types";
 import { branchSpend } from "../lib/spend";
 import { readTranscript, subagentTranscripts, sumUsage, transcriptPathFor } from "../lib/transcript";
 import { cleanupRepo, cleanupSubagentWorktrees } from "../lib/worktrees";
@@ -16,7 +16,6 @@ import { claimConflict, conflictMessage, unclaimedRunsWithPr } from "../lib/conf
 import { attemptBranch } from "../lib/factory";
 import { nudgeMessage, watch, type ThreadState } from "../lib/watchdog";
 import { forbidInTest } from "../lib/test-mode";
-import { DELETED } from "../lib/sources/linear";
 import { runWithInput } from "../lib/exec";
 import { bindingOf, canReclaimSql, PENDING, stopDeliverableSql } from "./binding";
 import { claimReplies, qaBlock, resumeMessage } from "../lib/resume";
@@ -26,21 +25,9 @@ import { claimReplies, qaBlock, resumeMessage } from "../lib/resume";
 // its startup reconcile; every one of them is idempotent, so calling one twice changes nothing.
 
 export const config = loadConfig();
-export const linear = linearClient(config.linearApiKey);
-
-let team: Team | undefined;
-export const linearTeam = async () => (team ??= await linear.team(config.factory.teamKey));
 
 /** Stages where a thread is working; waiting, pr, merged and failed free the slot. */
 export const IN_FLIGHT: Stage[] = ["queued", "triage", "investigating", "implementing", "verifying"];
-
-export type Team = Awaited<ReturnType<LinearClient["team"]>>;
-
-const stateId = (team: Team, name: string) => {
-  const state = team.states.find((s) => s.name === name);
-  if (!state) throw new Error(`Linear team ${config.factory.teamKey} has no state ${name}`);
-  return state.id;
-};
 
 const run = promisify(execFile);
 // The LaunchAgent sets T3CODE_CLI_PATH; otherwise t3 must be on PATH.
@@ -610,14 +597,10 @@ export async function pullRequestsSettled() {
  * so nothing is written back.
  */
 export async function stopIssue(linearId: string, detail: string) {
-  // A stop intent can come from an unrelated label change; act only if Linear really took the issue away.
-  let unlabeledInProgress = false;
-  if (detail !== DELETED) {
-    const { state } = await linear.issueWithComments(linearId);
-    const stillLabeled = (await linear.labelsOf(linearId)).some((l) => l.toLowerCase() === config.factory.label.toLowerCase());
-    if (stillLabeled && !["canceled", "completed"].includes(state.type)) return "still labeled";
-    unlabeledInProgress = state.type === "started";
-  }
+  // A stop intent can come from an unrelated label change; act only if the source really took the issue away.
+  const check = await sourceFor("linear").confirmStop(linearId, detail);
+  if (!check.stop) return "still labeled";
+  const unlabeledInProgress = check.reopen;
 
   // A stage report can land between the read and the claim; read again and retry the claim.
   for (let tries = 0; tries < 3; tries++) {
@@ -658,7 +641,7 @@ async function finishStop(issue: IssueRow, unlabeledInProgress: boolean) {
     issueKey: issue.key,
   });
   // Back to Todo, so adding the label again retries it as a new attempt, as for any failure.
-  if (unlabeledInProgress) await linear.setState(issue.linear_id, stateId(await linearTeam(), "Todo"));
+  if (unlabeledInProgress) await sourceFor("linear").reopen(issue);
   return "stopped";
 }
 
@@ -716,50 +699,33 @@ export async function deliverStops(linearId?: string) {
   return delivered;
 }
 
-type LinearIssueState = Awaited<ReturnType<typeof linear.issuesByIds>>[number];
-
-/** Why Linear says a claimed issue should stop, or undefined while it is still the factory's. */
-export function stopReason(node: LinearIssueState | undefined, label: string) {
-  if (!node) return DELETED;
-  if (node.trashed || node.archivedAt) return "the issue was archived or deleted in Linear";
-  if (["canceled", "completed"].includes(node.state.type)) return `issue moved to ${node.state.name} in Linear`;
-  if (!node.labels.nodes.some((l) => l.name.toLowerCase() === label.toLowerCase())) {
-    return `the ${label} label was removed in Linear`;
-  }
-  return undefined;
-}
-
 /**
  * A missed stop webhook must not leave a run going. Each tick reads every claimed, unfinished
  * issue from Linear in one query and records a stop through stopIssue, the webhook's own path,
  * for any that lost the label, was closed, or is gone. A failed fetch decides nothing.
  */
 export async function reconcileStops({
-  fetch = (ids: string[]) => linear.issuesByIds(ids),
+  source = sourceFor("linear"),
   stop = stopIssue,
   only,
 }: {
-  fetch?: (ids: string[]) => Promise<LinearIssueState[]>;
+  source?: SourceAdapter<JobSource>;
   stop?: (linearId: string, detail: string) => Promise<string>;
   /** Restricts the check to these issues; the regression script uses it to stay off live ones. */
   only?: string[];
 } = {}) {
   const unfinished = inArray(issues.stage, [...IN_FLIGHT, "waiting", "pr"]);
-  const open = await db
-    .select({ linearId: issues.linear_id, key: issues.key })
-    .from(issues)
-    .where(only ? and(unfinished, inArray(issues.linear_id, only)) : unfinished);
+  const open = await db.select().from(issues).where(only ? and(unfinished, inArray(issues.linear_id, only)) : unfinished);
   if (open.length === 0) return [];
-  let nodes: LinearIssueState[];
+  let wanted: Awaited<ReturnType<typeof source.stopWanted>>;
   try {
-    nodes = await fetch(open.map((i) => i.linearId));
+    wanted = await source.stopWanted(open);
   } catch (error) {
     return { unknown: error instanceof Error ? error.message : String(error) };
   }
   const stopped = [];
-  for (const issue of open) {
-    const reason = stopReason(nodes.find((n) => n.id === issue.linearId), config.factory.label);
-    if (reason) stopped.push({ key: issue.key, reason, result: await stop(issue.linearId, reason) });
+  for (const { job, reason } of wanted) {
+    stopped.push({ key: job.key, reason, result: await stop(job.linear_id, reason) });
   }
   return stopped;
 }

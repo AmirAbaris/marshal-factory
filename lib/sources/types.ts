@@ -29,6 +29,10 @@ export type ResumePlan =
   | { kind: "close"; state: string }
   | { kind: "resume"; question: string; replies: Reply[]; answer: string };
 
+export type StopReason = string;
+
+export type StopCheck = { stop: false } | { stop: true; reopen: boolean };
+
 export type WebhookScope = { teamKey: string; label: string };
 
 export interface SourceWebhook {
@@ -48,6 +52,12 @@ export interface SourceAdapter<S extends JobSource> {
   /** What a waiting job needs from what the source shows: wait, close, or resume with the new replies. */
   replies(job: Job): Promise<ResumePlan>;
   acknowledgeReplies(job: Job, replyIds: readonly string[]): Promise<void>;
+  /** Of these jobs, the ones the source says should stop, with why. A failed read throws and decides nothing. */
+  stopWanted(jobs: readonly Job[]): Promise<{ job: Job; reason: StopReason }[]>;
+  /** Re-reads the source before a stop intent is acted on, so an unrelated change does not stop a run. */
+  confirmStop(externalId: string, detail: string): Promise<StopCheck>;
+  /** Returns a stopped job to the source's not-started state, so adding the label again retries it. */
+  reopen(job: Job): Promise<void>;
   /** The noun phrase naming the job in messages to the thread, such as "Linear issue FAC-7". */
   describe(job: Pick<Job, "key">): string;
 }

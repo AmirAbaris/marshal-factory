@@ -14,7 +14,7 @@ import type { Job, Reply, ResumePlan, SourceAdapter, SourceWebhook } from "./typ
 const LINEAR_MAX_SKEW_MS = 60_000;
 
 /** The stop detail for a deleted issue; there is nothing left in Linear to double-check. */
-export const DELETED = "the issue was deleted in Linear";
+const DELETED = "the issue was deleted in Linear";
 
 /** `Linear-Signature` is the hex HMAC-SHA256 of the raw body; the timestamp check comes after it. */
 function verifyLinear(rawBody: string, signature: string | null, secret: string, now = Date.now()): Verdict {
@@ -131,6 +131,19 @@ export function planResume(
   };
 }
 
+
+type IssueNode = Awaited<ReturnType<LinearClient["issuesByIds"]>>[number];
+
+/** Why Linear says a claimed issue should stop, or undefined while it is still the factory's. */
+function stopReason(node: IssueNode | undefined, label: string) {
+  if (!node) return DELETED;
+  if (node.trashed || node.archivedAt) return "the issue was archived or deleted in Linear";
+  if (["canceled", "completed"].includes(node.state.type)) return `issue moved to ${node.state.name} in Linear`;
+  if (!node.labels.nodes.some((l) => l.name.toLowerCase() === label.toLowerCase())) {
+    return `the ${label} label was removed in Linear`;
+  }
+  return undefined;
+}
 
 export type LinearDeps = {
   client: LinearClient;
@@ -259,6 +272,31 @@ export function createLinearAdapter(load: () => LinearDeps | Promise<LinearDeps>
     async replies(job) {
       const { client } = await deps();
       return planResume(job, await client.issueWithComments(job.linear_id));
+    },
+
+    async stopWanted(jobs) {
+      const { client, limits } = await deps();
+      const nodes = await client.issuesByIds(jobs.map((j) => j.linear_id));
+      const wanted = [];
+      for (const job of jobs) {
+        const reason = stopReason(nodes.find((n) => n.id === job.linear_id), limits.label);
+        if (reason) wanted.push({ job, reason });
+      }
+      return wanted;
+    },
+
+    async confirmStop(externalId, detail) {
+      if (detail === DELETED) return { stop: true, reopen: false };
+      const { client, limits } = await deps();
+      const { state } = await client.issueWithComments(externalId);
+      const stillLabeled = (await client.labelsOf(externalId)).some((l) => l.toLowerCase() === limits.label.toLowerCase());
+      if (stillLabeled && !["canceled", "completed"].includes(state.type)) return { stop: false };
+      return { stop: true, reopen: state.type === "started" };
+    },
+
+    async reopen(job) {
+      const d = await deps();
+      await d.client.setState(job.linear_id, stateId(await teamOf(d), d.limits.teamKey, "Todo"));
     },
 
     async acknowledgeReplies(job, replyIds) {

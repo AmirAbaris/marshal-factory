@@ -4,7 +4,10 @@ import { eq } from "drizzle-orm";
 
 const { db } = await import("../db/client");
 const { issues } = await import("../db/schema");
-const { bindThread, claimLaunch, deliverStops, pendingLaunches, reconcileStops, linear, releaseLaunch, threads } = await import("../runner/ops");
+const { bindThread, claimLaunch, deliverStops, pendingLaunches, reconcileStops, releaseLaunch, threads } = await import("../runner/ops");
+const { sourceFor } = await import("../lib/sources");
+const { createLinearAdapter } = await import("../lib/sources/linear");
+const { factorySchema } = await import("../lib/config");
 const { canReclaim, canReclaimSql, stopDeliverable, stopDeliverableSql } = await import("../runner/binding");
 const { and, sql } = await import("drizzle-orm");
 const { launchEntries, maybeStarted, MaybeStartedError, parseThreadId } = await import("../runner/launch");
@@ -16,7 +19,7 @@ const sent: { threadId: string; message: string }[] = [];
 threads.state = async () => "running";
 threads.send = async (threadId, message) => void sent.push({ threadId, message });
 
-await assert.rejects(linear.team("FAC"), /Linear API was called during a regression run/, "the real Linear client refuses to run in a regression");
+await assert.rejects(sourceFor("linear").ready(), /Linear API was called during a regression run/, "the real Linear client refuses to run in a regression");
 
 const id = `launch-regress-${Date.now()}`;
 const now = new Date();
@@ -97,6 +100,8 @@ try {
     labels: { nodes: [{ name: "factory" }] },
     ...over,
   });
+  const sourceReading = (issuesByIds: () => Promise<unknown[]>) =>
+    createLinearAdapter(() => ({ client: { issuesByIds } as never, db, limits: factorySchema.parse({}) }));
   const stops: string[] = [];
   const recordStop = async (linearId: string, detail: string) => {
     // Never touch a live issue, whatever the scoping above does.
@@ -116,19 +121,19 @@ try {
   for (const c of cases) {
     await working();
     stops.length = 0;
-    const result = await reconcileStops({ fetch: c.fetch, stop: recordStop, only: [id] });
+    const result = await reconcileStops({ source: sourceReading(c.fetch), stop: recordStop, only: [id] });
     assert.deepEqual(stops, c.stop ? [c.stop] : [], `${c.name}: ${JSON.stringify(result)}`);
     if (c.stop) {
-      await reconcileStops({ fetch: c.fetch, stop: recordStop, only: [id] });
+      await reconcileStops({ source: sourceReading(c.fetch), stop: recordStop, only: [id] });
       assert.equal(stops.length, 1, `${c.name}: a repeat tick records no second stop`);
     }
   }
   await working();
   stops.length = 0;
   const linearDown = await reconcileStops({
-    fetch: async () => {
+    source: sourceReading(async () => {
       throw new Error("Linear is down");
-    },
+    }),
     stop: recordStop,
     only: [id],
   });
