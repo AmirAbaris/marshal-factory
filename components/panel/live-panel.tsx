@@ -2,7 +2,7 @@
 
 import { useLiveQuery } from "@neon/realtime-react";
 import { useCallback, useMemo, useState } from "react";
-import type { AgentRow, EventRow, IssueRow, RunRow } from "@/db/schema";
+import type { AgentRow, EventRow, JobRow, RunRow } from "@/db/schema";
 import { Board } from "./board";
 import { boardCards } from "./cards";
 import { attemptBranch } from "@/lib/factory";
@@ -22,29 +22,27 @@ export type DetailProps = {
 };
 
 export function LivePanel({
-  issues,
+  jobs,
   runs,
   agents,
   detail,
-  budgetUsd,
 }: {
-  budgetUsd: number;
-  issues: Feed<IssueRow>;
+  jobs: Feed<JobRow>;
   runs: Feed<RunRow>;
   agents: Feed<AgentRow>;
   detail: DetailProps | undefined;
 }) {
-  const [issuesQuery] = useState(issues.sealedQuery);
+  const [jobsQuery] = useState(jobs.sealedQuery);
   const [runsQuery] = useState(runs.sealedQuery);
   const [agentsQuery] = useState(agents.sealedQuery);
-  const refreshIssues = useCallback(() => fetchSealed<IssueRow>("/api/live/issues"), []);
+  const refreshJobs = useCallback(() => fetchSealed<JobRow>("/api/live/jobs"), []);
   const refreshRuns = useCallback(() => fetchSealed<RunRow>("/api/live/runs"), []);
   const refreshAgents = useCallback(() => fetchSealed<AgentRow>("/api/live/agents"), []);
 
-  const liveIssues = useLiveQuery(issuesQuery, { refreshQuery: refreshIssues, initialData: issues.initialData });
+  const liveJobs = useLiveQuery(jobsQuery, { refreshQuery: refreshJobs, initialData: jobs.initialData });
   const liveRuns = useLiveQuery(runsQuery, { refreshQuery: refreshRuns, initialData: runs.initialData });
   const liveAgents = useLiveQuery(agentsQuery, { refreshQuery: refreshAgents, initialData: agents.initialData });
-  const issueRows = liveIssues.data ?? issues.initialData;
+  const jobRows = liveJobs.data ?? jobs.initialData;
   const runRows = liveRuns.data ?? runs.initialData;
   const agentRows = liveAgents.data ?? agents.initialData;
 
@@ -52,15 +50,15 @@ export function LivePanel({
     () => groupBy(agentRows, (a) => a.session_id),
     [agentRows],
   );
-  const cards = useMemo(() => boardCards(issueRows, runRows), [issueRows, runRows]);
-  const claimed = new Set(issueRows.map((i) => i.key));
+  const cards = useMemo(() => boardCards(jobRows, runRows), [jobRows, runRows]);
+  const claimed = new Set(jobRows.map((j) => j.key));
   const unstaged = runRows.filter(
-    (r) => r.stage === null && !(r.issue_key && claimed.has(r.issue_key)),
+    (r) => r.stage === null && !(r.job_key && claimed.has(r.job_key)),
   );
   const startOfToday = useAfterHydration(() => new Date().setHours(0, 0, 0, 0), 0);
   const selectedRun = detail && runRows.find((r) => r.session_id === detail.sessionId);
-  const selectedIssue = selectedRun?.issue_key
-    ? issueRows.find((i) => i.key === selectedRun.issue_key)
+  const selectedJob = selectedRun?.job_key
+    ? jobRows.find((j) => j.key === selectedRun.job_key)
     : undefined;
 
   return (
@@ -83,7 +81,6 @@ export function LivePanel({
             unstaged={unstaged}
             agentsBySession={agentsBySession}
             selected={detail?.sessionId}
-            budgetUsd={budgetUsd}
           />
           {selectedRun && detail && (
             <RunDetail
@@ -93,16 +90,16 @@ export function LivePanel({
               events={detail.events}
               stages={detail.stages}
               stagesPath={detail.stagesPath}
-              issue={selectedIssue}
-              issueSpend={
-                selectedIssue
+              job={selectedJob}
+              jobSpend={
+                selectedJob
                   ? {
                       usd: spendOf(
-                        runRows.filter((r) => r.branch === attemptBranch(selectedIssue.key, selectedIssue.attempt)),
+                        runRows.filter((r) => r.branch === attemptBranch(selectedJob.key, selectedJob.attempt)),
                         agentsBySession,
                       ),
-                      capUsd: budgetUsd,
-                      attempt: selectedIssue.attempt,
+                      capUsd: selectedJob.budget_usd,
+                      attempt: selectedJob.attempt,
                     }
                   : undefined
               }

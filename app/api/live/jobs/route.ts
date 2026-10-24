@@ -1,7 +1,7 @@
-import { issuesQuery, sealOnly } from "@/lib/live-queries";
+import { jobsQuery, sealOnly } from "@/lib/live-queries";
 
 export async function POST() {
-  return Response.json(await sealOnly(issuesQuery()), {
+  return Response.json(await sealOnly(jobsQuery()), {
     headers: { "Cache-Control": "no-store" },
   });
 }

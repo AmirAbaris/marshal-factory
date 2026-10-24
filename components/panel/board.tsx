@@ -10,9 +10,7 @@ export function Board({
   unstaged,
   agentsBySession,
   selected,
-  budgetUsd,
 }: {
-  budgetUsd: number;
   cards: readonly BoardCard[];
   unstaged: readonly RunRow[];
   agentsBySession: Map<string, AgentRow[]>;
@@ -47,7 +45,6 @@ export function Board({
                     card={card}
                     agents={agentsOf(card.runs)}
                     selected={card.runs.some((r) => r.session_id === selected)}
-                    budgetUsd={budgetUsd}
                   />
                 ))}
               </div>

@@ -1,78 +1,83 @@
-import type { IssueRow, RunRow } from "@/db/schema";
+import type { JobRow, RunRow } from "@/db/schema";
 import type { Stage } from "@/lib/events";
 import { attemptBranch } from "@/lib/factory";
+import { sourceLink } from "@/lib/sources/shapes";
 import { groupBy } from "./format";
 
-/** One board card: a claimed issue, or a staged run whose issue the factory never claimed. */
+/** One board card: a claimed job, or a staged run whose job the factory never claimed. */
 export type BoardCard = {
   id: string;
-  issueKey: string | null;
+  jobKey: string | null;
   title: string;
   stage: Stage;
   summary: string | null;
   question: string | null;
   prUrl: string | null;
-  issueUrl: string | null;
+  sourceLink: { label: string; href: string } | null;
+  /** The cap of the current attempt; null for runs the factory never claimed. */
+  budgetUsd: number | null;
   answeredAt: Date | null;
   attempt: number;
   /** The runs of the current attempt; spend against the cap counts only these. */
   attemptRuns: RunRow[];
   /** Set while the watchdog's nudge for the current stage is outstanding. */
   nudgedAt: Date | null;
-  /** The run the card opens; null while a claimed issue has no session yet. */
+  /** The run the card opens; null while a claimed job has no session yet. */
   latest: RunRow | null;
   runs: RunRow[];
 };
 
 const stagedAt = (run: RunRow) => run.stage_at?.getTime() ?? 0;
 
-export function boardCards(issues: readonly IssueRow[], runs: readonly RunRow[]): BoardCard[] {
+export function boardCards(jobs: readonly JobRow[], runs: readonly RunRow[]): BoardCard[] {
   const byKey = groupBy(
-    runs.filter((r) => r.issue_key !== null),
-    (r) => r.issue_key!,
+    runs.filter((r) => r.job_key !== null),
+    (r) => r.job_key!,
   );
   const newestFirst = (rows: readonly RunRow[]) =>
     [...rows].sort((a, b) => stagedAt(b) - stagedAt(a));
 
-  const fromIssues = issues.map((issue): BoardCard => {
-    const issueRuns = newestFirst(byKey.get(issue.key) ?? []);
-    const attemptRuns = issueRuns.filter((r) => r.branch === attemptBranch(issue.key, issue.attempt));
+  const fromJobs = jobs.map((job): BoardCard => {
+    const jobRuns = newestFirst(byKey.get(job.key) ?? []);
+    const attemptRuns = jobRuns.filter((r) => r.branch === attemptBranch(job.key, job.attempt));
     return {
-      id: issue.key,
-      issueKey: issue.key,
-      title: issue.title,
-      stage: issue.stage,
-      summary: issue.stage_summary,
-      question: issue.question,
-      prUrl: issue.pr_url,
-      issueUrl: issue.url,
-      answeredAt: issue.answered_at,
-      attempt: issue.attempt,
+      id: job.key,
+      jobKey: job.key,
+      title: job.title,
+      stage: job.stage,
+      summary: job.stage_summary,
+      question: job.question,
+      prUrl: job.pr_url,
+      sourceLink: sourceLink(job),
+      budgetUsd: job.budget_usd,
+      answeredAt: job.answered_at,
+      attempt: job.attempt,
       attemptRuns,
-      nudgedAt: issue.nudged_stage === issue.stage ? issue.nudged_at : null,
-      latest: attemptRuns.find((r) => r.session_id === issue.session_id) ?? attemptRuns[0] ?? null,
-      runs: issueRuns,
+      nudgedAt: job.nudged_stage === job.stage ? job.nudged_at : null,
+      latest: attemptRuns.find((r) => r.session_id === job.session_id) ?? attemptRuns[0] ?? null,
+      runs: jobRuns,
     };
   });
 
-  const claimed = new Set(issues.map((i) => i.key));
+  const claimed = new Set(jobs.map((j) => j.key));
   const unclaimed = runs.filter(
     (r): r is RunRow & { stage: Stage } =>
-      r.stage !== null && !(r.issue_key && claimed.has(r.issue_key)),
+      r.stage !== null && !(r.job_key && claimed.has(r.job_key)),
   );
-  const fromRuns = [...groupBy(unclaimed, (r) => r.issue_key ?? r.session_id).entries()].map(
+  const fromRuns = [...groupBy(unclaimed, (r) => r.job_key ?? r.session_id).entries()].map(
     ([id, group]): BoardCard => {
       const sorted = newestFirst(group);
       const latest = sorted[0]! as RunRow & { stage: Stage };
       return {
         id,
-        issueKey: latest.issue_key,
-        title: latest.title ?? latest.issue_key ?? "Factory run",
+        jobKey: latest.job_key,
+        title: latest.title ?? latest.job_key ?? "Factory run",
         stage: latest.stage,
         summary: latest.stage_summary,
         question: latest.question,
         prUrl: sorted.find((r) => r.pr_url)?.pr_url ?? null,
-        issueUrl: null,
+        sourceLink: null,
+        budgetUsd: null,
         answeredAt: null,
         attempt: 1,
         attemptRuns: sorted,
@@ -82,5 +87,5 @@ export function boardCards(issues: readonly IssueRow[], runs: readonly RunRow[])
       };
     },
   );
-  return [...fromIssues, ...fromRuns];
+  return [...fromJobs, ...fromRuns];
 }

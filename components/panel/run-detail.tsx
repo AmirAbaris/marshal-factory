@@ -9,7 +9,8 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
-import type { AgentRow, EventRow, IssueRow, RunRow } from "@/db/schema";
+import type { AgentRow, EventRow, JobRow, RunRow } from "@/db/schema";
+import { sourceLink } from "@/lib/sources/shapes";
 import { AgentTree } from "./agent-tree";
 import { EventFeed } from "./event-feed";
 import { formatUsd, runCost, runTitle, shortId } from "./format";
@@ -25,12 +26,12 @@ export function RunDetail({
   events,
   stages,
   stagesPath,
-  issue,
-  issueSpend,
+  job,
+  jobSpend,
 }: {
-  issueSpend: { usd: number; capUsd: number; attempt: number } | undefined;
+  jobSpend: { usd: number; capUsd: number; attempt: number } | undefined;
   stagesPath: string;
-  issue: IssueRow | undefined;
+  job: JobRow | undefined;
   run: RunRow;
   agents: Feed<AgentRow>;
   events: Feed<EventRow>;
@@ -58,7 +59,8 @@ export function RunDetail({
     initialData: stages.initialData,
   });
   const agentRows = liveAgents.data ?? agents.initialData;
-  const stage = issue?.stage ?? run.stage;
+  const stage = job?.stage ?? run.stage;
+  const link = job && sourceLink(job);
   const stageRows = liveStages.data ?? stages.initialData;
   const eventRows = liveEvents.data ?? events.initialData;
 
@@ -68,7 +70,7 @@ export function RunDetail({
         <div className="flex flex-col gap-2 px-4.5 py-4">
           <div className="flex items-center justify-between font-mono text-xs text-faint">
             <span>
-              {run.issue_key ?? shortId(run.session_id)}
+              {run.job_key ?? shortId(run.session_id)}
               {run.branch ? ` · ${run.branch}` : ""}
             </span>
             <Button asChild variant="ghost" size="icon-sm" aria-label="Close run">
@@ -77,7 +79,7 @@ export function RunDetail({
               </Link>
             </Button>
           </div>
-          <h2 className="text-base font-semibold">{issue?.title ?? runTitle(run)}</h2>
+          <h2 className="text-base font-semibold">{job?.title ?? runTitle(run)}</h2>
           <div className="flex flex-wrap items-center gap-2">
             {stage && (
               <Badge variant="outline" className="gap-1.5 rounded-md font-normal">
@@ -91,25 +93,25 @@ export function RunDetail({
             <ModelChip model={run.model} />
             {run.repo && <span className="text-muted-foreground">{run.repo}</span>}
             <span className="font-mono text-muted-foreground">
-              {issueSpend ? (
-                <span className={cn(issueSpend.usd >= issueSpend.capUsd && "text-destructive")}>
-                  {issueSpend.attempt > 1 && `attempt ${issueSpend.attempt}: `}
-                  {formatUsd(issueSpend.usd)} of {formatUsd(issueSpend.capUsd)} cap
+              {jobSpend ? (
+                <span className={cn(jobSpend.usd >= jobSpend.capUsd && "text-destructive")}>
+                  {jobSpend.attempt > 1 && `attempt ${jobSpend.attempt}: `}
+                  {formatUsd(jobSpend.usd)} of {formatUsd(jobSpend.capUsd)} cap
                 </span>
               ) : (
                 formatUsd(runCost(run, agentRows))
               )}
             </span>
-            {issue && (
+            {link && (
               <Button asChild variant="outline" size="sm" className="ml-auto">
-                <a href={issue.url} target="_blank" rel="noreferrer">
-                  Linear
+                <a href={link.href} target="_blank" rel="noreferrer">
+                  {link.label}
                   <ExternalLinkIcon data-icon="inline-end" />
                 </a>
               </Button>
             )}
             {run.pr_url && (
-              <Button asChild variant="outline" size="sm" className={issue ? "" : "ml-auto"}>
+              <Button asChild variant="outline" size="sm" className={job ? "" : "ml-auto"}>
                 <a href={run.pr_url} target="_blank" rel="noreferrer">
                   Pull request
                   <ExternalLinkIcon data-icon="inline-end" />
@@ -117,7 +119,7 @@ export function RunDetail({
               </Button>
             )}
             {run.t3_thread_id && (
-              <Button asChild variant="outline" size="sm" className={issue || run.pr_url ? "" : "ml-auto"}>
+              <Button asChild variant="outline" size="sm" className={job || run.pr_url ? "" : "ml-auto"}>
                 <a href={`t3-thread://v1/${run.t3_thread_id}`}>
                   Open in T3
                   <ExternalLinkIcon data-icon="inline-end" />
@@ -126,30 +128,30 @@ export function RunDetail({
             )}
           </div>
         </div>
-        {issue?.nudged_at && issue.nudged_stage === issue.stage && (
+        {job?.nudged_at && job.nudged_stage === job.stage && (
           <div className="mx-4.5 mb-3.5 rounded-lg border border-warning/40 bg-warning/10 px-3 py-2.5 text-xs">
             <span className="font-semibold tracking-wider text-warning uppercase">Stuck</span> · the
-            watchdog nudged this run at <Time date={issue.nudged_at} /> in{" "}
-            {STAGE_META[issue.stage].label}. It fails if nothing moves.
+            watchdog nudged this run at <Time date={job.nudged_at} /> in{" "}
+            {STAGE_META[job.stage].label}. It fails if nothing moves.
           </div>
         )}
-        {issue?.answered_at && issue.answer && issue.stage !== "waiting" && (
+        {job?.answered_at && job.answer && job.stage !== "waiting" && (
           <div className="mx-4.5 mb-3.5 rounded-lg border border-success/40 bg-success/10 px-3 py-2.5">
             <div className="text-xs font-semibold tracking-wider text-success uppercase">
-              Answer received <Time date={issue.answered_at} />
+              Answer received <Time date={job.answered_at} />
             </div>
-            <p className="mt-1 whitespace-pre-wrap">{issue.answer}</p>
+            <p className="mt-1 whitespace-pre-wrap">{job.answer}</p>
           </div>
         )}
-        {issue?.stage === "waiting" && issue.question ? (
+        {job?.stage === "waiting" && job.question ? (
           <div className="mx-4.5 mb-3.5 rounded-lg border border-warning/40 bg-warning/10 px-3 py-2.5">
             <div className="text-xs font-semibold tracking-wider text-warning uppercase">
               Question for you
             </div>
-            <p className="mt-1 whitespace-pre-wrap">{issue.question}</p>
+            <p className="mt-1 whitespace-pre-wrap">{job.question}</p>
           </div>
         ) : null}
-        {!issue && run.stage === "waiting" && run.question && (
+        {!job && run.stage === "waiting" && run.question && (
           <div className="mx-4.5 mb-3.5 rounded-lg border border-warning/40 bg-warning/10 px-3 py-2.5">
             <div className="text-xs font-semibold tracking-wider text-warning uppercase">
               Question for you

@@ -2,7 +2,7 @@ import { createRealtime } from "@neon/realtime/server";
 import { drizzleAdapter } from "@neon/realtime-drizzle";
 import { and, asc, desc, eq, getTableColumns, ne } from "drizzle-orm";
 import { db } from "@/db/client";
-import { agents, events, issues, runs } from "@/db/schema";
+import { agents, events, jobs, runs } from "@/db/schema";
 
 // v0 has no auth: the panel is local and single-user. Phase 7 puts a session check in front of
 // every route that calls seal(); until then anyone who can reach these routes can read all rows.
@@ -52,14 +52,14 @@ export const sessionEventsQuery = (sessionId: string) =>
     .orderBy(desc(events.at), desc(events.event_id))
     .limit(FEED_LIMIT);
 
-export const ISSUE_LIMIT = 200;
+export const JOB_LIMIT = 200;
 
-export const issuesQuery = () =>
+export const jobsQuery = () =>
   db
-    .select(getTableColumns(issues))
-    .from(issues)
-    .orderBy(desc(issues.claimed_at))
-    .limit(ISSUE_LIMIT);
+    .select(getTableColumns(jobs))
+    .from(jobs)
+    .orderBy(desc(jobs.claimed_at))
+    .limit(JOB_LIMIT);
 
 export const STAGE_HISTORY_LIMIT = 100;
 
@@ -71,21 +71,21 @@ export const sessionStagesQuery = (sessionId: string) =>
     .orderBy(asc(events.at), asc(events.event_id))
     .limit(STAGE_HISTORY_LIMIT);
 
-/** Every stage report for an issue, across all the sessions that worked on it. */
-export const issueStagesQuery = (issueKey: string) =>
+/** Every stage report for a job, across all the sessions that worked on it. */
+export const jobStagesQuery = (jobKey: string) =>
   db
     .select(getTableColumns(events))
     .from(events)
-    .where(and(eq(events.issue_key, issueKey), eq(events.kind, "stage")))
+    .where(and(eq(events.job_key, jobKey), eq(events.kind, "stage")))
     .orderBy(asc(events.at), asc(events.event_id))
     .limit(STAGE_HISTORY_LIMIT);
 
-export async function runIssueKey(sessionId: string) {
+export async function runJobKey(sessionId: string) {
   const [row] = await db
-    .select({ issueKey: runs.issue_key })
+    .select({ jobKey: runs.job_key })
     .from(runs)
     .where(eq(runs.session_id, sessionId));
-  return row?.issueKey ?? undefined;
+  return row?.jobKey ?? undefined;
 }
 
 /** Runs the query for server rendering and seals it for the browser subscription. */
@@ -107,5 +107,5 @@ const SESSION_ID = /^[\w.:-]{1,128}$/;
 export const parseSessionId = (value: string) =>
   SESSION_ID.test(value) ? value : undefined;
 
-const ISSUE_KEY = /^[A-Z][A-Z0-9]*-\d+$/;
-export const parseIssueKey = (value: string) => (ISSUE_KEY.test(value) ? value : undefined);
+const JOB_KEY = /^[A-Z][A-Z0-9]*-\d+$/;
+export const parseJobKey = (value: string) => (JOB_KEY.test(value) ? value : undefined);
