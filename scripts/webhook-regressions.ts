@@ -21,6 +21,7 @@ const old = JSON.stringify({ action: "update", type: "Issue", webhookTimestamp: 
 assert.deepEqual(verifyLinear(old, sign(old), secret, now), { ok: false, reason: "stale webhookTimestamp" }, "a replay older than a minute is rejected");
 assert.equal(verifyGithub("{}", `sha256=${sign("{}")}`, secret).ok, true);
 assert.equal(verifyGithub("{}", sign("{}"), secret).ok, false, "GitHub signatures need the sha256= prefix");
+assert.equal(verifyGithub("{}", `sha256=${createHmac("sha256", "").update("{}").digest("hex")}`, "").ok, false, "an empty secret verifies nothing");
 
 const opts = { teamKey: "FAC", label: "factory" };
 const linearIntent = (body: unknown, scope: typeof opts) => webhook.intent(body, scope);
@@ -75,8 +76,12 @@ assert.equal(githubIntent("pull_request", { action: "closed", pull_request: { ht
 assert.equal(githubIntent("push", { ref: "refs/heads/main", repository: { default_branch: "main" } })?.kind, "recheck_conflicts");
 assert.equal(githubIntent("push", { ref: "refs/heads/factory/FAC-1", repository: { default_branch: "main" } }), null);
 assert.equal(githubIntent("ping", {}), null);
+for (const event of ["installation", "installation_repositories", "issues", "check_suite", "check_run"]) {
+  assert.equal(githubIntent(event, { action: "created" }), null, `a ${event} delivery carries no intent`);
+}
 
 process.env.LINEAR_WEBHOOK_SECRET = secret;
+process.env.GITHUB_APP_WEBHOOK_SECRET = secret;
 const { default: ingestFunction } = await import("../functions/ingest/index");
 const { db } = await import("../db/client");
 const { intents, webhookDeliveries } = await import("../db/schema");
@@ -91,7 +96,25 @@ const post = (raw: string, signature: string, delivery: string | null = delivery
     }),
   );
 const fresh = JSON.stringify({ ...issue({}, { labelIds: [] }), webhookTimestamp: Date.now() });
+const appDeliveries = ["installation", "issues"].map((event) => ({ event, id: `${deliveryId}-${event}` }));
+const postGithub = (event: string, delivery: string, raw: string, signature: string) =>
+  ingestFunction.fetch(
+    new Request("http://function/webhooks/github", {
+      method: "POST",
+      headers: { "x-github-event": event, "x-github-delivery": delivery, "x-hub-signature-256": `sha256=${signature}` },
+      body: raw,
+    }),
+  );
 try {
+  const appBody = JSON.stringify({ action: "created", installation: { id: 7 } });
+  for (const { event, id } of appDeliveries) {
+    assert.deepEqual(await (await postGithub(event, id, appBody, sign(appBody))).json(), { duplicate: false, intent: null }, `an app ${event} delivery is recorded with no intent`);
+    assert.equal((await db.select().from(webhookDeliveries).where(eq(webhookDeliveries.delivery_id, `github:${id}`))).length, 1);
+    assert.equal((await db.select().from(intents).where(eq(intents.id, `github:${id}`))).length, 0);
+  }
+  const oldSecret = createHmac("sha256", "old-per-repo-secret").update(appBody).digest("hex");
+  assert.equal((await postGithub("issues", `${deliveryId}-old`, appBody, oldSecret)).status, 401, "a delivery signed with another secret is refused");
+
   assert.equal((await post(fresh, "0".repeat(64))).status, 401, "a bad signature is rejected by the routed source");
   assert.equal((await post(fresh, sign(fresh), null)).status, 400, "a delivery without an id is rejected");
   assert.deepEqual(await (await post(fresh, sign(fresh))).json(), { duplicate: false, intent: "claim" }, "a signed delivery records the claim intent");
@@ -101,6 +124,7 @@ try {
 } finally {
   await db.delete(intents).where(eq(intents.id, `linear:${deliveryId}`));
   await db.delete(webhookDeliveries).where(eq(webhookDeliveries.delivery_id, `linear:${deliveryId}`));
+  for (const { id } of appDeliveries) await db.delete(webhookDeliveries).where(eq(webhookDeliveries.delivery_id, `github:${id}`));
 }
 console.log("webhook regressions passed");
 process.exit(0);

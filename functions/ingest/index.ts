@@ -68,7 +68,7 @@ async function sourceWebhook(source: JobSource, request: Request) {
 
 async function githubWebhook(request: Request) {
   const raw = await request.text();
-  const verdict = verifyGithub(raw, request.headers.get("x-hub-signature-256"), process.env.GITHUB_WEBHOOK_SECRET!);
+  const verdict = verifyGithub(raw, request.headers.get("x-hub-signature-256"), process.env.GITHUB_APP_WEBHOOK_SECRET);
   if (!verdict.ok) return Response.json({ error: verdict.reason }, { status: 401 });
   const deliveryId = request.headers.get("x-github-delivery");
   const event = request.headers.get("x-github-event") ?? "?";

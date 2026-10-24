@@ -1,15 +1,8 @@
-import { execFileSync } from "node:child_process";
 import { chmodSync, readFileSync, writeFileSync } from "node:fs";
 import { z } from "zod";
 import { CONFIG_PATH, loadConfig } from "../lib/config";
 
-// Creates, or finds, the Linear and GitHub webhooks that point at the ingest Function, and
-// records their ids in the config. Re-running changes nothing.
-//   bun scripts/install-webhooks.ts <owner/repo>
-
 process.loadEnvFile(".env.local");
-const repo = process.argv[2];
-if (!repo) throw new Error("usage: bun scripts/install-webhooks.ts <owner/repo>");
 const base = process.env.NEON_FUNCTION_INGEST_BASE_URL!.replace(/\/$/, "");
 const config = loadConfig();
 
@@ -54,29 +47,9 @@ async function linearWebhook() {
   return created.webhookCreate.webhook.id;
 }
 
-function githubWebhook() {
-  const url = `${base}/webhooks/github`;
-  const gh = (args: string[], input?: string) =>
-    execFileSync("gh", args, { encoding: "utf8", input, stdio: ["pipe", "pipe", "inherit"] });
-  const hooks = z
-    .array(z.object({ id: z.number(), config: z.object({ url: z.string().optional() }) }))
-    .parse(JSON.parse(gh(["api", `repos/${repo}/hooks`])));
-  const existing = hooks.find((h) => h.config.url === url);
-  if (existing) return existing.id;
-  const body = {
-    name: "web",
-    active: true,
-    events: ["pull_request", "push"],
-    config: { url, content_type: "json", secret: process.env.GITHUB_WEBHOOK_SECRET, insecure_ssl: "0" },
-  };
-  return z
-    .object({ id: z.number() })
-    .parse(JSON.parse(gh(["api", "--method", "POST", `repos/${repo}/hooks`, "--input", "-"], JSON.stringify(body)))).id;
-}
-
-const ids = { linear: await linearWebhook(), github: githubWebhook() };
+const ids = { linear: await linearWebhook() };
 const raw = JSON.parse(readFileSync(CONFIG_PATH, "utf8")) as Record<string, Record<string, unknown>>;
-raw.factory = { ...raw.factory, webhooks: { ...(raw.factory?.webhooks as object), linear: ids.linear, [repo]: ids.github } };
+raw.factory = { ...raw.factory, webhooks: { ...(raw.factory?.webhooks as object), linear: ids.linear } };
 writeFileSync(CONFIG_PATH, `${JSON.stringify(raw, null, 2)}\n`);
 // The mode option only applies when the file is created; the config holds secrets either way.
 chmodSync(CONFIG_PATH, 0o600);
