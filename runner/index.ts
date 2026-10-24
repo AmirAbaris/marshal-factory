@@ -38,7 +38,7 @@ async function handle(intent: IntentRow) {
   switch (intent.kind) {
     case "claim": {
       const claimed = await ops.claim();
-      await ops.announceClaims(await ops.linearTeam());
+      await ops.announceClaims();
       return { claimed, launched: await launchQueued(logWorktree) };
     }
     case "stop":
@@ -47,10 +47,10 @@ async function handle(intent: IntentRow) {
       return {
         resumed: await ops.resumeAnswered(),
         launched: await launchQueued(logWorktree),
-        synced: await ops.writeBack(await ops.linearTeam()),
+        synced: await ops.writeBack(),
       };
     case "merged":
-      return { merged: await ops.checkPullRequests(), synced: await ops.writeBack(await ops.linearTeam()) };
+      return { merged: await ops.checkPullRequests(), synced: await ops.writeBack() };
     case "recheck_conflicts":
       return { recheck: recheck.request() };
   }
@@ -121,7 +121,7 @@ async function tick() {
   return {
     claimed: await each(async () => {
       const claimed = await ops.claim();
-      await ops.announceClaims(await ops.linearTeam());
+      await ops.announceClaims();
       return claimed;
     }),
     // An answer can land before its question reached Linear, and its intent then finds nothing.
@@ -133,7 +133,7 @@ async function tick() {
     reconciled: await each(ops.reconcileUsage),
     overBudget: await each(ops.enforceBudget),
     watched: await each(ops.watchdog),
-    synced: await each(async () => ops.writeBack(await ops.linearTeam())),
+    synced: await each(async () => ops.writeBack()),
   };
 }
 
@@ -172,7 +172,7 @@ async function subscribe() {
     if (snapshot.status !== "live") return;
     const rows = snapshot.data ?? [];
     if (rows.some((i) => i.stage_event_id && i.stage_event_id !== i.synced_event_id)) {
-      void serial("writeBack", async () => ops.writeBack(await ops.linearTeam()));
+      void serial("writeBack", async () => ops.writeBack());
     }
     // A thread's own session start can bind it (ingest), outside bindThread; deliver its stop now.
     if (rows.some(stopDeliverable)) void serial("deliverStops", () => ops.deliverStops());

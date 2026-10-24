@@ -8,6 +8,7 @@ import { agents, issues, runs, type IssueRow } from "../db/schema";
 import type { Stage, Usage } from "../lib/events";
 import { loadConfig } from "../lib/config";
 import { linearClient, type LinearClient } from "../lib/linear";
+import { sourceFor } from "../lib/sources";
 import { branchSpend } from "../lib/spend";
 import { readTranscript, subagentTranscripts, sumUsage, transcriptPathFor } from "../lib/transcript";
 import { cleanupRepo, cleanupSubagentWorktrees } from "../lib/worktrees";
@@ -19,13 +20,10 @@ import { DELETED } from "../lib/sources/linear";
 import { runWithInput } from "../lib/exec";
 import { bindingOf, canReclaimSql, PENDING, stopDeliverableSql } from "./binding";
 import {
-  claimCommentId,
   claimReplies,
   planResume,
   qaBlock,
-  resumeCommentId,
   resumeMessage,
-  stageCommentId,
 } from "../lib/resume";
 
 
@@ -49,48 +47,9 @@ const stateId = (team: Team, name: string) => {
   return state.id;
 };
 
-/** What reaches Linear when an issue enters a stage. Stages without an entry stay in the panel. */
-type WriteBack = {
-  state?: string;
-  labels?: { add?: string[]; remove?: string[] };
-  comment?: (issue: IssueRow) => string;
-};
-const FAILED_LABEL = "factory-failed";
-
-const WRITE_BACK: Partial<Record<Stage, WriteBack>> = {
-  pr: {
-    state: "In Review",
-    comment: (i) => `marshal-factory has a pull request ready for review: ${i.pr_url}\n\n${i.stage_summary ?? ""}`.trim(),
-  },
-  waiting: {
-    comment: (i) =>
-      `marshal-factory stopped and needs an answer before it can continue:\n\n${i.question ?? i.stage_summary}`,
-  },
-  // Back to Todo without the factory label, so the runner does not pick it up again in a loop.
-  // Adding the label again retries it as a new attempt.
-  failed: {
-    state: "Todo",
-    labels: { add: [FAILED_LABEL], remove: [config.factory.label] },
-    comment: (i) =>
-      `marshal-factory gave up on this issue (attempt ${i.attempt}): ${i.stage_summary}\n\nAdd the \`${config.factory.label}\` label again to retry.`,
-  },
-  merged: { state: "Done" },
-};
-
 const run = promisify(execFile);
 // The LaunchAgent sets T3CODE_CLI_PATH; otherwise t3 must be on PATH.
 const T3 = process.env.T3CODE_CLI_PATH ?? "t3";
-
-/** Records the id before posting, so a crash in between can never make our own comment look like a reply. */
-async function postComment(issue: IssueRow, id: string, body: string) {
-  await db
-    .update(issues)
-    .set({
-      factory_comment_ids: sql`case when ${issues.factory_comment_ids} ? ${id} then ${issues.factory_comment_ids} else ${issues.factory_comment_ids} || jsonb_build_array(${id}::text) end`,
-    })
-    .where(eq(issues.linear_id, issue.linear_id));
-  await linear.comment(issue.linear_id, id, body);
-}
 
 const prSchema = z.object({ state: z.string(), mergeable: z.string(), headRefOid: z.string() });
 
@@ -264,7 +223,6 @@ export async function resumeAnswered() {
     }
 
     const replyIds = plan.replies.map((r) => r.id);
-    const ackId = resumeCommentId(issue.linear_id, replyIds);
     const alive = await threadAlive(issue.t3_thread_id);
     // A dead thread is unlinked in the same update that claims the replies, so the relaunch
     // cannot be lost to a later failure in this pass.
@@ -296,7 +254,7 @@ export async function resumeAnswered() {
       answer: plan.answer.slice(0, 4000),
       issueKey: issue.key,
     });
-    await postComment(issue, ackId, "Answer received, resuming.");
+    await sourceFor("linear").acknowledgeReplies(issue, replyIds);
     resumed.push(`${issue.key}:${alive ? "sent" : "relaunch"}`);
   }
   return resumed;
@@ -454,13 +412,7 @@ export async function enforceBudget() {
   return over;
 }
 
-async function labelChanges(team: Team, labels: WriteBack["labels"]) {
-  if (!labels) return {};
-  const ids = (names: string[] = []) => Promise.all(names.map((name) => linear.labelId(team.id, name)));
-  return { addedLabelIds: await ids(labels.add), removedLabelIds: await ids(labels.remove) };
-}
-
-export async function writeBack(team: Team) {
+export async function writeBack() {
   const pending = await db
     .select()
     .from(issues)
@@ -472,32 +424,23 @@ export async function writeBack(team: Team) {
     );
   const synced: string[] = [];
   for (const issue of pending) {
-    const action = WRITE_BACK[issue.stage];
-    if (action?.state || action?.labels) {
-      await linear.update(issue.linear_id, {
-        ...(action.state ? { stateId: stateId(team, action.state) } : {}),
-        ...(await labelChanges(team, action.labels)),
-      });
-    }
-    if (action?.comment) {
-      await postComment(issue, stageCommentId(issue.linear_id, issue.stage_event_id!), action.comment(issue));
-    }
+    const written = await sourceFor("linear").writeBack(issue, { stage: issue.stage, eventId: issue.stage_event_id! });
     // Only this event counts as synced; a newer one that landed meanwhile goes next pass.
     await db
       .update(issues)
       .set({
         synced_event_id: issue.stage_event_id,
-        ...(action?.state ? { linear_state: action.state } : {}),
+        ...(written?.sourceState ? { linear_state: written.sourceState } : {}),
       })
       .where(and(eq(issues.linear_id, issue.linear_id), eq(issues.stage_event_id, issue.stage_event_id!)));
-    if (action) synced.push(`${issue.key}:${issue.stage}`);
+    if (written) synced.push(`${issue.key}:${issue.stage}`);
   }
   return synced;
 }
 
 /** Claims ready issues up to the in-flight cap. The row insert is the claim; the advisory lock serializes claimers. */
 export async function claim() {
-  const ready = await linear.readyIssues(config.factory.teamKey, config.factory.label);
+  const ready = await sourceFor("linear").ready();
   return db.transaction(async (tx) => {
     await tx.execute(sql`select pg_advisory_xact_lock(hashtext('marshal-factory linear-poll'))`);
     const [{ count }] = await tx
@@ -512,13 +455,13 @@ export async function claim() {
       const inserted = await tx
         .insert(issues)
         .values({
-          linear_id: issue.id,
-          key: issue.identifier,
+          linear_id: issue.externalId,
+          key: issue.key,
           title: issue.title,
           url: issue.url,
           description: issue.description,
-          linear_state: issue.state.name,
-          labels: issue.labels.nodes.map((l) => l.name),
+          linear_state: issue.sourceState,
+          labels: issue.labels,
           claimed_at: now,
           updated_at: now,
         })
@@ -547,8 +490,8 @@ export async function claim() {
             title: issue.title,
             url: issue.url,
             description: issue.description,
-            linear_state: issue.state.name,
-            labels: issue.labels.nodes.map((l) => l.name),
+            linear_state: issue.sourceState,
+            labels: issue.labels,
             claimed_at: now,
             updated_at: now,
           },
@@ -558,30 +501,20 @@ export async function claim() {
         .returning({ key: issues.key });
       if (inserted.length === 0) continue;
       inFlight++;
-      claimed.push(issue.identifier);
+      claimed.push(issue.key);
     }
     return { claimed, inFlight };
   });
 }
 
 /** Moves claimed issues to In Progress with a pickup comment; retried every pass until it sticks. */
-export async function announceClaims(team: Team) {
+export async function announceClaims() {
   const unannounced = await db
     .select()
     .from(issues)
     .where(and(eq(issues.stage, "queued"), ne(issues.linear_state, "In Progress")));
   for (const issue of unannounced) {
-    await linear.update(issue.linear_id, {
-      stateId: stateId(team, "In Progress"),
-      ...(issue.attempt > 1 ? await labelChanges(team, { remove: [FAILED_LABEL] }) : {}),
-    });
-    await postComment(
-      issue,
-      claimCommentId(issue.linear_id, issue.attempt),
-      issue.attempt > 1
-        ? `Picked up by marshal-factory again (attempt ${issue.attempt}, branch ${attemptBranch(issue.key, issue.attempt)}).`
-        : "Picked up by marshal-factory.",
-    );
+    await sourceFor("linear").announceClaim(issue);
     await db
       .update(issues)
       .set({ linear_state: "In Progress", updated_at: new Date() })
@@ -591,7 +524,7 @@ export async function announceClaims(team: Team) {
 
 function launchMessage(issue: IssueRow) {
   return [
-    `Work Linear issue ${issue.key}: ${issue.title}`,
+    `Work ${sourceFor("linear").describe(issue)}: ${issue.title}`,
     issue.url,
     "",
     "This is an unattended marshal-factory run. Follow the factory playbook in .agents/playbooks/factory.md. Report every stage with the report_stage tool, never ask in this thread, never merge.",
