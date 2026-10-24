@@ -29,7 +29,6 @@ async function request(who: Who, path: string, method = "GET") {
   return proxy(new NextRequest(`http://localhost:3000${path}`, { method }));
 }
 
-
 const anonymousPage = await request("anonymous", "/");
 assert.equal(anonymousPage.status, 307, "a page without a session redirects");
 assert.equal(anonymousPage.headers.get("location"), "http://localhost:3000/auth/sign-in");
@@ -47,14 +46,14 @@ const strangerSeal = await request("stranger", "/api/live/runs", "POST");
 assert.equal(strangerSeal.status, 403, "a non-owner live route request is forbidden");
 assert.deepEqual(await strangerSeal.json(), { error: "Forbidden" });
 
-for (const path of ["/", "/api/live/runs", "/auth/sign-in"]) {
+for (const path of ["/", "/api/live/runs"]) {
   const response = await request("owner", path, path.startsWith("/api/") ? "POST" : "GET");
   assert.equal(response.status, 200, `the owner passes through ${path}`);
   assert.equal(response.headers.get(REFRESHED), "1", `the owner reaches ${path} through the session refresh`);
 }
 
 const matcher = new RegExp(`^${config.matcher[0]}$`);
-for (const path of ["/", "/api/live/runs", "/api/live/jobs/FAC-7/stages", "/machines", "/authors"]) {
+for (const path of ["/", "/api/live/runs", "/api/live/jobs/FAC-7/stages", "/machines", "/authors", "/auth/settings"]) {
   assert.ok(matcher.test(path), `the proxy guards ${path}`);
 }
 for (const path of ["/auth/sign-in", "/auth/forbidden", "/api/auth/sign-in/email", "/_next/static/chunk.js", "/_next/image", "/favicon.ico"]) {

@@ -1,4 +1,5 @@
 import { createNeonAuth } from "@neondatabase/auth/next/server";
+import { cache } from "react";
 import { isOwner } from "./owner";
 
 export const auth = createNeonAuth({
@@ -6,7 +7,7 @@ export const auth = createNeonAuth({
   cookies: { secret: process.env.NEON_AUTH_COOKIE_SECRET! },
 });
 
-export async function assertOwner() {
+export const assertOwner = cache(async () => {
   const { data } = await auth.getSession();
   if (!isOwner(data?.user?.email)) throw new Error("an owner session is required");
-}
+});
