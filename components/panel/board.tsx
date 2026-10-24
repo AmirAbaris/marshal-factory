@@ -1,5 +1,5 @@
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "@/components/ui/empty";
-import type { AgentRow, RunRow } from "@/db/schema";
+import type { AgentRow, MachineRow, RunRow } from "@/db/schema";
 import { STAGES } from "@/lib/events";
 import type { BoardCard } from "./cards";
 import { RunCard, StageCard } from "./run-card";
@@ -10,11 +10,13 @@ export function Board({
   unstaged,
   agentsBySession,
   selected,
+  machines,
 }: {
   cards: readonly BoardCard[];
   unstaged: readonly RunRow[];
   agentsBySession: Map<string, AgentRow[]>;
   selected: string | undefined;
+  machines: ReadonlyMap<string, MachineRow>;
 }) {
   const agentsOf = (runs: readonly RunRow[]) =>
     runs.flatMap((r) => agentsBySession.get(r.session_id) ?? []);
@@ -43,6 +45,7 @@ export function Board({
                   <StageCard
                     key={card.id}
                     card={card}
+                    machineName={card.machineId && (machines.get(card.machineId)?.name ?? card.machineId)}
                     agents={agentsOf(card.runs)}
                     selected={card.runs.some((r) => r.session_id === selected)}
                   />

@@ -1,13 +1,9 @@
 import { z } from "zod";
 
-// What each runner reports about the Mac it runs on, shared by the runner that writes it and the
-// panel that parses it back out of the machines row. A collector that fails reports "unknown".
-
 export const UNKNOWN = "unknown";
 const known = <T extends z.ZodType>(shape: T) => z.union([shape, z.literal(UNKNOWN)]);
 export type Known<T> = T | typeof UNKNOWN;
 
-/** Written every tick; cheap enough to run every 90 s. */
 export const heartbeatSchema = z.object({
   cpu: known(z.object({ load1: z.number().nonnegative(), cores: z.number().int().positive() })),
   memory: known(z.object({ usedBytes: z.number().nonnegative(), totalBytes: z.number().positive() })),
@@ -27,7 +23,6 @@ export const t3ProjectSchema = z.object({
 });
 export type T3Project = z.infer<typeof t3ProjectSchema>;
 
-/** Read from T3's state database, else probed per factory repo with `t3 thread list`, else unknown. */
 export const projectsSchema = z.discriminatedUnion("source", [
   z.object({ source: z.literal("sqlite"), items: z.array(t3ProjectSchema) }),
   z.object({ source: z.literal("probe"), items: z.array(t3ProjectSchema) }),
@@ -35,7 +30,6 @@ export const projectsSchema = z.discriminatedUnion("source", [
 ]);
 export type Projects = z.infer<typeof projectsSchema>;
 
-/** Collected at startup and every inventoryMinutes; written only when it changed. */
 export const inventorySchema = z.object({
   runnerSha: known(z.string()),
   t3: known(
@@ -48,12 +42,20 @@ export const inventorySchema = z.object({
   ),
   connect: z.enum(CONNECT_STATES),
   projects: projectsSchema,
-  /** The configured factory repos and their `origin` remote as owner/name. */
   repos: z.array(z.object({ path: z.string(), origin: known(z.string()) })),
 });
 export type Inventory = z.infer<typeof inventorySchema>;
 
-/** Three missed 90 s ticks. */
+export const parseHeartbeat = (value: unknown): Heartbeat | null => {
+  const parsed = heartbeatSchema.safeParse(value);
+  return parsed.success ? parsed.data : null;
+};
+
+export const parseInventory = (value: unknown): Inventory | null => {
+  const parsed = inventorySchema.safeParse(value);
+  return parsed.success ? parsed.data : null;
+};
+
 export const ONLINE_WINDOW_MS = 270_000;
 
 export const isOnline = (lastSeenAt: Date, now: number) => now - lastSeenAt.getTime() <= ONLINE_WINDOW_MS;

@@ -6,6 +6,7 @@ import {
   jobsQuery,
   jobStagesQuery,
   load,
+  machinesQuery,
   parseSessionId,
   runJobKey,
   runsQuery,
@@ -31,15 +32,16 @@ async function loadDetail(raw: string | undefined): Promise<DetailProps | undefi
 
 async function Panel({ searchParams }: Pick<PageProps<"/">, "searchParams">) {
   const { run } = await searchParams;
-  const [jobs, runs, agents, detail] = await Promise.all([
+  const [jobs, runs, agents, machines, detail] = await Promise.all([
     load(jobsQuery()),
     load(runsQuery()),
     load(agentsOverviewQuery()),
+    load(machinesQuery()),
     loadDetail(typeof run === "string" ? run : undefined),
   ]);
   return (
     <RealtimeRoot>
-      <LivePanel jobs={jobs} runs={runs} agents={agents} detail={detail} />
+      <LivePanel jobs={jobs} runs={runs} agents={agents} machines={machines} detail={detail} />
     </RealtimeRoot>
   );
 }

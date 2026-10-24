@@ -2,7 +2,7 @@ import { createRealtime } from "@neon/realtime/server";
 import { drizzleAdapter } from "@neon/realtime-drizzle";
 import { and, asc, desc, eq, getTableColumns, ne } from "drizzle-orm";
 import { db } from "@/db/client";
-import { agents, events, jobs, runs } from "@/db/schema";
+import { agents, events, jobs, machines, runs } from "@/db/schema";
 import { assertOwner } from "@/lib/auth/server";
 import { liveUpdates } from "@/lib/live-mode";
 
@@ -65,6 +65,9 @@ export const jobsQuery = () =>
     .from(jobs)
     .orderBy(desc(jobs.claimed_at))
     .limit(JOB_LIMIT);
+
+export const machinesQuery = () =>
+  db.select(getTableColumns(machines)).from(machines).orderBy(asc(machines.name), asc(machines.id));
 
 export const STAGE_HISTORY_LIMIT = 100;
 

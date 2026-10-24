@@ -7,7 +7,8 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
-import type { AgentRow, EventRow, JobRow, RunRow } from "@/db/schema";
+import type { AgentRow, EventRow, JobRow, MachineRow, RunRow } from "@/db/schema";
+import { parseInventory, t3ThreadLink, UNKNOWN } from "@/lib/machine";
 import { sourceLink } from "@/lib/sources/shapes";
 import { AgentTree } from "./agent-tree";
 import { EventFeed } from "./event-feed";
@@ -25,11 +26,13 @@ export function RunDetail({
   stages,
   stagesPath,
   job,
+  machine,
   jobSpend,
 }: {
   jobSpend: { usd: number; capUsd: number; attempt: number } | undefined;
   stagesPath: string;
   job: JobRow | undefined;
+  machine: MachineRow | undefined;
   run: RunRow;
   agents: Feed<AgentRow>;
   events: Feed<EventRow>;
@@ -41,6 +44,9 @@ export function RunDetail({
   const { rows: stageRows } = useFeed(stages, stagesPath);
   const stage = job?.stage ?? run.stage;
   const link = job && sourceLink(job);
+  const machineName = machine?.name ?? job?.machine_id ?? null;
+  const t3 = machine && parseInventory(machine.inventory)?.t3;
+  const environmentId = t3 && t3 !== UNKNOWN ? t3.environmentId : null;
 
   return (
     <aside className="flex min-h-0 flex-col border-l bg-card">
@@ -70,6 +76,7 @@ export function RunDetail({
             </Badge>
             <ModelChip model={run.model} />
             {run.repo && <span className="text-muted-foreground">{run.repo}</span>}
+            {machineName && <span className="text-muted-foreground">on {machineName}</span>}
             <span className="font-mono text-muted-foreground">
               {jobSpend ? (
                 <span className={cn(jobSpend.usd >= jobSpend.capUsd && "text-destructive")}>
@@ -98,8 +105,10 @@ export function RunDetail({
             )}
             {run.t3_thread_id && (
               <Button asChild variant="outline" size="sm" className={job || run.pr_url ? "" : "ml-auto"}>
-                <a href={`t3-thread://v1/${run.t3_thread_id}`}>
-                  Open in T3
+                <a
+                  href={t3ThreadLink(run.t3_thread_id, environmentId)}
+                >
+                  Open in T3{machineName && ` on ${machineName}`}
                   <ExternalLinkIcon data-icon="inline-end" />
                 </a>
               </Button>

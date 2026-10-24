@@ -1,6 +1,6 @@
 "use client";
 
-import { useSyncExternalStore } from "react";
+import { useState, useSyncExternalStore } from "react";
 
 const noSubscription = () => () => {};
 
@@ -18,4 +18,25 @@ export function Time({ date }: { date: Date }) {
     "",
   );
   return <time dateTime={date.toISOString()}>{text}</time>;
+}
+
+export function useNow(intervalMs: number): number | null {
+  const [store] = useState(() => createClock(intervalMs));
+  return useSyncExternalStore(store.subscribe, store.read, () => null);
+}
+
+function createClock(intervalMs: number) {
+  let now = Date.now();
+  return {
+    // Must return the same value until the next tick, or React re-renders in a loop.
+    read: () => now,
+    subscribe(notify: () => void) {
+      now = Date.now();
+      const id = setInterval(() => {
+        now = Date.now();
+        notify();
+      }, intervalMs);
+      return () => clearInterval(id);
+    },
+  };
 }
