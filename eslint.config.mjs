@@ -30,7 +30,6 @@ const eslintConfig = defineConfig([
   { rules: restrictLinear(ANYWHERE) },
   { files: ["lib/*.ts"], rules: restrictLinear(ANYWHERE, "^\\./linear$") },
   { files: ["lib/sources/**/*.ts"], rules: restrictLinear(ANYWHERE, "^\\.\\./linear$") },
-  // The adapter owns the client; its regression script tests the client itself.
   { files: ["lib/sources/linear.ts", "scripts/linear-regressions.ts"], rules: { "no-restricted-imports": "off" } },
 ]);
 

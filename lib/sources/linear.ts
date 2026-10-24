@@ -153,7 +153,6 @@ export type LinearDeps = {
 
 async function runtimeDeps(): Promise<LinearDeps> {
   const config = loadConfig();
-  // Loaded on first use: the ingest Function imports this module for its webhook and has no runner database.
   const { db } = await import("../../db/client");
   return { client: linearClient(config.linearApiKey), db, limits: config.factory };
 }
