@@ -76,7 +76,7 @@ export function StageTimeline({ events }: { events: readonly EventRow[] }) {
               </span>
             )}
           </div>
-          {event?.answer ? (
+          {event?.answer && !refusal ? (
             <blockquote className="mt-1 border-l-2 border-success/60 pl-2 whitespace-pre-wrap text-muted-foreground">
               {event.answer}
             </blockquote>
