@@ -48,7 +48,7 @@ runner daemon (launchd) ◄─────────────────�
 - **Owner account.** Sign-up stays off. To create the owner on a branch, run `neon neon-auth config email-password update --disable-sign-up false`, sign up through `POST /api/auth/sign-up/email`, then run the command again with `--disable-sign-up true`.
 - **Environment.** The panel needs `DATABASE_URL`, `DATABASE_URL_UNPOOLED`, `NEON_AUTH_BASE_URL`, `NEON_AUTH_COOKIE_SECRET` (`openssl rand -base64 32`), `NEON_REALTIME_URL`, `NEXT_PUBLIC_NEON_REALTIME_URL`, `NEON_REALTIME_SECRET` and `FACTORY_OWNER_EMAILS`. `next build` fails without the cookie secret.
 - **Realtime origins.** The allowed origins are `*`, because Vercel preview URLs change per branch. The sealed query is the credential, and only the owner can get one.
-- **Vercel.** `vercel.json` turns off automatic deploys from `main` and runs `bun run db:migrate` before `bun run build`, so each preview migrates its own Neon branch. Production deploys happen only through `vercel deploy --prod`.
+- **Vercel.** `vercel.json` turns off automatic deploys from `main`, runs `bun run db:migrate` before `bun run build` so each preview migrates its own Neon branch, and runs functions in `fra1` next to the database. The project's Ignored Build Step, `[ "$VERCEL_ENV" = "production" ] || [ -z "$DATABASE_URL" ]`, cancels every Git production build and every preview that has no database. Production deploys happen only through `vercel deploy --prod`, which skips that step.
 
 ## Testing
 
