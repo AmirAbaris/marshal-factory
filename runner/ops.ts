@@ -19,12 +19,7 @@ import { forbidInTest } from "../lib/test-mode";
 import { DELETED } from "../lib/sources/linear";
 import { runWithInput } from "../lib/exec";
 import { bindingOf, canReclaimSql, PENDING, stopDeliverableSql } from "./binding";
-import {
-  claimReplies,
-  planResume,
-  qaBlock,
-  resumeMessage,
-} from "../lib/resume";
+import { claimReplies, qaBlock, resumeMessage } from "../lib/resume";
 
 
 // The factory's deterministic work. The runner calls these from webhook intents, its timer and
@@ -198,7 +193,7 @@ export async function resumeAnswered() {
   const waiting = await db.select().from(issues).where(eq(issues.stage, "waiting"));
   const resumed: string[] = [];
   for (const issue of waiting) {
-    const plan = planResume(issue, await linear.issueWithComments(issue.linear_id));
+    const plan = await sourceFor("linear").replies(issue);
     if (plan.kind === "wait") continue;
 
     const now = new Date();
@@ -231,7 +226,7 @@ export async function resumeAnswered() {
 
     if (alive) {
       try {
-        await threads.send(issue.t3_thread_id!, resumeMessage(issue.key, plan.question, plan.answer));
+        await threads.send(issue.t3_thread_id!, resumeMessage(sourceFor("linear").describe(issue), plan.question, plan.answer));
       } catch (error) {
         await db
           .update(issues)
