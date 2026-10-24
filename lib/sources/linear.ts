@@ -210,11 +210,17 @@ export function createLinearAdapter(load: () => LinearDeps | Promise<LinearDeps>
   let team: Team | undefined;
   const teamOf = async ({ client, limits }: LinearDeps) => (team ??= await client.team(limits.teamKey));
 
-  async function labelChanges(d: LinearDeps, labels: WriteBack["labels"]) {
+  async function labelChangesAgainstIssue(d: LinearDeps, issueId: string, labels: WriteBack["labels"]) {
     if (!labels) return {};
+    const current = await d.client.labelsOf(issueId);
+    const present = new Set(current.map((l) => l.name.toLowerCase()));
+    const drop = new Set((labels.remove ?? []).map((name) => name.toLowerCase()));
+    const missing = (labels.add ?? []).filter((name) => !present.has(name.toLowerCase()));
     const { id } = await teamOf(d);
-    const ids = (names: string[] = []) => Promise.all(names.map((name) => d.client.labelId(id, name)));
-    return { addedLabelIds: await ids(labels.add), removedLabelIds: await ids(labels.remove) };
+    return {
+      addedLabelIds: await Promise.all(missing.map((name) => d.client.labelId(id, name))),
+      removedLabelIds: current.filter((l) => drop.has(l.name.toLowerCase())).map((l) => l.id),
+    };
   }
 
   return {
@@ -239,7 +245,7 @@ export function createLinearAdapter(load: () => LinearDeps | Promise<LinearDeps>
       const d = await deps();
       await d.client.update(job.linear_id, {
         stateId: stateId(await teamOf(d), d.limits.teamKey, "In Progress"),
-        ...(job.attempt > 1 ? await labelChanges(d, { remove: [FAILED_LABEL] }) : {}),
+        ...(job.attempt > 1 ? await labelChangesAgainstIssue(d, job.linear_id, { remove: [FAILED_LABEL] }) : {}),
       });
       await postComment(
         d,
@@ -259,7 +265,7 @@ export function createLinearAdapter(load: () => LinearDeps | Promise<LinearDeps>
         const team = await teamOf(d);
         await d.client.update(job.linear_id, {
           ...(action.state ? { stateId: stateId(team, d.limits.teamKey, action.state) } : {}),
-          ...(await labelChanges(d, action.labels)),
+          ...(await labelChangesAgainstIssue(d, job.linear_id, action.labels)),
         });
       }
       if (action.comment) {
@@ -288,7 +294,7 @@ export function createLinearAdapter(load: () => LinearDeps | Promise<LinearDeps>
       if (detail === DELETED) return { stop: true, reopen: false };
       const { client, limits } = await deps();
       const { state } = await client.issueWithComments(externalId);
-      const stillLabeled = (await client.labelsOf(externalId)).some((l) => l.toLowerCase() === limits.label.toLowerCase());
+      const stillLabeled = (await client.labelsOf(externalId)).some((l) => l.name.toLowerCase() === limits.label.toLowerCase());
       if (stillLabeled && !["canceled", "completed"].includes(state.type)) return { stop: false };
       return { stop: true, reopen: state.type === "started" };
     },

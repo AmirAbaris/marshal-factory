@@ -27,6 +27,7 @@ const node = (id: string, identifier: string) => ({
 });
 let readyNodes: ReturnType<typeof node>[] = [];
 let thread = { state: { name: "In Progress", type: "started" }, labels: ["factory"] };
+const labelsById: Record<string, string[]> = { "src-q2": ["factory", "factory-failed"] };
 const fakeClient = {
   team: record("team", team),
   update: record("update", undefined),
@@ -45,7 +46,7 @@ const fakeClient = {
   },
   labelsOf: (id: string) => {
     calls.push(["labelsOf", id]);
-    return Promise.resolve(thread.labels);
+    return Promise.resolve((labelsById[id] ?? thread.labels).map((name) => ({ id: `label:${name}`, name })));
   },
   setState: record("setState", undefined),
 };
@@ -84,14 +85,13 @@ const EXPECTED = {
         "marshal-factory stopped and needs an answer before it can continue:\n\nWhich layout?"
       ],
       [
-        "labelId",
-        "T1",
-        "factory-failed"
+        "labelsOf",
+        "src-fail"
       ],
       [
         "labelId",
         "T1",
-        "factory"
+        "factory-failed"
       ],
       [
         "update",
@@ -133,9 +133,8 @@ const EXPECTED = {
         "Picked up by marshal-factory."
       ],
       [
-        "labelId",
-        "T1",
-        "factory-failed"
+        "labelsOf",
+        "src-q2"
       ],
       [
         "update",

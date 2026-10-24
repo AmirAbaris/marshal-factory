@@ -172,18 +172,17 @@ export function linearClient(apiKey: string, { fetch: fetchImpl = realFetch, sle
 
     async labelsOf(issueId: string) {
       const data = await gql(
-        `query($id: String!) { issue(id: $id) { labels { nodes { name } } } }`,
+        `query($id: String!) { issue(id: $id) { labels { nodes { id name } } } }`,
         { id: issueId },
-        z.object({ issue: z.object({ labels: z.object({ nodes: z.array(z.object({ name: z.string() })) }) }) }),
+        z.object({ issue: z.object({ labels: z.object({ nodes: z.array(z.object({ id: z.string(), name: z.string() })) }) }) }),
       );
-      return data.issue.labels.nodes.map((l) => l.name);
+      return data.issue.labels.nodes;
     },
 
     async setState(issueId: string, stateId: string) {
       await this.update(issueId, { stateId });
     },
 
-    /** Adding a label it has or removing one it lacks is a no-op in Linear, so replays are safe. */
     async update(
       issueId: string,
       input: { stateId?: string; addedLabelIds?: string[]; removedLabelIds?: string[] },
