@@ -5,7 +5,7 @@ import { agents, events, jobs, runs } from "../db/schema";
 import type { FactoryEvent, Usage } from "./events";
 import { jobKeyFromBranch } from "./factory";
 import { branchSpend } from "./spend";
-import { decideStage } from "./stages";
+import { decideStage, type StageVerdict } from "./stages";
 
 type Db = NodePgDatabase<typeof schema>;
 type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
@@ -23,7 +23,6 @@ const RUN_STATUS: Record<FactoryEvent["kind"], RunStatus | null> = {
   stage: null,
   session_end: "ended",
 };
-
 
 const when = (ms: number) => new Date(ms);
 
@@ -319,44 +318,60 @@ async function applyStage(tx: Tx, e: Extract<FactoryEvent, { kind: "stage" }>) {
 const onCurrentAttempt = (branch: string) =>
   sql`${branch} = case when ${jobs.attempt} > 1 then 'factory/' || ${jobs.key} || '-a' || ${jobs.attempt} else 'factory/' || ${jobs.key} end`;
 
-async function applyToJob(tx: Tx, event: FactoryEvent) {
-  if (event.kind === "session_start") {
-    const key = jobKeyFromBranch(event.branch);
-    if (!key) return;
-    await tx
-      .update(jobs)
-      .set({
-        session_id: event.sessionId,
-        t3_thread_id: sql`coalesce(${event.t3ThreadId ?? null}, ${jobs.t3_thread_id})`,
-        updated_at: when(event.at),
-      })
-      .where(and(eq(jobs.key, key), onCurrentAttempt(event.branch!)));
-  }
-  if (event.kind === "stage" && event.jobKey) {
-    const [job] = await tx.select().from(jobs).where(eq(jobs.key, event.jobKey)).for("update");
-    if (!job) return;
-    const at = when(event.at);
-    const verdict = decideStage(job, { stage: event.stage, at, eventId: event.eventId, branch: event.branch });
-    if (!verdict.apply) return;
-    await tx
-      .update(jobs)
-      .set({
-        stage: event.stage,
-        stage_at: at,
-        stage_summary: event.summary,
-        question: event.question ?? null,
-        pr_url: sql`coalesce(${event.prUrl ?? null}, ${jobs.pr_url})`,
-        stage_event_id: event.eventId,
-        updated_at: at,
-      })
-      .where(eq(jobs.id, job.id));
-  }
+async function linkSession(tx: Tx, event: Extract<FactoryEvent, { kind: "session_start" }>) {
+  const key = jobKeyFromBranch(event.branch);
+  if (!key) return;
+  await tx
+    .update(jobs)
+    .set({
+      session_id: event.sessionId,
+      t3_thread_id: sql`coalesce(${event.t3ThreadId ?? null}, ${jobs.t3_thread_id})`,
+      updated_at: when(event.at),
+    })
+    .where(and(eq(jobs.key, key), onCurrentAttempt(event.branch!)));
 }
 
-async function project(tx: Tx, event: FactoryEvent) {
-  await applyToJob(tx, event);
-  if (event.kind === "stage") return applyStage(tx, event);
-  await upsertRun(tx, event);
+/** Moves the claimed job the event names; undefined when it names none. */
+async function moveJob(tx: Tx, event: Extract<FactoryEvent, { kind: "stage" }>): Promise<StageVerdict | undefined> {
+  if (!event.jobKey) return;
+  const [job] = await tx.select().from(jobs).where(eq(jobs.key, event.jobKey)).for("update");
+  if (!job) return;
+  const at = when(event.at);
+  const verdict = decideStage(job, { stage: event.stage, at, eventId: event.eventId, branch: event.branch });
+  if (verdict.outcome !== "apply") return verdict;
+  await tx
+    .update(jobs)
+    .set({
+      stage: event.stage,
+      stage_at: at,
+      stage_summary: event.summary,
+      question: event.question ?? null,
+      pr_url: sql`coalesce(${event.prUrl ?? null}, ${jobs.pr_url})`,
+      stage_event_id: event.eventId,
+      updated_at: at,
+    })
+    .where(eq(jobs.id, job.id));
+  return verdict;
+}
+
+export type StageRefusal = { eventId: string; reason: string };
+
+async function project(tx: Tx, event: FactoryEvent): Promise<StageRefusal | undefined> {
+  if (event.kind !== "stage") {
+    if (event.kind === "session_start") await linkSession(tx, event);
+    await upsertRun(tx, event);
+    await applyAgentEvent(tx, event);
+    return;
+  }
+  const verdict = await moveJob(tx, event);
+  if (verdict?.outcome === "refuse") {
+    await tx.update(events).set({ refusal: verdict.reason }).where(eq(events.event_id, event.eventId));
+    return { eventId: event.eventId, reason: verdict.reason };
+  }
+  await applyStage(tx, event);
+}
+
+async function applyAgentEvent(tx: Tx, event: FactoryEvent) {
   switch (event.kind) {
     case "agent_start":
       return applyAgentStart(tx, event);
@@ -376,6 +391,8 @@ export type IngestResult = {
   inserted: number;
   /** USD spent so far per factory branch (one attempt at a job) touched by the batch; the reporter caches it for the budget hook. */
   spend: Record<string, number>;
+  /** Stage events the transition table refused; stored, but neither the job nor the run moved. */
+  refused: StageRefusal[];
 };
 
 /**
@@ -409,15 +426,17 @@ export async function ingest(
       .returning({ event_id: events.event_id });
 
     const fresh = new Set(stored.map((row) => row.event_id));
+    const refused: StageRefusal[] = [];
     for (const event of batch) {
       if (!fresh.delete(event.eventId)) continue;
-      await project(tx, event);
+      const refusal = await project(tx, event);
+      if (refusal) refused.push(refusal);
     }
     const branches = await tx
       .selectDistinct({ branch: runs.branch })
       .from(runs)
       .where(and(inArray(runs.session_id, sessionIds), isNotNull(runs.job_key), isNotNull(runs.branch)));
     const spend = await branchSpend(tx, branches.map((b) => b.branch!));
-    return { received: batch.length, inserted: stored.length, spend };
+    return { received: batch.length, inserted: stored.length, spend, refused };
   });
 }

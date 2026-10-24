@@ -70,16 +70,16 @@ assert.equal(isStopped(stopped), true, "runner/binding.ts reads a stop from the 
 
 const row = { key: "FAC-7", stage: "implementing" as Stage, stage_at: new Date(1_000), attempt: 2, stage_event_id: "e-1" };
 const move = (over: Partial<Parameters<typeof decideStage>[1]>) => decideStage(row, { stage: "verifying", at: new Date(2_000), eventId: "e-2", ...over });
-assert.deepEqual(move({}), { apply: true, cause: "report" }, "a newer report on the current attempt applies");
-assert.deepEqual(move({ branch: "factory/FAC-7-a2" }), { apply: true, cause: "report" });
-assert.deepEqual(move({ at: new Date(1_000) }), { apply: true, cause: "report" }, "a report at the same instant still applies");
-assert.deepEqual(move({ eventId: "e-1" }), { apply: false, cause: "report", reason: "already applied" }, "the runner's own write is not applied twice");
-assert.deepEqual(move({ at: new Date(500) }), { apply: false, cause: "report", reason: "stale" });
-assert.deepEqual(move({ branch: "factory/FAC-7" }), { apply: false, cause: "report", reason: "earlier attempt" });
-assert.deepEqual(move({ stage: "merged" }), { apply: false, cause: "report", reason: "forbidden" }, "only the runner marks a job merged");
+assert.deepEqual(move({}), { outcome: "apply", cause: "report" }, "a newer report on the current attempt applies");
+assert.deepEqual(move({ branch: "factory/FAC-7-a2" }), { outcome: "apply", cause: "report" });
+assert.deepEqual(move({ at: new Date(1_000) }), { outcome: "apply", cause: "report" }, "a report at the same instant still applies");
+assert.deepEqual(move({ eventId: "e-1" }), { outcome: "skip", cause: "report", reason: "already applied" }, "the runner's own write is not applied twice");
+assert.deepEqual(move({ at: new Date(500) }), { outcome: "skip", cause: "report", reason: "stale" });
+assert.deepEqual(move({ branch: "factory/FAC-7" }), { outcome: "skip", cause: "report", reason: "earlier attempt" });
+assert.deepEqual(move({ stage: "merged" }), { outcome: "refuse", cause: "report", reason: "implementing -> merged (report) is not in STAGE_TRANSITIONS" }, "only the runner marks a job merged");
 assert.deepEqual(
   decideStage({ ...row, stage: "failed" }, { stage: "pr", at: new Date(2_000), eventId: "e-3", branch: "factory/FAC-7-a2" }),
-  { apply: false, cause: "report", reason: "forbidden" },
+  { outcome: "refuse", cause: "report", reason: "failed -> pr (report) is not in STAGE_TRANSITIONS" },
   "a stage after failed without a reclaim is refused",
 );
 

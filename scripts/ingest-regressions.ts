@@ -20,6 +20,9 @@ const ev = (n: number, body: Record<string, unknown>) =>
 const jobKey = `REG-${Date.now()}`;
 await db.insert(jobs).values(linearJob(run, jobKey, { claimed_at: new Date(t0), updated_at: new Date(t0) }));
 const jobRow = async () => (await db.select().from(jobs).where(eq(jobs.key, jobKey)))[0]!;
+const runRow = async () => (await db.select().from(runs).where(eq(runs.session_id, run)))[0]!;
+const eventRow = async (id: number | string) =>
+  (await db.select().from(events).where(eq(events.event_id, typeof id === "number" ? `${run}-${id}` : id)))[0]!;
 
 try {
   await ingest(db, [
@@ -88,12 +91,15 @@ try {
   assert.equal(w.question, "Which breakpoint?");
   assert.equal(w.pr_url, "https://github.com/x/y/pull/1", "a later stage without a PR keeps the PR link");
 
-  await ingest(db, [
+  const allowed = await ingest(db, [
     ev(12, { kind: "session_start", at: t0 + 60_000, cwd: "/tmp/x", branch: `factory/${jobKey}`, t3ThreadId: "thread-1" }),
     ev(13, { kind: "stage", at: t0 + 62_000, stage: "pr", summary: "opened", prUrl: "https://github.com/x/y/pull/2", jobKey }),
   ]);
   const moved = await jobRow();
   assert.equal(moved.stage, "pr", "a stage event with jobKey moves the jobs row");
+  assert.deepEqual(allowed.refused, [], "an allowed stage event is not reported as refused");
+  assert.equal((await eventRow(13)).refusal, null, "and its stored event carries no refusal");
+  assert.equal((await runRow()).stage, "pr", "and the run takes the stage too");
   assert.equal(moved.stage_event_id, `${run}-13`, "the job remembers the event its stage came from");
   await ingest(db, [
     ev(14, { kind: "stage", at: t0 + 61_000, stage: "implementing", summary: "late", jobKey }),
@@ -108,12 +114,25 @@ try {
   assert.equal(kept.t3_thread_id, "thread-1", "nor does its session start");
   await db.update(jobs).set({ attempt: 1, stage: "failed" }).where(eq(jobs.key, jobKey));
   const failed = await jobRow();
-  await ingest(db, [
+  const runBefore = await runRow();
+  const refused = await ingest(db, [
     ev(18, { kind: "stage", at: t0 + 64_000, stage: "pr", summary: "late", jobKey, branch: `factory/${jobKey}` }),
     { ...ev(19, { kind: "stage", at: t0 + 65_000, stage: "queued", summary: "resumed", jobKey }), eventId: `resume:${run}:c-1` },
     { ...ev(23, { kind: "stage", at: t0 + 66_000, stage: "implementing", summary: "conflict", jobKey }), eventId: `conflict:${run}:h1` },
   ]);
   assert.deepEqual(await jobRow(), failed, "a stage after failed, without a reclaim, leaves the row unchanged");
+  assert.deepEqual(await runRow(), runBefore, "a refused stage event leaves the run's stage unchanged too");
+  assert.deepEqual(
+    refused.refused,
+    [
+      { eventId: `${run}-18`, reason: "failed -> pr (report) is not in STAGE_TRANSITIONS" },
+      { eventId: `resume:${run}:c-1`, reason: "failed -> queued (resume) is not in STAGE_TRANSITIONS" },
+      { eventId: `conflict:${run}:h1`, reason: "failed -> implementing (conflict) is not in STAGE_TRANSITIONS" },
+    ],
+    "the ingest response lists each refused event with its reason",
+  );
+  assert.equal((await eventRow(18)).refusal, "failed -> pr (report) is not in STAGE_TRANSITIONS", "the stored event is marked refused");
+  assert.equal((await eventRow(`resume:${run}:c-1`)).refusal, "failed -> queued (resume) is not in STAGE_TRANSITIONS");
   await ingest(db, [
     { ...ev(24, { kind: "stage", at: t0 + 67_000, stage: "merged", summary: "Merged", prUrl: "https://github.com/x/y/pull/2", jobKey }), eventId: `merged:https://github.com/x/y/pull/2:${run}` },
   ]);

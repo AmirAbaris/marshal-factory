@@ -10,6 +10,7 @@ import { loadConfig } from "../lib/config";
 import { jobId, parseJob, parseJobs, sourceFor } from "../lib/sources";
 import { parseJobId, SOURCE_SHAPES } from "../lib/sources/shapes";
 import type { Job, JobDraft, JobId, JobSource, SourceAdapter } from "../lib/sources/types";
+import type { IngestResult } from "../lib/ingest";
 import { canTransition, runnerEventId } from "../lib/stages";
 import { branchSpend } from "../lib/spend";
 import { readTranscript, subagentTranscripts, sumUsage, transcriptPathFor } from "../lib/transcript";
@@ -138,6 +139,8 @@ async function postEvent(event: Record<string, unknown>) {
     signal: AbortSignal.timeout(15_000),
   });
   if (!res.ok) throw new Error(`ingest answered ${res.status}: ${await res.text()}`);
+  const { refused } = (await res.json()) as Pick<IngestResult, "refused">;
+  for (const refusal of refused) console.log(JSON.stringify({ at: new Date().toISOString(), event: "stage refused", ...refusal }));
 }
 
 /** Gone means T3 no longer has the thread, it is archived, or its worktree left the disk. */

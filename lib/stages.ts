@@ -34,15 +34,23 @@ export const canTransition = (from: Stage, to: Stage, cause: Cause) =>
 export type StageRow = Pick<JobRow, "key" | "stage" | "stage_at" | "attempt" | "stage_event_id">;
 export type StageMove = { stage: Stage; at: Date; eventId: string; branch?: string };
 
+/**
+ * What ingest does with a stage event for a claimed job. A skip is ordering or a duplicate, and
+ * the run still records the report under its own rules. A refusal is a move the table forbids:
+ * neither the job nor the run takes it, and the stored event says why.
+ */
 export type StageVerdict =
-  | { apply: true; cause: Cause }
-  | { apply: false; cause: Cause; reason: "already applied" | "stale" | "earlier attempt" | "forbidden" };
+  | { outcome: "apply"; cause: Cause }
+  | { outcome: "skip"; cause: Cause; reason: "already applied" | "stale" | "earlier attempt" }
+  | { outcome: "refuse"; cause: Cause; reason: string };
 
 export function decideStage(row: StageRow, move: StageMove): StageVerdict {
   const cause = causeOf(move.eventId);
-  if (row.stage_event_id === move.eventId) return { apply: false, cause, reason: "already applied" };
-  if (row.stage_at && move.at < row.stage_at) return { apply: false, cause, reason: "stale" };
-  if (move.branch && move.branch !== attemptBranch(row.key, row.attempt)) return { apply: false, cause, reason: "earlier attempt" };
-  if (!canTransition(row.stage, move.stage, cause)) return { apply: false, cause, reason: "forbidden" };
-  return { apply: true, cause };
+  if (row.stage_event_id === move.eventId) return { outcome: "skip", cause, reason: "already applied" };
+  if (row.stage_at && move.at < row.stage_at) return { outcome: "skip", cause, reason: "stale" };
+  if (move.branch && move.branch !== attemptBranch(row.key, row.attempt)) return { outcome: "skip", cause, reason: "earlier attempt" };
+  if (!canTransition(row.stage, move.stage, cause)) {
+    return { outcome: "refuse", cause, reason: `${row.stage} -> ${move.stage} (${cause}) is not in STAGE_TRANSITIONS` };
+  }
+  return { outcome: "apply", cause };
 }

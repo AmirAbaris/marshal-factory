@@ -46,6 +46,8 @@ export const events = pgTable(
     // Set on stage events, so a job's stage history spans every session that worked on it.
     job_key: text("job_key"),
     payload: jsonb("payload").notNull(),
+    /** Why ingest refused this stage event; null when the job and the run took it. */
+    refusal: text("refusal"),
   },
   (t) => [
     index("events_session_at_idx").on(t.session_id, t.at),
