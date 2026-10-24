@@ -44,11 +44,18 @@ runner daemon (launchd) ◄─────────────────�
 
 ## Panel access and deploys
 
-- **Sign-in.** Neon Auth (`auth: true` in `neon.ts`) holds the users. `proxy.ts` sends a request without a session to `/auth/sign-in`, answers `/api/*` with 401, and shows a 403 page to an account whose email is not in `FACTORY_OWNER_EMAILS` (comma-separated, case-insensitive). An unset or empty list admits nobody. `lib/live-queries.ts` checks the owner again before it seals a query, so only the owner ever holds a Realtime credential.
-- **Owner account.** Sign-up stays off. To create the owner on a branch, run `neon neon-auth config email-password update --disable-sign-up false`, sign up through `POST /api/auth/sign-up/email`, then run the command again with `--disable-sign-up true`.
-- **Environment.** The panel needs `DATABASE_URL`, `DATABASE_URL_UNPOOLED`, `NEON_AUTH_BASE_URL`, `NEON_AUTH_COOKIE_SECRET` (`openssl rand -base64 32`), `NEON_REALTIME_URL`, `NEXT_PUBLIC_NEON_REALTIME_URL`, `NEON_REALTIME_SECRET` and `FACTORY_OWNER_EMAILS`. `next build` fails without the cookie secret.
+- **Sign-in.** Neon Auth (`auth: true` in `neon.ts`) holds the users. `proxy.ts` sends a request without a session to `/auth/sign-in`, answers `/api/*` with 401, and shows a 403 page to any account that is not the owner. The owner is an account whose email is in `FACTORY_OWNER_EMAILS` (comma-separated, case-insensitive) and verified. An unset or empty list admits nobody. `lib/live-queries.ts` checks the owner again before it seals a query, so only the owner ever holds a Realtime credential.
+- **Owner account.** Sign-up stays off, and an email counts only after its owner enters the code Neon Auth mails. To create the owner on `main`:
+  1. Turn on sign-up with code verification: `neon neon-auth config email-password update --branch main --enabled --email-verification-method otp --require-email-verification --send-verification-email-on-sign-up --send-verification-email-on-sign-in --auto-sign-in-after-verification --disable-sign-up false`.
+  2. Open `/auth/sign-up` on the panel and create the account with an address from `FACTORY_OWNER_EMAILS`.
+  3. Enter the 6-digit code from the email (sender `auth@mail.myneon.app`, valid 15 minutes). The panel signs you in and opens the board.
+  4. Turn sign-up off again: `neon neon-auth config email-password update --branch main --disable-sign-up true`.
+
+  An account that signs in before it is verified gets a new code on the sign-in page.
+- **Environment.** The panel needs `DATABASE_URL`, `DATABASE_URL_UNPOOLED`, `NEON_AUTH_BASE_URL`, `NEON_AUTH_COOKIE_SECRET` (`openssl rand -base64 32`), `NEON_REALTIME_URL`, `NEXT_PUBLIC_NEON_REALTIME_URL`, `NEON_REALTIME_SECRET` and `FACTORY_OWNER_EMAILS`. `next build` fails without the cookie secret. A preview build needs none of the three Realtime variables.
 - **Realtime origins.** The allowed origins are `*`, because Vercel preview URLs change per branch. The sealed query is the credential, and only the owner can get one.
-- **Vercel.** `vercel.json` turns off automatic deploys from `main`, runs `bun run db:migrate` before `bun run build` so each preview migrates its own Neon branch, and runs functions in `fra1` next to the database. The project's Ignored Build Step, `[ "$VERCEL_ENV" = "production" ] || [ -z "$DATABASE_URL" ]`, cancels every Git production build and every preview that has no database. Production deploys happen only through `vercel deploy --prod`, which skips that step.
+- **Vercel.** `vercel.json` turns off automatic deploys from `main`, migrates before `bun run build` so each preview migrates its own Neon branch, and runs functions in `fra1` next to the database. `scripts/migrate-guard.ts` runs first and stops a non-production build whose `DATABASE_URL` or `DATABASE_URL_UNPOOLED` points at the production branch (`PRODUCTION_ENDPOINTS` in `lib/migrate-guard.ts`; add new production endpoints there). The project's Ignored Build Step, `[ "$VERCEL_ENV" = "production" ] || [ -z "$DATABASE_URL" ]`, cancels every Git production build and every preview that has no database. Production deploys happen only through `vercel deploy --prod`, which skips that step.
+- **Previews.** A preview build (`VERCEL_ENV=preview`) shows the data from its branch but does not subscribe to Realtime, and the sidebar says "Live updates off in previews". Its Neon branch has no Realtime config that the build can read. Production keeps live updates.
 
 ## Testing
 
