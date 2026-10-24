@@ -21,6 +21,7 @@ export async function proxy(request: NextRequest) {
     : NextResponse.rewrite(new URL("/auth/forbidden", request.url), { status: 403 });
 }
 
+// Each exclusion ends at a path boundary, or at the .rsc and .segments/ suffixes Next adds for prerendered pages.
 export const config = {
-  matcher: ["/((?!auth/sign-in|auth/sign-up|auth/forbidden|api/auth/|_next/static|_next/image|favicon.ico).*)"],
+  matcher: ["/((?!(?:auth/sign-in|auth/sign-up|auth/forbidden|api/auth|_next/static|_next/image|favicon\\.ico)(?:/|$|\\.rsc$|\\.segments/)).*)"],
 };
