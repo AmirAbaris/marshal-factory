@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { GITHUB_API, githubRequest, installationToken, type RepoName } from "./app";
+import { GITHUB_API, GitHubError, githubRequest, installationTokens, type RepoName, type TokenSource } from "./app";
 
 export type PullState = "open" | "closed" | "merged";
 export type Mergeable = "mergeable" | "conflicting" | "unknown";
@@ -33,18 +33,31 @@ const mergeableOf = (mergeable: boolean | null): Mergeable =>
 
 const messageOf = (json: unknown) => z.object({ message: z.string() }).safeParse(json).data?.message ?? "";
 
-export function pullsClient({ api, token }: { api: string; token: (repo: RepoName) => Promise<string> }) {
+export function pullsClient({ api, tokens }: { api: string; tokens: TokenSource }) {
+  // A cached token GitHub stops accepting (revoked, or the installation changed) is dropped and
+  // minted again once; a second 401 is a real failure.
+  async function request(repo: RepoName, method: string, path: string, options?: Parameters<typeof githubRequest>[4]) {
+    const token = await tokens.get(repo);
+    try {
+      return await githubRequest(api, token, method, path, options);
+    } catch (error) {
+      if (!(error instanceof GitHubError && error.status === 401)) throw error;
+      tokens.evict(repo, token);
+      return githubRequest(api, await tokens.get(repo), method, path, options);
+    }
+  }
+
   return {
     async pullRequest(url: string): Promise<PullRequest> {
       const { repo, number } = parsePullUrl(url);
-      const { json } = await githubRequest(api, await token(repo), "GET", `/repos/${repo}/pulls/${number}`);
+      const { json } = await request(repo, "GET", `/repos/${repo}/pulls/${number}`);
       const pull = pullSchema.extend({ mergeable: z.boolean().nullable() }).parse(json);
       return { state: stateOf(pull), mergeable: mergeableOf(pull.mergeable), headSha: pull.head.sha };
     },
 
     async pullsForHead(repo: RepoName, branch: string): Promise<HeadPull[]> {
       const query = new URLSearchParams({ head: `${repo.split("/")[0]}:${branch}`, state: "all", per_page: "100" });
-      const { json } = await githubRequest(api, await token(repo), "GET", `/repos/${repo}/pulls?${query}`);
+      const { json } = await request(repo, "GET", `/repos/${repo}/pulls?${query}`);
       return z
         .array(pullSchema)
         .parse(json)
@@ -58,7 +71,7 @@ export function pullsClient({ api, token }: { api: string; token: (repo: RepoNam
 
     async mergePull(url: string, headSha: string): Promise<MergeResult> {
       const { repo, number } = parsePullUrl(url);
-      const { status, json } = await githubRequest(api, await token(repo), "PUT", `/repos/${repo}/pulls/${number}/merge`, {
+      const { status, json } = await request(repo, "PUT", `/repos/${repo}/pulls/${number}/merge`, {
         body: { merge_method: "squash", sha: headSha },
         allow: [405, 409],
       });
@@ -71,4 +84,4 @@ export function pullsClient({ api, token }: { api: string; token: (repo: RepoNam
 
 export type PullsClient = ReturnType<typeof pullsClient>;
 
-export const github: PullsClient = pullsClient({ api: GITHUB_API, token: installationToken });
+export const github: PullsClient = pullsClient({ api: GITHUB_API, tokens: installationTokens });

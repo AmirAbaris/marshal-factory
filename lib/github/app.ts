@@ -21,7 +21,15 @@ export type AppFile = z.infer<typeof appFileSchema>;
 
 export function readAppFile(path = GITHUB_APP_PATH): AppFile {
   if (!existsSync(path)) throw new Error(`no GitHub App at ${path}; run bun scripts/setup-github-app.ts`);
-  return appFileSchema.parse(JSON.parse(readFileSync(path, "utf8")));
+  const text = readFileSync(path, "utf8");
+  // Parse and schema errors can quote the file, which holds the private key, so neither is passed on.
+  let json: unknown;
+  try {
+    json = JSON.parse(text);
+  } catch {}
+  const parsed = appFileSchema.safeParse(json);
+  if (!parsed.success) throw new Error(`${path} is not a valid GitHub App file; run bun scripts/setup-github-app.ts --force`);
+  return parsed.data;
 }
 
 const base64url = (data: string | Buffer) => Buffer.from(data).toString("base64url");
@@ -34,6 +42,15 @@ export function appJwt(app: Pick<AppFile, "client_id" | "pem">, nowMs = Date.now
   const now = Math.floor(nowMs / 1000);
   const signed = `${base64url(JSON.stringify({ alg: "RS256", typ: "JWT" }))}.${base64url(JSON.stringify({ iat: now - 60, exp: now + 540, iss: app.client_id }))}`;
   return `${signed}.${base64url(sign("sha256", Buffer.from(signed), createPrivateKey(app.pem)))}`;
+}
+
+export class GitHubError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message);
+  }
 }
 
 export async function githubRequest(
@@ -58,7 +75,7 @@ export async function githubRequest(
   const json = (await res.json().catch(() => ({}))) as unknown;
   if (!res.ok && !allow.includes(res.status)) {
     const message = z.object({ message: z.string() }).safeParse(json).data?.message ?? "";
-    throw new Error(`GitHub ${method} ${path} answered ${res.status}${message ? `: ${message}` : ""}`);
+    throw new GitHubError(`GitHub ${method} ${path} answered ${res.status}${message ? `: ${message}` : ""}`, res.status);
   }
   return { status: res.status, json };
 }
@@ -95,7 +112,7 @@ export function tokenSource({
     return { token: minted.token, expiresAt: Date.parse(minted.expires_at) };
   }
 
-  return (repo: RepoName): Promise<string> => {
+  function get(repo: RepoName): Promise<string> {
     const cached = tokens.get(repo);
     if (cached && cached.expiresAt - now() > REFRESH_BEFORE_MS) return Promise.resolve(cached.token);
     let pending = minting.get(repo);
@@ -109,8 +126,17 @@ export function tokenSource({
       minting.set(repo, pending);
     }
     return pending;
-  };
+  }
+
+  /** Drops a token GitHub refused, unless a newer one already replaced it. */
+  function evict(repo: RepoName, token: string) {
+    if (tokens.get(repo)?.token === token) tokens.delete(repo);
+  }
+
+  return { get, evict };
 }
+
+export type TokenSource = ReturnType<typeof tokenSource>;
 
 const liveTokens = tokenSource({
   api: GITHUB_API,
@@ -118,7 +144,10 @@ const liveTokens = tokenSource({
   onMint: (repo) => console.log(JSON.stringify({ at: new Date().toISOString(), event: `github app token minted for ${repo}` })),
 });
 
-export function installationToken(repo: RepoName) {
-  forbidInTest("the GitHub App");
-  return liveTokens(repo);
-}
+export const installationTokens: TokenSource = {
+  get(repo) {
+    forbidInTest("the GitHub App");
+    return liveTokens.get(repo);
+  },
+  evict: liveTokens.evict,
+};

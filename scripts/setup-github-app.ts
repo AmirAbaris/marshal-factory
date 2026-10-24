@@ -1,12 +1,12 @@
 import { execFile } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
-import { dirname } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { parseArgs } from "node:util";
 import { z } from "zod";
 import { GITHUB_APP_PATH } from "../lib/config";
 import { serve } from "./serve";
-import { GITHUB_API, appFileSchema, appJwt, githubRequest, type AppFile } from "../lib/github/app";
+import { GITHUB_API, appFileSchema, appJwt, githubRequest, readAppFile, type AppFile } from "../lib/github/app";
 
 const { values: args } = parseArgs({
   options: {
@@ -34,19 +34,21 @@ const manifest = {
   default_events: ["pull_request", "push", "issues"],
 };
 
-const stored = () => (existsSync(GITHUB_APP_PATH) ? appFileSchema.parse(JSON.parse(readFileSync(GITHUB_APP_PATH, "utf8"))) : undefined);
+const stored = () => (existsSync(GITHUB_APP_PATH) ? readAppFile() : undefined);
 
+/** A fresh mode-600 file renamed over the old one, so the key is never readable or half written. */
 function store(app: AppFile) {
-  mkdirSync(dirname(GITHUB_APP_PATH), { recursive: true, mode: 0o700 });
-  writeFileSync(GITHUB_APP_PATH, `${JSON.stringify(app, null, 2)}\n`, { mode: 0o600 });
-  // The mode option only applies when the file is created.
-  chmodSync(GITHUB_APP_PATH, 0o600);
+  const dir = dirname(GITHUB_APP_PATH);
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const temp = join(dir, `.${basename(GITHUB_APP_PATH)}.${process.pid}.${randomBytes(4).toString("hex")}`);
+  writeFileSync(temp, `${JSON.stringify(app, null, 2)}\n`, { mode: 0o600, flag: "wx" });
+  renameSync(temp, GITHUB_APP_PATH);
 }
 
 const installUrl = (app: AppFile) => `${GITHUB}/apps/${app.slug}/installations/new`;
 
-const existing = stored();
-if (existing?.installation_id && !args.force) {
+const existing = args.force ? undefined : stored();
+if (existing?.installation_id) {
   console.log(`GitHub App ${existing.slug} (id ${existing.id}) is set up with installation ${existing.installation_id}; pass --force to register a new one`);
   process.exit(0);
 }
