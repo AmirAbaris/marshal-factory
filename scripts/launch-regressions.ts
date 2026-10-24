@@ -3,9 +3,10 @@ import assert from "node:assert/strict";
 import { eq } from "drizzle-orm";
 
 const { db } = await import("../db/client");
-const { issues } = await import("../db/schema");
+const { jobs } = await import("../db/schema");
 const { bindThread, claimLaunch, deliverStops, pendingLaunches, reconcileStops, releaseLaunch, threads } = await import("../runner/ops");
-const { sourceFor } = await import("../lib/sources");
+const { jobId, sourceFor } = await import("../lib/sources");
+const { linearJob } = await import("./fixtures");
 const { createLinearAdapter } = await import("../lib/sources/linear");
 const { factorySchema } = await import("../lib/config");
 const { canReclaim, canReclaimSql, stopDeliverable, stopDeliverableSql } = await import("../runner/binding");
@@ -22,16 +23,16 @@ threads.send = async (threadId, message) => void sent.push({ threadId, message }
 await assert.rejects(sourceFor("linear").ready(), /Linear API was called during a regression run/, "the real Linear client refuses to run in a regression");
 
 const id = `launch-regress-${Date.now()}`;
-const now = new Date();
-await db.insert(issues).values({ linear_id: id, key: id, title: "t", url: "u", claimed_at: now, updated_at: now });
+const jid = jobId("linear", id);
+await db.insert(jobs).values(linearJob(id, id));
 try {
-  assert.equal(await claimLaunch(id, "pending:1"), true, "the first launch claims the issue");
+  assert.equal(await claimLaunch(id, "pending:1"), true, "the first launch claims the job");
   assert.equal(await claimLaunch(id, "pending:2"), false, "a second launch, after a crash or timeout, does not");
   assert.deepEqual((await pendingLaunches()).find((p) => p.key === id), { key: id, marker: "pending:1", branch: `factory/${id}`, stage: "queued" });
   await releaseLaunch(id, "pending:2");
-  assert.equal((await db.select().from(issues).where(eq(issues.key, id)))[0]!.t3_thread_id, "pending:1", "only the holder's marker is released");
+  assert.equal((await db.select().from(jobs).where(eq(jobs.key, id)))[0]!.t3_thread_id, "pending:1", "only the holder's marker is released");
   await releaseLaunch(id, "pending:1");
-  assert.equal(await claimLaunch(id, "pending:3"), true, "a released issue can launch again");
+  assert.equal(await claimLaunch(id, "pending:3"), true, "a released job can launch again");
   // The binding × stop state space (runner/binding.ts). Each cell checks the predicate, its SQL
   // twin, what deliverStops does, and whether a retry claim may start a new attempt.
   const stop = { stage: "failed" as const, stage_event_id: `stop:${id}:1:x`, stage_summary: "Stopped: test." };
@@ -48,17 +49,17 @@ try {
     { name: "bound, still working", row: { stage: "implementing" as const, stage_event_id: "e", stage_summary: "s", t3_thread_id: "mcp:regress-a", stop_sent_to: null }, delivers: false, reclaim: false },
   ];
   const sqlSays = async (condition: ReturnType<typeof sql> | undefined) =>
-    (await db.select({ key: issues.key }).from(issues).where(and(eq(issues.linear_id, id), condition))).length > 0;
+    (await db.select({ key: jobs.key }).from(jobs).where(and(eq(jobs.id, jid), condition))).length > 0;
   for (const cell of cells) {
-    await db.update(issues).set(cell.row).where(eq(issues.linear_id, id));
-    const [row] = await db.select().from(issues).where(eq(issues.linear_id, id));
+    await db.update(jobs).set(cell.row).where(eq(jobs.id, jid));
+    const [row] = await db.select().from(jobs).where(eq(jobs.id, jid));
     assert.equal(stopDeliverable(row!), cell.delivers, `${cell.name}: stop deliverable`);
     assert.equal(await sqlSays(stopDeliverableSql), cell.delivers, `${cell.name}: SQL agrees on deliverable`);
     assert.equal(canReclaim(row!), cell.reclaim, `${cell.name}: retry claim allowed`);
     assert.equal(await sqlSays(sql`coalesce(${canReclaimSql}, false)`), cell.reclaim, `${cell.name}: SQL agrees on retry claim`);
     sent.length = 0;
-    assert.deepEqual(await deliverStops(id), cell.delivers ? [id] : [], `${cell.name}: deliverStops`);
-    assert.deepEqual(await deliverStops(id), [], `${cell.name}: a second deliverStops sends nothing`);
+    assert.deepEqual(await deliverStops(jid), cell.delivers ? [id] : [], `${cell.name}: deliverStops`);
+    assert.deepEqual(await deliverStops(jid), [], `${cell.name}: a second deliverStops sends nothing`);
     assert.deepEqual(
       sent.map((m) => m.threadId),
       cell.delivers ? [cell.row.t3_thread_id] : [],
@@ -69,29 +70,29 @@ try {
   // The guard as the retry claim uses it, inside ON CONFLICT DO UPDATE.
   const retryClaim = () =>
     db
-      .insert(issues)
-      .values({ linear_id: id, key: id, title: "t", url: "u", claimed_at: new Date(), updated_at: new Date() })
-      .onConflictDoUpdate({ target: issues.linear_id, set: { attempt: sql`${issues.attempt} + 1` }, setWhere: canReclaimSql })
-      .returning({ attempt: issues.attempt });
-  await db.update(issues).set({ ...stop, t3_thread_id: "pending:8", stop_sent_to: null }).where(eq(issues.linear_id, id));
+      .insert(jobs)
+      .values(linearJob(id, id))
+      .onConflictDoUpdate({ target: jobs.id, set: { attempt: sql`${jobs.attempt} + 1` }, setWhere: canReclaimSql })
+      .returning({ attempt: jobs.attempt });
+  await db.update(jobs).set({ ...stop, t3_thread_id: "pending:8", stop_sent_to: null }).where(eq(jobs.id, jid));
   assert.deepEqual(await retryClaim(), [], "a retry claim is refused while a stopped launch is pending");
-  await db.update(issues).set({ ...stop, t3_thread_id: "mcp:regress-a", stop_sent_to: "mcp:regress-a" }).where(eq(issues.linear_id, id));
+  await db.update(jobs).set({ ...stop, t3_thread_id: "mcp:regress-a", stop_sent_to: "mcp:regress-a" }).where(eq(jobs.id, jid));
   assert.equal((await retryClaim()).length, 1, "and allowed once the stop reached the thread");
 
   // Transitions out of "pending, stopped": the thread appears, or recovery finds none.
-  await db.update(issues).set({ ...stop, t3_thread_id: "pending:6", stop_sent_to: null }).where(eq(issues.linear_id, id));
+  await db.update(jobs).set({ ...stop, t3_thread_id: "pending:6", stop_sent_to: null }).where(eq(jobs.id, jid));
   sent.length = 0;
   assert.deepEqual(await bindThread(id, "mcp:regress-late"), { bound: id, threadId: "mcp:regress-late", stopped: true }, "binding delivers the owed stop at once");
   assert.deepEqual(sent.map((m) => m.threadId), ["mcp:regress-late"], "to the thread it just bound");
-  assert.equal(canReclaim((await db.select().from(issues).where(eq(issues.linear_id, id)))[0]!), true, "and then a retry may claim");
-  await db.update(issues).set({ ...stop, t3_thread_id: "pending:7", stop_sent_to: null }).where(eq(issues.linear_id, id));
+  assert.equal(canReclaim((await db.select().from(jobs).where(eq(jobs.id, jid)))[0]!), true, "and then a retry may claim");
+  await db.update(jobs).set({ ...stop, t3_thread_id: "pending:7", stop_sent_to: null }).where(eq(jobs.id, jid));
   await releaseLaunch(id, "pending:7");
-  const [cleared] = await db.select().from(issues).where(eq(issues.linear_id, id));
+  const [cleared] = await db.select().from(jobs).where(eq(jobs.id, jid));
   assert.equal(stopDeliverable(cleared!), false, "recovery that finds no thread leaves nothing to deliver");
   assert.equal(canReclaim(cleared!), true, "and a retry may claim");
-  assert.deepEqual(await deliverStops(id), []);
+  assert.deepEqual(await deliverStops(jid), []);
 
-  // Missed stop webhooks: each tick asks Linear about claimed issues and stops the ones it took away.
+  // Missed stop webhooks: each tick asks Linear about claimed jobs and stops the ones it took away.
   const node = (over: Record<string, unknown> = {}) => ({
     id,
     archivedAt: null,
@@ -103,14 +104,14 @@ try {
   const sourceReading = (issuesByIds: () => Promise<unknown[]>) =>
     createLinearAdapter(() => ({ client: { issuesByIds } as never, db, limits: factorySchema.parse({}) }));
   const stops: string[] = [];
-  const recordStop = async (linearId: string, detail: string) => {
-    // Never touch a live issue, whatever the scoping above does.
-    assert.equal(linearId, id, "the regression only stops its own issue");
+  const recordStop = async (stopped: string, detail: string) => {
+    // Never touch a live job, whatever the scoping above does.
+    assert.equal(stopped, jid, "the regression only stops its own job");
     stops.push(detail);
-    await db.update(issues).set({ stage: "failed", stage_event_id: `stop:${linearId}:x` }).where(eq(issues.linear_id, linearId));
+    await db.update(jobs).set({ stage: "failed", stage_event_id: `stop:${id}:x` }).where(eq(jobs.id, jid));
     return "stopped";
   };
-  const working = () => db.update(issues).set({ stage: "implementing", stage_event_id: "e" }).where(eq(issues.linear_id, id));
+  const working = () => db.update(jobs).set({ stage: "implementing", stage_event_id: "e" }).where(eq(jobs.id, jid));
   const cases = [
     { name: "still labeled and open", fetch: async () => [node()], stop: undefined },
     { name: "label removed", fetch: async () => [node({ labels: { nodes: [{ name: "bug" }] } })], stop: "the factory label was removed in Linear" },
@@ -121,10 +122,10 @@ try {
   for (const c of cases) {
     await working();
     stops.length = 0;
-    const result = await reconcileStops({ source: sourceReading(c.fetch), stop: recordStop, only: [id] });
+    const result = await reconcileStops({ source: sourceReading(c.fetch), stop: recordStop, only: [jid] });
     assert.deepEqual(stops, c.stop ? [c.stop] : [], `${c.name}: ${JSON.stringify(result)}`);
     if (c.stop) {
-      await reconcileStops({ source: sourceReading(c.fetch), stop: recordStop, only: [id] });
+      await reconcileStops({ source: sourceReading(c.fetch), stop: recordStop, only: [jid] });
       assert.equal(stops.length, 1, `${c.name}: a repeat tick records no second stop`);
     }
   }
@@ -135,7 +136,7 @@ try {
       throw new Error("Linear is down");
     }),
     stop: recordStop,
-    only: [id],
+    only: [jid],
   });
   assert.deepEqual(linearDown, { unknown: "Linear is down" });
   assert.deepEqual(stops, [], "a failed Linear fetch stops nothing");
@@ -308,6 +309,6 @@ try {
   console.error(error);
   process.exitCode = 1;
 } finally {
-  await db.delete(issues).where(eq(issues.linear_id, id));
+  await db.delete(jobs).where(eq(jobs.id, jid));
   process.exit(process.exitCode ?? 0);
 }

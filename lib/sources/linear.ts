@@ -2,13 +2,16 @@ import { eq, sql } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import { z } from "zod";
 import type * as schema from "../../db/schema";
-import { issues } from "../../db/schema";
+import { jobs } from "../../db/schema";
 import { loadConfig, type FactoryLimits } from "../config";
 import type { Stage } from "../events";
 import { attemptBranch } from "../factory";
 import { commentId, linearClient, type LinearClient } from "../linear";
 import { hmacHex, sameHex, type IntentDraft, type Verdict } from "../webhooks";
-import type { Job, Reply, ResumePlan, SourceAdapter, SourceWebhook } from "./types";
+import { jobId } from "./shapes";
+import type { Job as AnyJob, Reply, ResumePlan, SourceAdapter, SourceWebhook } from "./types";
+
+type Job = AnyJob<"linear">;
 
 /** Linear asks receivers to reject a webhookTimestamp more than a minute away from now. */
 const LINEAR_MAX_SKEW_MS = 60_000;
@@ -50,13 +53,13 @@ function linearIntent(body: unknown, opts: { teamKey: string; label: string }): 
   const payload = linearPayloadSchema.parse(body);
   if (payload.type === "Comment" && payload.action === "create") {
     const issueId = z.string().optional().parse(payload.data.issueId);
-    return issueId ? { kind: "answer", linearId: issueId } : null;
+    return issueId ? { kind: "answer", jobId: jobId("linear", issueId) } : null;
   }
   if (payload.type !== "Issue") return null;
   const issue = linearIssueSchema.parse(payload.data);
   if (issue.team && issue.team.key !== opts.teamKey) return null;
   if (!issue.identifier.startsWith(`${opts.teamKey}-`)) return null;
-  const base = { issueKey: issue.identifier, linearId: issue.id };
+  const base = { jobId: jobId("linear", issue.id) };
   const factoryLabel = issue.labels.find((l) => l.name.toLowerCase() === opts.label.toLowerCase());
 
   if (payload.action === "remove") return { kind: "stop", ...base, detail: DELETED };
@@ -84,17 +87,14 @@ const webhook: SourceWebhook = {
 /** Linear state types that end an issue; a waiting run on one of them never resumes. */
 const CLOSED_STATE_TYPES = new Set(["completed", "canceled", "duplicate"]);
 
-type WaitingIssue = Pick<
-  Job,
-  "linear_id" | "stage_event_id" | "question" | "factory_comment_ids" | "delivered_reply_ids"
->;
+type WaitingJob = Pick<Job, "external_id" | "stage_event_id" | "question" | "source_state" | "delivered_reply_ids">;
 
-export const claimCommentId = (linearId: string, attempt = 1) =>
-  attempt > 1 ? commentId(linearId, "claim", String(attempt)) : commentId(linearId, "claim");
-export const stageCommentId = (linearId: string, stageEventId: string) =>
-  commentId(linearId, stageEventId);
-export const resumeCommentId = (linearId: string, replyIds: readonly string[]) =>
-  commentId(linearId, "resume", ...replyIds);
+export const claimCommentId = (issueId: string, attempt = 1) =>
+  attempt > 1 ? commentId(issueId, "claim", String(attempt)) : commentId(issueId, "claim");
+export const stageCommentId = (issueId: string, stageEventId: string) =>
+  commentId(issueId, stageEventId);
+export const resumeCommentId = (issueId: string, replyIds: readonly string[]) =>
+  commentId(issueId, "resume", ...replyIds);
 
 /**
  * Decides what a waiting issue needs from what Linear shows. Replies are the comments after the
@@ -102,19 +102,19 @@ export const resumeCommentId = (linearId: string, replyIds: readonly string[]) =
  * the operator's own, so authorship cannot tell them apart; the stored comment ids do.
  */
 export function planResume(
-  issue: WaitingIssue,
+  issue: WaitingJob,
   linear: { state: { name: string; type: string }; comments: readonly Reply[] },
 ): ResumePlan {
   if (CLOSED_STATE_TYPES.has(linear.state.type)) return { kind: "close", state: linear.state.name };
   if (!issue.stage_event_id) return { kind: "wait" };
 
-  const questionId = stageCommentId(issue.linear_id, issue.stage_event_id);
+  const questionId = stageCommentId(issue.external_id, issue.stage_event_id);
   const asked = linear.comments.find((c) => c.id === questionId);
   if (!asked) return { kind: "wait" };
 
   const ours = new Set([
-    ...issue.factory_comment_ids,
-    claimCommentId(issue.linear_id),
+    ...issue.source_state.factoryCommentIds,
+    claimCommentId(issue.external_id),
     questionId,
   ]);
   const delivered = new Set(issue.delivered_reply_ids);
@@ -193,16 +193,28 @@ const writeBackTable = (factoryLabel: string): Partial<Record<Stage, WriteBack>>
   merged: { state: "Done" },
 });
 
+const commentIds = sql`coalesce(${jobs.source_state}->'factoryCommentIds', '[]'::jsonb)`;
+
 /** Records the id before posting, so a crash in between can never make our own comment look like a reply. */
-async function postComment({ db, client }: LinearDeps, issue: Job, id: string, body: string) {
+async function postComment({ db, client }: LinearDeps, job: Job, id: string, body: string) {
   await db
-    .update(issues)
+    .update(jobs)
     .set({
-      factory_comment_ids: sql`case when ${issues.factory_comment_ids} ? ${id} then ${issues.factory_comment_ids} else ${issues.factory_comment_ids} || jsonb_build_array(${id}::text) end`,
+      source_state: sql`jsonb_set(${jobs.source_state}, '{factoryCommentIds}', case when ${commentIds} ? ${id} then ${commentIds} else ${commentIds} || jsonb_build_array(${id}::text) end)`,
     })
-    .where(eq(issues.linear_id, issue.linear_id));
-  await client.comment(issue.linear_id, id, body);
+    .where(eq(jobs.id, job.id));
+  await client.comment(job.writeback.issueId, id, body);
 }
+
+/** Remembers the Linear state the factory set, so the next pass knows the claim was announced. */
+async function recordState({ db }: LinearDeps, job: Job, state: string, extra: { updated_at?: Date } = {}) {
+  await db
+    .update(jobs)
+    .set({ source_state: sql`jsonb_set(${jobs.source_state}, '{state}', to_jsonb(${state}::text))`, ...extra })
+    .where(eq(jobs.id, job.id));
+}
+
+const ANNOUNCED = "In Progress";
 
 export function createLinearAdapter(load: () => LinearDeps | Promise<LinearDeps>): SourceAdapter<"linear"> {
   let loaded: LinearDeps | undefined;
@@ -236,55 +248,58 @@ export function createLinearAdapter(load: () => LinearDeps | Promise<LinearDeps>
         title: n.title,
         url: n.url,
         description: n.description,
-        sourceState: n.state.name,
-        labels: n.labels.nodes.map((l) => l.name),
+        writeback: { kind: "linear" as const, issueId: n.id },
+        sourceState: { state: n.state.name, labels: n.labels.nodes.map((l) => l.name) },
       }));
     },
 
     async announceClaim(job) {
+      if (job.source_state.state === ANNOUNCED) return;
       const d = await deps();
-      await d.client.update(job.linear_id, {
-        stateId: stateId(await teamOf(d), d.limits.teamKey, "In Progress"),
-        ...(job.attempt > 1 ? await labelChangesAgainstIssue(d, job.linear_id, { remove: [FAILED_LABEL] }) : {}),
+      await d.client.update(job.writeback.issueId, {
+        stateId: stateId(await teamOf(d), d.limits.teamKey, ANNOUNCED),
+        ...(job.attempt > 1 ? await labelChangesAgainstIssue(d, job.writeback.issueId, { remove: [FAILED_LABEL] }) : {}),
       });
       await postComment(
         d,
         job,
-        claimCommentId(job.linear_id, job.attempt),
+        claimCommentId(job.writeback.issueId, job.attempt),
         job.attempt > 1
           ? `Picked up by marshal-factory again (attempt ${job.attempt}, branch ${attemptBranch(job.key, job.attempt)}).`
           : "Picked up by marshal-factory.",
       );
+      await recordState(d, job, ANNOUNCED, { updated_at: new Date() });
     },
 
     async writeBack(job, transition) {
       const d = await deps();
       const action = writeBackTable(d.limits.label)[transition.stage];
-      if (!action) return null;
+      if (!action) return false;
       if (action.state || action.labels) {
         const team = await teamOf(d);
-        await d.client.update(job.linear_id, {
+        await d.client.update(job.writeback.issueId, {
           ...(action.state ? { stateId: stateId(team, d.limits.teamKey, action.state) } : {}),
-          ...(await labelChangesAgainstIssue(d, job.linear_id, action.labels)),
+          ...(await labelChangesAgainstIssue(d, job.writeback.issueId, action.labels)),
         });
       }
       if (action.comment) {
-        await postComment(d, job, stageCommentId(job.linear_id, transition.eventId), action.comment(job));
+        await postComment(d, job, stageCommentId(job.writeback.issueId, transition.eventId), action.comment(job));
       }
-      return { sourceState: action.state };
+      if (action.state) await recordState(d, job, action.state);
+      return true;
     },
 
     async replies(job) {
       const { client } = await deps();
-      return planResume(job, await client.issueWithComments(job.linear_id));
+      return planResume(job, await client.issueWithComments(job.external_id));
     },
 
-    async stopWanted(jobs) {
+    async stopWanted(open) {
       const { client, limits } = await deps();
-      const nodes = await client.issuesByIds(jobs.map((j) => j.linear_id));
+      const nodes = await client.issuesByIds(open.map((j) => j.external_id));
       const wanted = [];
-      for (const job of jobs) {
-        const reason = stopReason(nodes.find((n) => n.id === job.linear_id), limits.label);
+      for (const job of open) {
+        const reason = stopReason(nodes.find((n) => n.id === job.external_id), limits.label);
         if (reason) wanted.push({ job, reason });
       }
       return wanted;
@@ -301,11 +316,11 @@ export function createLinearAdapter(load: () => LinearDeps | Promise<LinearDeps>
 
     async reopen(job) {
       const d = await deps();
-      await d.client.setState(job.linear_id, stateId(await teamOf(d), d.limits.teamKey, "Todo"));
+      await d.client.setState(job.writeback.issueId, stateId(await teamOf(d), d.limits.teamKey, "Todo"));
     },
 
     async acknowledgeReplies(job, replyIds) {
-      await postComment(await deps(), job, resumeCommentId(job.linear_id, replyIds), "Answer received, resuming.");
+      await postComment(await deps(), job, resumeCommentId(job.writeback.issueId, replyIds), "Answer received, resuming.");
     },
 
     describe: (job) => `Linear issue ${job.key}`,

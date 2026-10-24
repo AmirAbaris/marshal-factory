@@ -12,15 +12,15 @@ export const factorySchema = z
     teamKey: z.string().default("FAC"),
     label: z.string().default("factory"),
     maxInFlight: z.number().int().positive().default(2),
-    /** A working issue with no event for this long, or whose thread stopped, gets one nudge. */
+    /** A working job with no event for this long, or whose thread stopped, gets one nudge. */
     stuckAfterMinutes: z.number().positive().default(30),
     /** A stopped thread counts as stuck only after this much quiet, so a turn that just ended isn't. */
     stoppedGraceMinutes: z.number().nonnegative().default(2),
-    /** After a nudge, this much more quiet marks the issue failed. */
+    /** After a nudge, this much more quiet marks the job failed. */
     failAfterNudgeMinutes: z.number().positive().default(30),
-    /** USD an issue may spend across all its runs, main sessions plus subagents. */
+    /** USD one attempt at a job may spend across its runs, main sessions plus subagents; claims copy it onto the job. */
     budgetUsd: z.number().positive().default(5),
-    /** Days a failed issue keeps its worktree for a human to look at before cleanup removes it. */
+    /** Days a failed job keeps its worktree for a human to look at before cleanup removes it. */
     cleanupGraceDays: z.number().nonnegative().default(3),
     /** Hours a Claude Code subagent worktree must sit untouched before cleanup considers it. */
     subagentIdleHours: z.number().nonnegative().default(6),
@@ -45,7 +45,7 @@ const configSchema = z.object({
 });
 export type FactoryConfig = z.infer<typeof configSchema>;
 
-/** Just the limits, for readers that hold no secrets: the panel and the budget hook. */
+/** Just the limits, for readers that hold no secrets, such as the budget hook. */
 export function loadLimits(): FactoryLimits {
   const raw = existsSync(/* turbopackIgnore: true */ CONFIG_PATH) ? JSON.parse(readFileSync(/* turbopackIgnore: true */ CONFIG_PATH, "utf8")).factory : undefined;
   return factorySchema.parse(raw ?? {});

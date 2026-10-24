@@ -1,7 +1,8 @@
 import { and, eq, sql } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import type * as schema from "../db/schema";
-import { issues } from "../db/schema";
+import { jobs } from "../db/schema";
+import type { JobId } from "./sources/shapes";
 
 export function qaBlock(question: string, answer: string) {
   const quote = (text: string) => text.trim().replace(/^/gm, "> ");
@@ -20,13 +21,13 @@ export function resumeMessage(subject: string, question: string, answer: string)
 }
 
 /**
- * Marks replies delivered while the issue is still waiting. Returns false when another pass
+ * Marks replies delivered while the job is still waiting. Returns false when another pass
  * already delivered any of them, which is the replay guard: claim first, then send. Only a
  * failed send rolls the claim back; after a successful send the thread's own reports move on.
  */
 export async function claimReplies(
   db: NodePgDatabase<typeof schema>,
-  linearId: string,
+  id: JobId,
   replyIds: readonly string[],
   answer: string,
   at: Date,
@@ -34,9 +35,9 @@ export async function claimReplies(
   relaunchContext?: string,
 ) {
   const claimed = await db
-    .update(issues)
+    .update(jobs)
     .set({
-      delivered_reply_ids: sql`${issues.delivered_reply_ids} || ${JSON.stringify(replyIds)}::jsonb`,
+      delivered_reply_ids: sql`${jobs.delivered_reply_ids} || ${JSON.stringify(replyIds)}::jsonb`,
       answered_at: at,
       answer,
       updated_at: at,
@@ -46,14 +47,14 @@ export async function claimReplies(
     })
     .where(
       and(
-        eq(issues.linear_id, linearId),
-        eq(issues.stage, "waiting"),
-        sql`not (${issues.delivered_reply_ids} ?| array[${sql.join(
+        eq(jobs.id, id),
+        eq(jobs.stage, "waiting"),
+        sql`not (${jobs.delivered_reply_ids} ?| array[${sql.join(
           replyIds.map((r) => sql`${r}`),
           sql`, `,
         )}]::text[])`,
       ),
     )
-    .returning({ key: issues.key });
+    .returning({ key: jobs.key });
   return claimed.length > 0;
 }

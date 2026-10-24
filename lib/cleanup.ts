@@ -4,7 +4,7 @@ export type BranchState = {
   branch: string;
   worktreePath: string | null;
   localBranch: boolean;
-  /** Merged and failed end the work; failed covers a closed PR and an issue the factory gave up on. */
+  /** Merged and failed end the work; failed covers a closed PR and a job the factory gave up on. */
   outcome: "merged" | "failed" | "open" | "unknown";
   outcomeAt: Date | null;
   /** Tracked or untracked changes in the worktree; ignored files such as node_modules do not count. */
