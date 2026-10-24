@@ -57,6 +57,34 @@
       "when": 1792777671709,
       "tag": "0007_attempts",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1792783549661,
+      "tag": "0008_webhooks",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1792785047100,
+      "tag": "0009_intent_attempts",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1792788433350,
+      "tag": "0010_intent_retry_at",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1792792530641,
+      "tag": "0011_stop_sent_to",
+      "breakpoints": true
     }
   ]
 }

@@ -1,0 +1,1 @@
+ALTER TABLE "intents" ADD COLUMN "retry_at" timestamp with time zone;
