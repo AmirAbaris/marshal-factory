@@ -5,7 +5,7 @@ import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { stageReportSchema, type FactoryEvent, type Usage } from "../lib/events";
-import { issueKeyFromBranch, REPORT_STAGE_TOOL } from "../lib/factory";
+import { jobKeyFromBranch, REPORT_STAGE_TOOL } from "../lib/factory";
 import { rememberSessionBranch, sessionBranch, writeSpend } from "../lib/spend-cache";
 import { mainTranscript, readTranscript, subagentTranscripts, sumUsage } from "../lib/transcript";
 
@@ -132,7 +132,7 @@ const USAGE_DIR = join(homedir(), ".cache/marshal-factory/usage");
  * A factory session's main usage only lands with turn_stop, and a factory run is one long turn.
  * So after other tool calls, including those inside subagents (the main session waits while a
  * foreground subagent works), the reporter sends a snapshot of the main session and every
- * subagent transcript, at most every 30 s per session. That keeps the issue's spend, and the
+ * subagent transcript, at most every 30 s per session. That keeps the job's spend, and the
  * budget hook, close to real time.
  */
 async function usageSnapshot(
@@ -140,7 +140,7 @@ async function usageSnapshot(
   base: { eventId: string; sessionId: string; at: number; transcriptPath?: string },
 ): Promise<FactoryEvent | undefined> {
   const git = await gitContext(str(input.cwd) ?? process.cwd());
-  const onFactoryBranch = Boolean(issueKeyFromBranch(git.branch));
+  const onFactoryBranch = Boolean(jobKeyFromBranch(git.branch));
   if (onFactoryBranch) rememberSessionBranch(base.sessionId, git.branch!);
   if (!onFactoryBranch && !sessionBranch(base.sessionId)) return undefined;
   const stamp = join(USAGE_DIR, base.sessionId.replace(/[^\w-]/g, "_"));
@@ -164,7 +164,7 @@ async function toEvent(
     case "SessionStart": {
       const cwd = str(input.cwd) ?? process.cwd();
       const git = await gitContext(cwd);
-      if (issueKeyFromBranch(git.branch)) rememberSessionBranch(base.sessionId, git.branch!);
+      if (jobKeyFromBranch(git.branch)) rememberSessionBranch(base.sessionId, git.branch!);
       const t3 = await findT3Thread(cwd, git);
       const source = str(input.source);
       return {
@@ -197,7 +197,7 @@ async function toEvent(
         const report = stageReportSchema.safeParse(input.tool_input);
         if (!report.success) return undefined;
         const git = await gitContext(str(input.cwd) ?? process.cwd());
-        return { ...base, kind: "stage", ...report.data, issueKey: issueKeyFromBranch(git.branch), branch: git.branch };
+        return { ...base, kind: "stage", ...report.data, jobKey: jobKeyFromBranch(git.branch), branch: git.branch };
       }
       const agentId = str(input.tool_response?.agentId);
       if (input.tool_name === "Agent" && input.tool_use_id && agentId) {

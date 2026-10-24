@@ -1,5 +1,6 @@
 import { timingSafeEqual } from "node:crypto";
 import { attachDatabasePool } from "@neon/functions";
+import { eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
 import * as schema from "../../db/schema";
@@ -33,11 +34,14 @@ async function record(source: string, deliveryId: string, event: string, payload
       .returning({ id: schema.webhookDeliveries.delivery_id });
     if (fresh.length === 0) return { duplicate: true, intent: null };
     if (intent) {
+      // A merged PR names no job; the job that holds the PR is the one it is about.
+      const [byPr] = intent.prUrl && !intent.jobId
+        ? await tx.select({ id: schema.jobs.id }).from(schema.jobs).where(eq(schema.jobs.pr_url, intent.prUrl))
+        : [];
       await tx.insert(schema.intents).values({
         id: `${source}:${deliveryId}`,
         kind: intent.kind,
-        issue_key: intent.issueKey,
-        linear_id: intent.linearId,
+        job_id: intent.jobId ?? byPr?.id,
         pr_url: intent.prUrl,
         detail: intent.detail,
         created_at: now,
