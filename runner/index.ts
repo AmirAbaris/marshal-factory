@@ -1,6 +1,6 @@
 import { join } from "node:path";
 
-// The factory runner: the only process that touches T3, git and gh. It reacts to webhook intents
+// The factory runner: the only process that touches T3, git and the GitHub API. It reacts to webhook intents
 // through Neon Realtime, runs a plain timer for the checks that need no event, and on startup
 // reconciles everything it missed while it was down. Every step is idempotent.
 //   bun runner/index.ts            run as a daemon (launchd starts it this way)
@@ -115,7 +115,7 @@ async function reconcile() {
  * without any webhook, and the PR check catches a conflict GitHub settled after a push's recheck.
  */
 async function tick() {
-  // Each check on its own: one failing (Linear or gh down) must not skip the others this tick.
+  // Each check on its own: one failing (Linear or GitHub down) must not skip the others this tick.
   const each = async <T>(step: () => Promise<T>) =>
     step().catch((error: unknown) => ({ error: error instanceof Error ? error.message : String(error) }));
   return {

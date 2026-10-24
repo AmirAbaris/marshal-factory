@@ -14,7 +14,8 @@ import type { IngestResult } from "../lib/ingest";
 import { canTransition, runnerEventId } from "../lib/stages";
 import { branchSpend } from "../lib/spend";
 import { readTranscript, subagentTranscripts, sumUsage, transcriptPathFor } from "../lib/transcript";
-import { cleanupRepo, cleanupSubagentWorktrees } from "../lib/worktrees";
+import { checkoutRepo, cleanupRepo, cleanupSubagentWorktrees } from "../lib/worktrees";
+import { github } from "../lib/github/pulls";
 import { claimConflict, conflictMessage, unclaimedRunsWithPr } from "../lib/conflicts";
 import { attemptBranch } from "../lib/factory";
 import { nudgeMessage, watch, type ThreadState } from "../lib/watchdog";
@@ -37,16 +38,6 @@ const run = promisify(execFile);
 // The LaunchAgent sets T3CODE_CLI_PATH; otherwise t3 must be on PATH.
 const T3 = process.env.T3CODE_CLI_PATH ?? "t3";
 
-const prSchema = z.object({ state: z.string(), mergeable: z.string(), headRefOid: z.string() });
-
-async function prState(url: string) {
-  forbidInTest("gh");
-  const { stdout } = await run("gh", ["pr", "view", url, "--json", "state,mergeable,headRefOid"], {
-    timeout: 20_000,
-  });
-  return prSchema.parse(JSON.parse(stdout));
-}
-
 /**
  * Follows every factory PR: a merged one moves its job to merged, and one that conflicts with
  * main while its job sits in pr sends the thread back to merge main. The conflict is handled
@@ -61,17 +52,17 @@ export async function checkPullRequests() {
   );
   const conflicts: string[] = [];
   for (const job of open) {
-    const pr = await prState(job.pr_url!);
-    if (pr.state === "OPEN" && pr.mergeable === "CONFLICTING" && job.stage === "pr") {
-      if (await sendBackForConflict(job, pr.headRefOid)) conflicts.push(job.key);
+    const pr = await github.pullRequest(job.pr_url!);
+    if (pr.state === "open" && pr.mergeable === "conflicting" && job.stage === "pr") {
+      if (await sendBackForConflict(job, pr.headSha)) conflicts.push(job.key);
       continue;
     }
-    if (pr.state !== "MERGED") continue;
+    if (pr.state !== "merged") continue;
     await postMerged(job.key, job.pr_url!, job.session_id ?? runnerEventId("merged", job.external_id));
   }
 
   for (const run of await unclaimedRunsWithPr(db)) {
-    if ((await prState(run.pr_url!)).state === "MERGED") await postMerged(run.job_key!, run.pr_url!, run.session_id);
+    if ((await github.pullRequest(run.pr_url!)).state === "merged") await postMerged(run.job_key!, run.pr_url!, run.session_id);
   }
   return conflicts;
 }
@@ -428,15 +419,10 @@ export async function writeBack() {
   return synced;
 }
 
-const GITHUB_REMOTE = /github\.com[/:]([^/]+\/[^/]+?)(?:\.git)?$/;
-
 export async function targetRepo() {
   const checkout = config.factory.repos[0];
   if (!checkout) throw new Error("factory.repos is empty, so there is no repository to claim work for");
-  const { stdout } = await run("git", ["remote", "get-url", "origin"], { cwd: checkout, timeout: 20_000 });
-  const repo = GITHUB_REMOTE.exec(stdout.trim())?.[1];
-  if (!repo) throw new Error(`${checkout} has no GitHub origin`);
-  return repo;
+  return checkoutRepo(checkout);
 }
 
 /** Claims ready jobs up to the in-flight cap. The row insert is the claim; the advisory lock serializes claimers. */
@@ -609,7 +595,7 @@ export async function bindThread(key: string, threadId: string) {
 export async function pullRequestsSettled() {
   const open = await db.select().from(jobs).where(and(eq(jobs.stage, "pr"), isNotNull(jobs.pr_url)));
   for (const job of open) {
-    if ((await prState(job.pr_url!)).mergeable === "UNKNOWN") return false;
+    if ((await github.pullRequest(job.pr_url!)).mergeable === "unknown") return false;
   }
   return true;
 }

@@ -202,7 +202,7 @@ try {
   const flaky = recheckScheduler(
     {
       settled: async () => {
-        throw new Error("gh pr view failed");
+        throw new Error("the GitHub read failed");
       },
       check: async () => {
         throwingChecks++;
