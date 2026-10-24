@@ -3,9 +3,7 @@ import { drizzleAdapter } from "@neon/realtime-drizzle";
 import { and, asc, desc, eq, getTableColumns, ne } from "drizzle-orm";
 import { db } from "@/db/client";
 import { agents, events, jobs, runs } from "@/db/schema";
-
-// v0 has no auth: the panel is local and single-user. Phase 7 puts a session check in front of
-// every route that calls seal(); until then anyone who can reach these routes can read all rows.
+import { assertOwner } from "@/lib/auth/server";
 
 export const realtime = createRealtime({
   secret: process.env.NEON_REALTIME_SECRET!,
@@ -92,6 +90,7 @@ export async function runJobKey(sessionId: string) {
 export async function load<Q extends Parameters<typeof realtime.seal>[0]["query"]>(
   query: Q,
 ) {
+  await assertOwner();
   const [initialData, sealedQuery] = await Promise.all([
     query,
     realtime.seal({ query }),
@@ -99,7 +98,8 @@ export async function load<Q extends Parameters<typeof realtime.seal>[0]["query"
   return { initialData, sealedQuery };
 }
 
-export function sealOnly(query: Parameters<typeof realtime.seal>[0]["query"]) {
+export async function sealOnly(query: Parameters<typeof realtime.seal>[0]["query"]) {
+  await assertOwner();
   return realtime.seal({ query });
 }
 
