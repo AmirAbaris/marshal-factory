@@ -8,7 +8,7 @@ const { bindThread, claimLaunch, deliverStops, pendingLaunches, reconcileStops, 
 const { jobId, sourceFor } = await import("../lib/sources");
 const { linearJob } = await import("./fixtures");
 const { createLinearAdapter } = await import("../lib/sources/linear");
-const { factorySchema } = await import("../lib/config");
+const { factorySchema, TEST_MACHINE_ID } = await import("../lib/config");
 const { canReclaim, canReclaimSql, stopDeliverable, stopDeliverableSql } = await import("../runner/binding");
 const { and, sql } = await import("drizzle-orm");
 const { launchEntries, maybeStarted, MaybeStartedError, parseThreadId } = await import("../runner/launch");
@@ -16,6 +16,7 @@ const { runWithInput } = await import("../lib/exec");
 const { everyAtMost, serialQueue } = await import("../runner/queue");
 const { recheckScheduler } = await import("../runner/recheck");
 
+const slot = { id: TEST_MACHINE_ID, repos: ["ski043/factory-demo"], maxInFlight: 2 };
 const sent: { threadId: string; message: string }[] = [];
 threads.state = async () => "running";
 threads.send = async (threadId, message) => void sent.push({ threadId, message });
@@ -26,13 +27,13 @@ const id = `launch-regress-${Date.now()}`;
 const jid = jobId("linear", id);
 await db.insert(jobs).values(linearJob(id, id));
 try {
-  assert.equal(await claimLaunch(id, "pending:1", "test-machine"), true, "the first launch claims the job");
-  assert.equal(await claimLaunch(id, "pending:2", "test-machine"), false, "a second launch, after a crash or timeout, does not");
-  assert.deepEqual((await pendingLaunches()).find((p) => p.key === id), { key: id, marker: "pending:1", branch: `factory/${id}`, stage: "queued" });
+  assert.equal(await claimLaunch(id, "pending:1", slot), true, "the first launch claims the job");
+  assert.equal(await claimLaunch(id, "pending:2", slot), false, "a second launch, after a crash or timeout, does not");
+  assert.deepEqual((await pendingLaunches()).find((p) => p.key === id), { key: id, repo: "ski043/factory-demo", marker: "pending:1", branch: `factory/${id}`, stage: "queued" });
   await releaseLaunch(id, "pending:2");
   assert.equal((await db.select().from(jobs).where(eq(jobs.key, id)))[0]!.t3_thread_id, "pending:1", "only the holder's marker is released");
   await releaseLaunch(id, "pending:1");
-  assert.equal(await claimLaunch(id, "pending:3", "test-machine"), true, "a released job can launch again");
+  assert.equal(await claimLaunch(id, "pending:3", slot), true, "a released job can launch again");
   // The binding × stop state space (runner/binding.ts). Each cell checks the predicate, its SQL
   // twin, what deliverStops does, and whether a retry claim may start a new attempt.
   const stop = { stage: "failed" as const, stage_event_id: `stop:${id}:1:x`, stage_summary: "Stopped: test." };
@@ -144,7 +145,7 @@ try {
   // One failed start does not stop the batch; a clear failure frees its marker, a timeout keeps it.
   const markers = new Map<string, string>();
   const released: string[] = [];
-  const entry = (key: string) => ({ key, branch: `factory/${key}`, threadTitle: key, message: "m" });
+  const entry = (key: string) => ({ key, repo: "ski043/factory-demo", branch: `factory/${key}`, threadTitle: key, message: "m" });
   const results = await launchEntries([entry("A"), entry("B"), entry("C")], {
     claim: async (key, marker) => (markers.set(key, marker), true),
     start: async ({ key }) => {

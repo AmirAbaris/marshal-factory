@@ -234,7 +234,7 @@ try {
     await db.delete(machines).where(eq(machines.id, beatMachine.id));
   }
 
-  assert.equal(await claimLaunch(id, "pending:1", "test-machine"), true);
+  assert.equal(await claimLaunch(id, "pending:1", { id: "test-machine", repos: ["ski043/factory-demo"], maxInFlight: 2 }), true);
   const claimed = async () => (await db.select().from(jobs).where(eq(jobs.key, id)))[0]!;
   assert.equal((await claimed()).machine_id, "test-machine", "a launch claim records the machine");
   await releaseLaunch(id, "pending:1");

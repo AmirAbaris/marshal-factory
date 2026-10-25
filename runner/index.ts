@@ -11,17 +11,20 @@ process.loadEnvFile(".env.local");
 
 const { createRealtime } = await import("@neon/realtime/server");
 const { drizzleAdapter } = await import("@neon/realtime-drizzle");
-const { asc, eq, getTableColumns, isNull } = await import("drizzle-orm");
+const { and, asc, eq, getTableColumns, isNull } = await import("drizzle-orm");
 const { db } = await import("../db/client");
 const { intents, jobs } = await import("../db/schema");
 const ops = await import("./ops");
 const { createBeat, inventoryCollectors, systemCollectors, thisMachine } = await import("./heartbeat");
+const { closeBroadcast, deliveryFor, leaseIntent, receiptIntent, recordReceipt } = await import("./intents");
 const { launchQueued } = await import("./launch");
 const { recheckScheduler } = await import("./recheck");
 const { everyAtMost, serialQueue } = await import("./queue");
 const { isolated, reconcile } = await import("./reconcile");
 const { stopDeliverable } = await import("./binding");
 type IntentRow = typeof intents.$inferSelect;
+
+const machine = await thisMachine();
 
 const log = (event: string, detail: Record<string, unknown> = {}) =>
   console.log(JSON.stringify({ at: new Date().toISOString(), event, ...detail }));
@@ -35,26 +38,34 @@ process.on("unhandledRejection", (reason) =>
 );
 const serial = queue.serial;
 
+/** Launches what this machine has room for, then tells each source about the jobs it now holds. */
+async function launchAndAnnounce() {
+  const launched = await launchQueued(logWorktree);
+  const announced = await isolated(ops.announceClaims);
+  return announced ? { launched, announced } : { launched };
+}
+
 async function handle(intent: IntentRow) {
   // The team is fetched only where Linear is needed, so a Linear outage does not block the rest.
   switch (intent.kind) {
-    case "claim": {
-      const claimed = await ops.claim();
-      await ops.announceClaims();
-      return { claimed, launched: await launchQueued(logWorktree) };
-    }
+    case "claim":
+      return { claimed: await ops.claim(), ...(await launchAndAnnounce()) };
     case "stop":
       return { stop: await ops.stopJob(intent.job_id!, intent.detail ?? "stopped in Linear") };
     case "answer":
       return {
         resumed: await ops.resumeAnswered(),
-        launched: await launchQueued(logWorktree),
+        ...(await launchAndAnnounce()),
         synced: await ops.writeBack(),
       };
     case "merged":
       return { merged: await ops.checkPullRequests(), synced: await ops.writeBack() };
     case "recheck_conflicts":
       return { recheck: recheck.request() };
+    default: {
+      const unhandled: never = intent.kind;
+      throw new Error(`no handler for intent ${String(unhandled)}`);
+    }
   }
 }
 
@@ -68,18 +79,26 @@ const recheck = recheckScheduler({
 
 const MAX_ATTEMPTS = 50;
 const inProgress = new Set<string>();
-function takeIntents(rows: readonly IntentRow[]) {
-  for (const intent of rows) {
+type OpenIntent = { intent: IntentRow; owner: string | null };
+
+function takeIntents(rows: readonly OpenIntent[]) {
+  for (const { intent, owner } of rows) {
     if (intent.handled_at || inProgress.has(intent.id)) continue;
     // Every later snapshot repeats the open intents; a failed one waits for its retry time.
     if (intent.retry_at && intent.retry_at.getTime() > Date.now()) continue;
+    const delivery = deliveryFor(intent.kind, owner, machine.id);
+    if (delivery === "skip") continue;
+    // The lease decides; this only spares a queue step while a lease is live.
+    if (delivery === "lease" && intent.lease_until && intent.lease_until.getTime() > Date.now()) continue;
     inProgress.add(intent.id);
+    const step: () => Promise<unknown> = delivery === "receipt" ? () => runBroadcast(intent) : () => runIntent(intent);
     // Cleared once the queue is done with the step, even if the step timed out and still runs.
-    void serial(`intent:${intent.kind}`, () => runIntent(intent)).finally(() => inProgress.delete(intent.id));
+    void serial(`intent:${intent.kind}`, step).finally(() => inProgress.delete(intent.id));
   }
 }
 
 async function runIntent(intent: IntentRow) {
+  if (!(await leaseIntent(intent.id, machine.id))) return { id: intent.id, skipped: "leased by another machine" };
   const latencyMs = Date.now() - intent.created_at.getTime();
   const result = await handle(intent).catch((error: unknown) => ({ error: String(error) }));
   // A failed intent stays open and the timer retries it, so a Linear or T3 hiccup cannot eat a
@@ -94,16 +113,36 @@ async function runIntent(intent: IntentRow) {
       // 30 s, 1 min, 2 min, ... then every 30 min: about a day of retries before it gives up.
       retry_at: failed ? new Date(Date.now() + Math.min(30_000 * 2 ** (attempts - 1), 1_800_000)) : null,
       result: JSON.stringify(result).slice(0, 2000),
+      // A retry may go to any machine the route allows; a handled intent keeps the one that handled it.
+      leased_by: failed ? null : machine.id,
+      lease_until: null,
     })
-    .where(eq(intents.id, intent.id));
+    .where(and(eq(intents.id, intent.id), eq(intents.leased_by, machine.id)));
   return { id: intent.id, job: intent.job_id, latencyMs, attempts, ...result };
 }
 
-async function openIntents() {
-  return db.select().from(intents).where(isNull(intents.handled_at)).orderBy(asc(intents.created_at));
+/**
+ * A broadcast runs once per machine; the receipt is taken first, so a replay on this machine only
+ * tries to close it. It stays open until every online machine has a receipt, or it expires.
+ */
+async function runBroadcast(intent: IntentRow) {
+  const fresh = await receiptIntent(intent.id, machine.id);
+  const result = fresh ? await handle(intent).catch((error: unknown) => ({ error: String(error) })) : undefined;
+  if (fresh) await recordReceipt(intent.id, machine.id, result);
+  await closeBroadcast(intent.id);
+  return { id: intent.id, receipt: fresh ? "taken" : "already taken", ...result };
 }
 
-const startupReconcile = () => reconcile({ tick, cleanup: () => ops.cleanup(), launch: () => launchQueued(logWorktree) });
+async function openIntents(): Promise<OpenIntent[]> {
+  return db
+    .select({ intent: intents, owner: jobs.machine_id })
+    .from(intents)
+    .leftJoin(jobs, eq(jobs.id, intents.job_id))
+    .where(isNull(intents.handled_at))
+    .orderBy(asc(intents.created_at));
+}
+
+const startupReconcile = () => reconcile({ tick, cleanup: () => ops.cleanup(), launch: launchAndAnnounce });
 
 /**
  * The checks that need no event, every tickSeconds. Claiming is here too because a slot frees up
@@ -112,11 +151,7 @@ const startupReconcile = () => reconcile({ tick, cleanup: () => ops.cleanup(), l
 async function tick() {
   // Each check on its own: one failing (Linear or GitHub down) must not skip the others this tick.
   return {
-    claimed: await isolated(async () => {
-      const claimed = await ops.claim();
-      await ops.announceClaims();
-      return claimed;
-    }),
+    claimed: await isolated(() => ops.claim()),
     // An answer can land before its question reached Linear, and its intent then finds nothing.
     resumed: await isolated(ops.resumeAnswered),
     // Stops whose webhook never arrived; before deliverStops, so a new stop is messaged this tick.
@@ -130,7 +165,6 @@ async function tick() {
   };
 }
 
-const machine = await thisMachine();
 const beat = createBeat({
   machine,
   heartbeatCollectors: systemCollectors(async () => ({
@@ -168,7 +202,9 @@ const realtime = createRealtime({
 
 /**
  * Realtime does not promise every change, so a snapshot is read as the current state: open
- * intents are taken, and jobs whose stage has not reached their source yet get a write-back.
+ * intents are taken, and this machine's jobs whose stage has not reached their source yet get a
+ * write-back. An intent snapshot only says something changed; the intents are read again with
+ * their job's owner, which routing needs.
  */
 let resubscribing = false;
 async function subscribe() {
@@ -176,9 +212,9 @@ async function subscribe() {
     db.select(getTableColumns(intents)).from(intents).where(isNull(intents.handled_at)).orderBy(asc(intents.created_at)),
   );
   intentsLive.onChange((snapshot) => {
-    if (snapshot.status === "live" && snapshot.data) takeIntents(snapshot.data);
+    if (snapshot.status === "live") void openIntents().then(takeIntents);
   });
-  const jobsLive = await realtime.subscribe(db.select(getTableColumns(jobs)).from(jobs));
+  const jobsLive = await realtime.subscribe(db.select(getTableColumns(jobs)).from(jobs).where(eq(jobs.machine_id, machine.id)));
   jobsLive.onChange((snapshot) => {
     if (snapshot.status !== "live") return;
     const rows = snapshot.data ?? [];
@@ -209,7 +245,7 @@ await subscribe();
 const hourlyCleanup = everyAtMost(3_600_000, () => ops.cleanup());
 setInterval(() => {
   void serial("tick", async () => {
-    const result = { ...(await tick()), launched: await launchQueued(logWorktree) };
+    const result = { ...(await tick()), ...(await launchAndAnnounce()) };
     const cleaned = await hourlyCleanup();
     return cleaned === undefined ? result : { ...result, cleaned };
   });

@@ -6,6 +6,9 @@ import { inTestMode } from "./test-mode";
 
 export const CONFIG_PATH = process.env.MARSHAL_FACTORY_CONFIG ?? join(homedir(), ".config/marshal-factory/config.json");
 
+/** The machine a regression run's runner code acts as, so the jobs a script creates can belong to it. */
+export const TEST_MACHINE_ID = "test-machine";
+
 export const GITHUB_APP_PATH = process.env.MARSHAL_FACTORY_GITHUB_APP ?? join(homedir(), ".config/marshal-factory/github-app.json");
 
 /** Every factory limit lives here, with defaults; the config file overrides any of them. */
@@ -65,7 +68,7 @@ export function loadConfig(): FactoryConfig {
       linearApiKey: "test-only",
       ingestUrl: "https://ingest.invalid/ingest",
       secret: "test-only",
-      factory: {},
+      factory: { machineId: TEST_MACHINE_ID },
     });
   }
   return configSchema.parse(JSON.parse(readFileSync(/* turbopackIgnore: true */ CONFIG_PATH, "utf8")));

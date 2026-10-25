@@ -7,6 +7,7 @@ import {
   jsonb,
   pgEnum,
   pgTable,
+  primaryKey,
   text,
   timestamp,
 } from "drizzle-orm/pg-core";
@@ -178,8 +179,25 @@ export const intents = pgTable(
     attempts: integer("attempts").notNull().default(0),
     retry_at: ts("retry_at"),
     result: text("result"),
+    /** The machine working on the intent; another machine may take it once lease_until has passed. */
+    leased_by: text("leased_by"),
+    lease_until: ts("lease_until"),
   },
   (t) => [index("intents_open_idx").on(t.handled_at, t.created_at)],
+);
+
+/** One row per machine that handled a broadcast intent, so each machine acts on it exactly once. */
+export const intentReceipts = pgTable(
+  "intent_receipts",
+  {
+    intent_id: text("intent_id")
+      .notNull()
+      .references(() => intents.id, { onDelete: "cascade" }),
+    machine_id: text("machine_id").notNull(),
+    handled_at: ts("handled_at").notNull(),
+    result: text("result"),
+  },
+  (t) => [primaryKey({ columns: [t.intent_id, t.machine_id] })],
 );
 
 export const machines = pgTable("machines", {
@@ -196,4 +214,5 @@ export type RunRow = typeof runs.$inferSelect;
 export type AgentRow = typeof agents.$inferSelect;
 export type JobRow = typeof jobs.$inferSelect;
 export type IntentRow = typeof intents.$inferSelect;
+export type IntentKind = IntentRow["kind"];
 export type MachineRow = typeof machines.$inferSelect;
