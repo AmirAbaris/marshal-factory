@@ -4,7 +4,8 @@ import { eq, like, sql } from "drizzle-orm";
 
 const { db } = await import("../db/client");
 const { intentReceipts, intents, jobs, machines } = await import("../db/schema");
-const { checkPullRequests, claim, claimLaunch, deliverStops, threads } = await import("../runner/ops");
+const { checkPullRequests, claim, claimLaunch, deliverStops, threads, writeBack } = await import("../runner/ops");
+const { sourceFor } = await import("../lib/sources");
 const { github } = await import("../lib/github/pulls");
 const { closeBroadcast, deliveryFor, leaseIntent, receiptIntent } = await import("../runner/intents");
 const { linearJob } = await import("./fixtures");
@@ -98,6 +99,15 @@ try {
   assert.ok(!erroredKeys.includes(`${prefix}-their-pr`), "another machine's PR is left to that machine");
   assert.deepEqual(checked.conflicts, [], "a conflicting PR of a job no machine holds is not sent back");
   assert.deepEqual(sent, [], "so no thread is messaged");
+
+  const written: string[] = [];
+  const linear = sourceFor("linear");
+  linear.writeBack = async (job, transition) => (written.push(`${job.key}:${transition.stage}`), true);
+  await db.update(jobs).set({ stage: "merged", stage_event_id: "e-merged" }).where(eq(jobs.key, `${prefix}-resume`));
+  await db.update(jobs).set({ stage_event_id: "e-theirs" }).where(eq(jobs.key, `${prefix}-their-pr`));
+  await writeBack();
+  assert.ok(written.includes(`${prefix}-resume:merged`), "the merge of a job no machine holds reaches its source");
+  assert.ok(!written.some((w) => w.startsWith(`${prefix}-their-pr:`)), "another machine's job is written back by that machine");
 
   await db.delete(jobs).where(eq(jobs.repo, REPO));
   await db.insert(jobs).values([

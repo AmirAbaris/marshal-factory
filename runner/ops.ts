@@ -410,6 +410,11 @@ export async function enforceBudget() {
   return over;
 }
 
+/**
+ * Reports each job's new stage to its source. A job no machine holds can still move, as when its PR
+ * merges, so every machine writes it back; source writes are keyed on the stage event, so two
+ * machines writing the same one converge.
+ */
 export async function writeBack() {
   const pending = parseJobs(
     await db
@@ -417,7 +422,7 @@ export async function writeBack() {
       .from(jobs)
       .where(
         and(
-          await mine(),
+          or(await mine(), isNull(jobs.machine_id)),
           isNotNull(jobs.stage_event_id),
           or(isNull(jobs.synced_event_id), ne(jobs.synced_event_id, jobs.stage_event_id)),
         ),
