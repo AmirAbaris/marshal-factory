@@ -35,14 +35,16 @@ export function deliveryFor(kind: IntentKind, owner: string | null, me: string):
   }
 }
 
-export const LEASE_MINUTES = 5;
+/**
+ * Longer than the runner queue's step timeout, so a step the queue gave up on but that still runs
+ * cannot be started again while it holds the lease. The timer redoes every intent's work, so a
+ * crashed runner's intent waiting out its lease delays nothing that matters.
+ */
+export const LEASE_MINUTES = 10;
 /** A broadcast stays open this long for machines that were offline when it arrived. */
 const BROADCAST_MINUTES = 10;
 
-/**
- * Takes an open intent for this machine. A lease that ran out belongs to a machine that crashed
- * or hung, so another one takes it; this machine retakes its own lease after a restart.
- */
+/** Takes an open intent for this machine. A lease that ran out belongs to a runner that crashed or hung. */
 export async function leaseIntent(id: string, machineId: string) {
   const leased = await db
     .update(intents)
@@ -51,7 +53,7 @@ export async function leaseIntent(id: string, machineId: string) {
       and(
         eq(intents.id, id),
         isNull(intents.handled_at),
-        or(isNull(intents.leased_by), eq(intents.leased_by, machineId), lt(intents.lease_until, sql`now()`)),
+        or(isNull(intents.leased_by), lt(intents.lease_until, sql`now()`)),
       ),
     )
     .returning({ id: intents.id });
@@ -75,10 +77,14 @@ export async function recordReceipt(id: string, machineId: string, result: unkno
     .where(and(eq(intentReceipts.intent_id, id), eq(intentReceipts.machine_id, machineId)));
 }
 
-/** Closes a broadcast once every online machine has a receipt, or once it is too old to matter. */
+/** Closes a broadcast once no online machine is missing a receipt, or once it is too old to matter. */
 export async function closeBroadcast(id: string) {
   const receipts = sql`(select count(*) from intent_receipts r where r.intent_id = ${id})`;
-  const online = sql`(select count(*) from machines m where m.last_seen_at > now() - make_interval(secs => ${ONLINE_WINDOW_MS / 1000}))`;
+  const missing = sql`exists (
+    select 1 from machines m
+    where m.last_seen_at > now() - make_interval(secs => ${ONLINE_WINDOW_MS / 1000})
+      and not exists (select 1 from intent_receipts r where r.intent_id = ${id} and r.machine_id = m.id)
+  )`;
   await db
     .update(intents)
     .set({ handled_at: new Date(), result: sql`(${receipts})::text || ' receipts'` })
@@ -86,7 +92,7 @@ export async function closeBroadcast(id: string) {
       and(
         eq(intents.id, id),
         isNull(intents.handled_at),
-        or(sql`${intents.created_at} < now() - make_interval(mins => ${BROADCAST_MINUTES})`, sql`${receipts} >= ${online}`),
+        or(sql`${intents.created_at} < now() - make_interval(mins => ${BROADCAST_MINUTES})`, sql`not ${missing}`),
       ),
     );
 }

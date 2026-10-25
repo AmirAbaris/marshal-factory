@@ -88,8 +88,8 @@ function takeIntents(rows: readonly OpenIntent[]) {
     if (intent.retry_at && intent.retry_at.getTime() > Date.now()) continue;
     const delivery = deliveryFor(intent.kind, owner, machine.id);
     if (delivery === "skip") continue;
-    // The lease decides; this only spares a queue step while another machine's lease is live.
-    if (delivery === "lease" && intent.leased_by && intent.leased_by !== machine.id && intent.lease_until && intent.lease_until.getTime() > Date.now()) continue;
+    // The lease decides; this only spares a queue step while a lease is live.
+    if (delivery === "lease" && intent.lease_until && intent.lease_until.getTime() > Date.now()) continue;
     inProgress.add(intent.id);
     const step: () => Promise<unknown> = delivery === "receipt" ? () => runBroadcast(intent) : () => runIntent(intent);
     // Cleared once the queue is done with the step, even if the step timed out and still runs.
