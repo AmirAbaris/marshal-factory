@@ -68,17 +68,17 @@ for (const who of ["anonymous", "stranger", "unverified"] as const) {
   signInAs(who);
   await assert.rejects(assertOwner(), /owner session is required/, `the seal refuses ${who}`);
 }
-const { load, runJobKey, runsQuery, sealedResponse } = await import("../lib/live-queries");
+const { load, runJob, runsQuery, sealedResponse } = await import("../lib/live-queries");
 signInAs("unverified");
 await assert.rejects(sealedResponse(runsQuery()), /owner session is required/, "an unverified owner gets no sealed query");
 await assert.rejects(load(runsQuery()), /owner session is required/, "an unverified owner gets no rows or sealed query");
 for (const who of ["anonymous", "stranger", "unverified"] as const) {
   signInAs(who);
-  await assert.rejects(runJobKey("no-such-session"), /owner session is required/, `the job lookup refuses ${who}`);
+  await assert.rejects(runJob("no-such-session"), /owner session is required/, `the job lookup refuses ${who}`);
 }
 signInAs("owner");
 await assertOwner();
-assert.equal(await runJobKey("no-such-session"), undefined, "the owner can look up a run's job");
+assert.deepEqual(await runJob("no-such-session"), { jobKey: undefined, jobId: undefined }, "the owner can look up a run's job");
 const sealed = await sealedResponse(runsQuery());
 assert.equal(sealed.status, 200, "the verified owner gets a sealed query");
 assert.equal(sealed.headers.get("cache-control"), "no-store");

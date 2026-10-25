@@ -3,12 +3,13 @@ import { LivePanel, type DetailProps } from "@/components/panel/live-panel";
 import { RealtimeRoot } from "@/components/panel/realtime-root";
 import {
   agentsOverviewQuery,
+  jobAuditQuery,
   jobsQuery,
   jobStagesQuery,
   load,
   machinesQuery,
   parseSessionId,
-  runJobKey,
+  runJob,
   runsQuery,
   sessionAgentsQuery,
   sessionEventsQuery,
@@ -18,16 +19,18 @@ import {
 async function loadDetail(raw: string | undefined): Promise<DetailProps | undefined> {
   const sessionId = raw && parseSessionId(raw);
   if (!sessionId) return undefined;
-  const jobKey = await runJobKey(sessionId);
-  const [agents, events, stages] = await Promise.all([
+  const { jobKey, jobId } = await runJob(sessionId);
+  const [agents, events, stages, audit] = await Promise.all([
     load(sessionAgentsQuery(sessionId)),
     load(sessionEventsQuery(sessionId)),
     load(jobKey ? jobStagesQuery(jobKey) : sessionStagesQuery(sessionId)),
+    jobId ? load(jobAuditQuery(jobId)) : undefined,
   ]);
   const stagesPath = jobKey
     ? `/api/live/jobs/${encodeURIComponent(jobKey)}/stages`
     : `/api/live/runs/${encodeURIComponent(sessionId)}/stages`;
-  return { sessionId, agents, events, stages, stagesPath };
+  const auditFeed = audit && jobKey ? { feed: audit, path: `/api/live/jobs/${encodeURIComponent(jobKey)}/audit` } : undefined;
+  return { sessionId, agents, events, stages, stagesPath, audit: auditFeed };
 }
 
 async function Panel({ searchParams }: Pick<PageProps<"/">, "searchParams">) {

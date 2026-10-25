@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo } from "react";
-import type { AgentRow, EventRow, JobRow, MachineRow, RunRow } from "@/db/schema";
+import type { AgentRow, AuditRow, EventRow, JobRow, MachineRow, RunRow } from "@/db/schema";
 import { Board } from "./board";
 import { boardCards } from "./cards";
 import { attemptBranch } from "@/lib/factory";
@@ -18,6 +18,8 @@ export type DetailProps = {
   events: Feed<EventRow>;
   stages: Feed<EventRow>;
   stagesPath: string;
+  /** Present when the run belongs to a job. */
+  audit: { feed: Feed<AuditRow>; path: string } | undefined;
 };
 
 export function LivePanel({
@@ -85,6 +87,7 @@ export function LivePanel({
               events={detail.events}
               stages={detail.stages}
               stagesPath={detail.stagesPath}
+              audit={detail.audit}
               job={selectedJob}
               machine={selectedJob?.machine_id ? machineById.get(selectedJob.machine_id) : undefined}
               jobSpend={

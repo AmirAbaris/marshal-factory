@@ -32,6 +32,18 @@ export function readAppFile(path = GITHUB_APP_PATH): AppFile {
   return parsed.data;
 }
 
+/**
+ * What signs the app's JWT. Vercel has no app file, so it sets GITHUB_APP_ID and
+ * GITHUB_APP_PRIVATE_KEY; GitHub takes the app id as the JWT issuer as well as the client id.
+ */
+export function appCredentials(env: Record<string, string | undefined> = process.env): Pick<AppFile, "client_id" | "pem"> {
+  if (env.GITHUB_APP_PRIVATE_KEY) {
+    if (!env.GITHUB_APP_ID) throw new Error("GITHUB_APP_PRIVATE_KEY is set but GITHUB_APP_ID is not");
+    return { client_id: env.GITHUB_APP_ID, pem: env.GITHUB_APP_PRIVATE_KEY };
+  }
+  return readAppFile();
+}
+
 const base64url = (data: string | Buffer) => Buffer.from(data).toString("base64url");
 
 /**
@@ -140,7 +152,7 @@ export type TokenSource = ReturnType<typeof tokenSource>;
 
 const liveTokens = tokenSource({
   api: GITHUB_API,
-  app: readAppFile,
+  app: () => appCredentials(),
   onMint: (repo) => console.log(JSON.stringify({ at: new Date().toISOString(), event: `github app token minted for ${repo}` })),
 });
 

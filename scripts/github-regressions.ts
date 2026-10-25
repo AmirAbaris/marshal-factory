@@ -56,9 +56,9 @@ let flakyInstallation = true;
 const revoked = new Set<string>();
 const seen: { method: string; path: string; auth: string | null; version: string | null; body: unknown }[] = [];
 const pulls: Record<number, object> = {
-  1: { state: "open", merged_at: null, closed_at: null, mergeable: null, head: { sha: "h1" } },
-  2: { state: "open", merged_at: null, closed_at: null, mergeable: false, head: { sha: "h2" } },
-  3: { state: "closed", merged_at: "2026-10-24T10:00:00Z", closed_at: "2026-10-24T10:00:00Z", mergeable: null, head: { sha: "h3" } },
+  1: { state: "open", merged_at: null, closed_at: null, mergeable: null, head: { sha: "h1" }, title: "PR 1" },
+  2: { state: "open", merged_at: null, closed_at: null, mergeable: false, head: { sha: "h2" }, title: "PR 2" },
+  3: { state: "closed", merged_at: "2026-10-24T10:00:00Z", closed_at: "2026-10-24T10:00:00Z", mergeable: null, head: { sha: "h3" }, title: "PR 3" },
 };
 const stub = await serve(0, async (request) => {
     const url = new URL(request.url);
@@ -141,8 +141,8 @@ try {
 
   const client = pullsClient({ api, tokens: { get: async () => "ghs_stub", evict: () => {} } });
   const url = (n: number) => `https://github.com/o/r/pull/${n}`;
-  assert.deepEqual(await client.pullRequest(url(1)), { state: "open", mergeable: "unknown", headSha: "h1" }, "null mergeable is unknown");
-  assert.deepEqual(await client.pullRequest(url(2)), { state: "open", mergeable: "conflicting", headSha: "h2" }, "false mergeable is conflicting");
+  assert.deepEqual(await client.pullRequest(url(1)), { state: "open", mergeable: "unknown", headSha: "h1", title: "PR 1" }, "null mergeable is unknown");
+  assert.deepEqual(await client.pullRequest(url(2)), { state: "open", mergeable: "conflicting", headSha: "h2", title: "PR 2" }, "false mergeable is conflicting");
   assert.equal((await client.pullRequest(url(3))).state, "merged", "a closed PR with merged_at is merged");
   await assert.rejects(client.pullRequest(url(9)), /answered 404: Not Found/);
   const read = seen.find((s) => s.path === "/repos/o/r/pulls/1")!;

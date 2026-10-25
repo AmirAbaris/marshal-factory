@@ -3,7 +3,7 @@ import { GITHUB_API, GitHubError, githubRequest, installationTokens, type RepoNa
 
 export type PullState = "open" | "closed" | "merged";
 export type Mergeable = "mergeable" | "conflicting" | "unknown";
-export type PullRequest = { state: PullState; mergeable: Mergeable; headSha: string };
+export type PullRequest = { state: PullState; mergeable: Mergeable; headSha: string; title: string };
 export type HeadPull = { state: PullState; headSha: string; mergedAt: Date | null; closedAt: Date | null };
 export type MergeResult =
   | { kind: "merged"; sha: string }
@@ -51,8 +51,8 @@ export function pullsClient({ api, tokens }: { api: string; tokens: TokenSource 
     async pullRequest(url: string): Promise<PullRequest> {
       const { repo, number } = parsePullUrl(url);
       const { json } = await request(repo, "GET", `/repos/${repo}/pulls/${number}`);
-      const pull = pullSchema.extend({ mergeable: z.boolean().nullable() }).parse(json);
-      return { state: stateOf(pull), mergeable: mergeableOf(pull.mergeable), headSha: pull.head.sha };
+      const pull = pullSchema.extend({ mergeable: z.boolean().nullable(), title: z.string() }).parse(json);
+      return { state: stateOf(pull), mergeable: mergeableOf(pull.mergeable), headSha: pull.head.sha, title: pull.title };
     },
 
     async pullsForHead(repo: RepoName, branch: string): Promise<HeadPull[]> {
