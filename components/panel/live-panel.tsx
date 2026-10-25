@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo } from "react";
-import type { AgentRow, EventRow, JobRow, RunRow } from "@/db/schema";
+import type { AgentRow, EventRow, JobRow, MachineRow, RunRow } from "@/db/schema";
 import { Board } from "./board";
 import { boardCards } from "./cards";
 import { attemptBranch } from "@/lib/factory";
@@ -24,16 +24,20 @@ export function LivePanel({
   jobs,
   runs,
   agents,
+  machines,
   detail,
 }: {
   jobs: Feed<JobRow>;
   runs: Feed<RunRow>;
   agents: Feed<AgentRow>;
+  machines: Feed<MachineRow>;
   detail: DetailProps | undefined;
 }) {
   const { rows: jobRows } = useFeed(jobs, "/api/live/jobs");
   const { rows: runRows, status } = useFeed(runs, "/api/live/runs");
   const { rows: agentRows } = useFeed(agents, "/api/live/agents");
+  const { rows: machineRows } = useFeed(machines, "/api/live/machines");
+  const machineById = useMemo(() => new Map(machineRows.map((m) => [m.id, m])), [machineRows]);
 
   const agentsBySession = useMemo(
     () => groupBy(agentRows, (a) => a.session_id),
@@ -53,6 +57,7 @@ export function LivePanel({
   return (
     <div className="grid h-screen grid-cols-[220px_1fr]">
       <Sidebar
+        active="board"
         cardCount={cards.length}
         unstagedCount={unstaged.length}
         liveSessions={runRows.filter((r) => r.status === "active").length}
@@ -70,6 +75,7 @@ export function LivePanel({
             unstaged={unstaged}
             agentsBySession={agentsBySession}
             selected={detail?.sessionId}
+            machines={machineById}
           />
           {selectedRun && detail && (
             <RunDetail
@@ -80,6 +86,7 @@ export function LivePanel({
               stages={detail.stages}
               stagesPath={detail.stagesPath}
               job={selectedJob}
+              machine={selectedJob?.machine_id ? machineById.get(selectedJob.machine_id) : undefined}
               jobSpend={
                 selectedJob
                   ? {

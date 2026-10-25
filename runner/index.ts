@@ -15,6 +15,7 @@ const { asc, eq, getTableColumns, isNull } = await import("drizzle-orm");
 const { db } = await import("../db/client");
 const { intents, jobs } = await import("../db/schema");
 const ops = await import("./ops");
+const { createBeat, inventoryCollectors, systemCollectors, thisMachine } = await import("./heartbeat");
 const { launchQueued } = await import("./launch");
 const { recheckScheduler } = await import("./recheck");
 const { everyAtMost, serialQueue } = await import("./queue");
@@ -129,15 +130,33 @@ async function tick() {
   };
 }
 
+const machine = await thisMachine();
+const beat = createBeat({
+  machine,
+  heartbeatCollectors: systemCollectors(async () => ({
+    max: ops.config.factory.maxInFlight,
+    inFlight: await ops.machineInFlight(machine.id),
+  })),
+  inventoryCollectors: inventoryCollectors(),
+  inventoryMs: ops.config.factory.inventoryMinutes * 60_000,
+  log,
+});
+
+// The startup beat marks this machine online at once; the slower inventory waits until the reconcile is done.
 if (process.argv.includes("--once")) {
+  await beat({ inventory: false });
   await serial("reconcile", startupReconcile);
   takeIntents(await openIntents());
   await queue.idle();
+  await beat();
   process.exit(0);
 }
 
-log("start", { pid: process.pid, tickSeconds: ops.config.factory.tickSeconds });
+log("start", { pid: process.pid, tickSeconds: ops.config.factory.tickSeconds, machine });
+await beat({ inventory: false });
+setInterval(() => void beat(), ops.config.factory.tickSeconds * 1000);
 await serial("reconcile", startupReconcile);
+void beat();
 takeIntents(await openIntents());
 
 const realtime = createRealtime({

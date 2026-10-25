@@ -139,6 +139,7 @@ export const jobs = pgTable(
     /** The PR head the factory last sent back to its thread because it conflicted with main. */
     conflict_head: text("conflict_head"),
     t3_thread_id: text("t3_thread_id"),
+    machine_id: text("machine_id"),
     session_id: text("session_id"),
     claimed_at: ts("claimed_at").notNull(),
     updated_at: ts("updated_at").notNull(),
@@ -181,8 +182,18 @@ export const intents = pgTable(
   (t) => [index("intents_open_idx").on(t.handled_at, t.created_at)],
 );
 
+export const machines = pgTable("machines", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull(),
+  last_seen_at: ts("last_seen_at").notNull(),
+  heartbeat: jsonb("heartbeat").notNull(),
+  inventory: jsonb("inventory"),
+  inventory_at: ts("inventory_at"),
+});
+
 export type EventRow = typeof events.$inferSelect;
 export type RunRow = typeof runs.$inferSelect;
 export type AgentRow = typeof agents.$inferSelect;
 export type JobRow = typeof jobs.$inferSelect;
 export type IntentRow = typeof intents.$inferSelect;
+export type MachineRow = typeof machines.$inferSelect;

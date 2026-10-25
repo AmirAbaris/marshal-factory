@@ -15,6 +15,7 @@ export type BoardCard = {
   prUrl: string | null;
   sourceLink: { label: string; href: string } | null;
   budgetUsd: number | null;
+  machineId: string | null;
   answeredAt: Date | null;
   attempt: number;
   /** The runs of the current attempt; spend against the cap counts only these. */
@@ -49,6 +50,7 @@ export function boardCards(jobs: readonly JobRow[], runs: readonly RunRow[]): Bo
       prUrl: job.pr_url,
       sourceLink: sourceLink(job),
       budgetUsd: job.budget_usd,
+      machineId: job.machine_id,
       answeredAt: job.answered_at,
       attempt: job.attempt,
       attemptRuns,
@@ -77,6 +79,7 @@ export function boardCards(jobs: readonly JobRow[], runs: readonly RunRow[]): Bo
         prUrl: sorted.find((r) => r.pr_url)?.pr_url ?? null,
         sourceLink: null,
         budgetUsd: null,
+        machineId: null,
         answeredAt: null,
         attempt: 1,
         attemptRuns: sorted,

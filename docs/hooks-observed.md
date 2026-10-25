@@ -31,7 +31,9 @@ Every payload has `session_id`, `transcript_path`, `cwd`, `hook_event_name`. Too
 
 ## `t3-thread://` links
 
-`open "t3-thread://v1/<threadId>"` fails on macOS with `kLSApplicationNotFoundErr`: no app claims the scheme. T3 Code (Nightly 0.1.3) registers only `t3code://` and `t3code-dev://` with the OS. The `t3-thread://v1/<threadId>` form is handled inside T3's own markdown renderer, which turns such links in chat messages into thread links showing the current title (found in the app bundle and in the T3 MCP tool instructions). So the panel's "Open in T3" link is correct for T3 chat but does nothing when clicked in a browser. The only OS-level route found is `t3code://app`, with no thread parameter. A working jump from the panel needs T3 to expose a thread deep link, or the panel to call `t3 app`.
+`open "t3-thread://v1/<threadId>"` fails on macOS with `kLSApplicationNotFoundErr`: no app claims the scheme. The `t3-thread://v1/<threadId>` form is handled inside T3's own markdown renderer, which turns such links in chat messages into thread links showing the current title (found in the app bundle and in the T3 MCP tool instructions). It does nothing when clicked in a browser.
+
+T3 Code (Nightly 0.1.3) registers `t3code` and `t3code-dev` as `CFBundleURLSchemes` in its Info.plist. The desktop `open-url` handler accepts `t3code://new` and `t3code://threads/<environmentId>/<threadId>`, and maps the second to its thread route. `open "t3code://threads/<env>/mcp%3A<uuid>"` opened the thread. The environmentId is the content of `~/.t3/userdata/environment-id`, which the runner reports in the machine inventory (`inventory.t3.environmentId`). The panel's "Open in T3" button links `t3code://threads/<environmentId>/<threadId>` and falls back to `t3code://app` when the environment is unknown. The link opens T3 only on the Mac that runs the thread, so the button names that machine.
 
 ## Stage reports and the session id
 

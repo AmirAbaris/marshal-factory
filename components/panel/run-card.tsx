@@ -59,10 +59,12 @@ export function StageCard({
   card,
   agents,
   selected,
+  machineName,
 }: {
   card: BoardCard;
   agents: readonly AgentRow[];
   selected: boolean;
+  machineName: string | null;
 }) {
   const { latest } = card;
   return (
@@ -110,6 +112,7 @@ export function StageCard({
           agents={agents}
           budgetUsd={card.budgetUsd ?? undefined}
         />
+        {machineName && <span>on {machineName}</span>}
         {card.sourceLink && (
           <a
             href={card.sourceLink.href}
