@@ -93,7 +93,8 @@ assert.deepEqual(
 );
 assert.equal(parseHeartbeat(null), null, "no heartbeat at all");
 
-assert.partialDeepStrictEqual(await identify("lane-1"), { id: "lane-1", idFrom: "config" }, "the config id wins");
+const configured = await identify("lane-1");
+assert.deepEqual([configured.id, configured.idFrom], ["lane-1", "config"], "the config id wins");
 const path = process.env.PATH;
 process.env.PATH = "/nonexistent";
 try {
@@ -110,7 +111,7 @@ const at = new Date("2026-10-24T12:00:00Z");
 assert.equal(isOnline(new Date(at.getTime() - 269_000), at.getTime()), true, "269 s ago is online");
 assert.equal(isOnline(new Date(at.getTime() - 271_000), at.getTime()), false, "271 s ago is offline");
 
-const machine = { id: `heartbeat-regress-${Date.now()}`, name: "Test Mac" };
+const machine = { id: `heartbeat-regress-${Date.now()}`, name: "Test Mac", idFrom: "config" as const };
 const ok = {
   cpu: async () => ({ load1: 1.5, cores: 8 }),
   memory: async () => ({ usedBytes: 1, totalBytes: 2 }),

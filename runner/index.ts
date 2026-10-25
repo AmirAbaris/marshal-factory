@@ -142,18 +142,21 @@ const beat = createBeat({
   log,
 });
 
+// The startup beat marks this machine online at once; the slower inventory waits until the reconcile is done.
 if (process.argv.includes("--once")) {
-  await beat();
+  await beat({ inventory: false });
   await serial("reconcile", startupReconcile);
   takeIntents(await openIntents());
   await queue.idle();
+  await beat();
   process.exit(0);
 }
 
-log("start", { pid: process.pid, tickSeconds: ops.config.factory.tickSeconds, machineId: machine.id, machineName: machine.name });
-await beat();
+log("start", { pid: process.pid, tickSeconds: ops.config.factory.tickSeconds, machine });
+await beat({ inventory: false });
 setInterval(() => void beat(), ops.config.factory.tickSeconds * 1000);
 await serial("reconcile", startupReconcile);
+void beat();
 takeIntents(await openIntents());
 
 const realtime = createRealtime({

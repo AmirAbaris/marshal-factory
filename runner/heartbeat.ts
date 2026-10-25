@@ -9,19 +9,24 @@ import { machines } from "../db/schema";
 import { loadConfig } from "../lib/config";
 import { UNKNOWN, type Heartbeat, type Inventory } from "../lib/machine";
 import { connectStatus, readProjects, readT3Runtime } from "../lib/t3-state";
+import { message, withTimeout } from "./queue";
 
 const run = promisify(execFile);
 const RUNNER_DIR = join(import.meta.dirname, "..");
 const text = async (cmd: string, args: string[], cwd?: string) =>
   (await run(cmd, args, { cwd, timeout: 5_000, maxBuffer: 1024 * 1024 })).stdout;
 
-export type Machine = { id: string; name: string };
+export type Machine = { id: string; name: string; idFrom: "config" | "ioreg" | "hostname" };
 
+/** Falls back to the host name when ioreg fails, so the runner starts instead of crash-looping under launchd. */
 export async function identify(override?: string): Promise<Machine> {
-  const id = override ?? /"IOPlatformUUID" = "([^"]+)"/.exec(await text("ioreg", ["-rd1", "-c", "IOPlatformExpertDevice"]))?.[1];
-  if (!id) throw new Error("ioreg printed no IOPlatformUUID");
-  const name = await text("scutil", ["--get", "ComputerName"]).then((out) => out.trim(), () => "");
-  return { id, name: name || hostname() };
+  const name = (await text("scutil", ["--get", "ComputerName"]).then((out) => out.trim(), () => "")) || hostname();
+  if (override) return { id: override, name, idFrom: "config" };
+  const uuid = await text("ioreg", ["-rd1", "-c", "IOPlatformExpertDevice"]).then(
+    (out) => /"IOPlatformUUID" = "([^"]+)"/.exec(out)?.[1],
+    () => undefined,
+  );
+  return uuid ? { id: uuid, name, idFrom: "ioreg" } : { id: `hostname:${hostname()}`, name, idFrom: "hostname" };
 }
 
 let machine: Promise<Machine> | undefined;
@@ -128,10 +133,11 @@ const hashOf = (inventory: Inventory) => createHash("sha256").update(JSON.string
 
 export function inventoryReporter(write: (inventory: Inventory) => Promise<boolean>) {
   let written: string | undefined;
-  return async (inventory: Inventory): Promise<"written" | "unchanged"> => {
+  return async (inventory: Inventory): Promise<"written" | "unchanged" | "missing"> => {
     const hash = hashOf(inventory);
     if (hash === written) return "unchanged";
-    if (await write(inventory)) written = hash;
+    if (!(await write(inventory))) return "missing";
+    written = hash;
     return "written";
   };
 }
@@ -143,6 +149,7 @@ export function createBeat({
   heartbeatCollectors,
   inventoryCollectors: inventory,
   inventoryMs,
+  timeoutMs = 60_000,
   log,
   now = Date.now,
 }: {
@@ -150,27 +157,37 @@ export function createBeat({
   heartbeatCollectors: HeartbeatCollectors;
   inventoryCollectors: InventoryCollectors;
   inventoryMs: number;
+  /** A stalled collector or pool must not hold `running` forever and skip every later beat. */
+  timeoutMs?: number;
   log: Log;
   now?: () => number;
 }) {
   const report = inventoryReporter((value) => writeInventory(machine.id, value, new Date(now())));
   let running = false;
   let inventoryAt: number | undefined;
+  async function beatOnce(withInventory: boolean) {
+    const started = now();
+    const heartbeat = await collectHeartbeat(heartbeatCollectors);
+    await writeHeartbeat(machine, heartbeat, new Date(now()));
+    log("heartbeat", { ms: now() - started, unknown: Object.entries(heartbeat).filter(([, v]) => v === UNKNOWN).map(([k]) => k) });
+    if (!withInventory || (inventoryAt !== undefined && now() - inventoryAt < inventoryMs)) return;
+    const collectedAt = now();
+    const result = await report(await collectInventory(inventory));
+    if (result !== "missing") inventoryAt = collectedAt;
+    log("inventory", { ms: now() - collectedAt, result });
+  }
 
-  return async function beat() {
-    if (running) return;
+  /** `inventory: false` writes only the heartbeat, for the startup beat that runs before the reconcile. */
+  return async function beat({ inventory: withInventory = true } = {}) {
+    if (running) {
+      log("heartbeat:skipped", { reason: "the previous beat is still running" });
+      return;
+    }
     running = true;
     try {
-      const started = now();
-      const heartbeat = await collectHeartbeat(heartbeatCollectors);
-      await writeHeartbeat(machine, heartbeat, new Date(now()));
-      log("heartbeat", { ms: now() - started, unknown: Object.entries(heartbeat).filter(([, v]) => v === UNKNOWN).map(([k]) => k) });
-      if (inventoryAt !== undefined && now() - inventoryAt < inventoryMs) return;
-      inventoryAt = now();
-      const collected = await collectInventory(inventory);
-      log("inventory", { ms: now() - inventoryAt, result: await report(collected) });
+      await withTimeout(() => beatOnce(withInventory), timeoutMs, (error) => log("heartbeat:late-error", { error: message(error) }));
     } catch (error) {
-      log("heartbeat:error", { error: error instanceof Error ? error.message : String(error) });
+      log("heartbeat:error", { error: message(error) });
     } finally {
       running = false;
     }

@@ -1,4 +1,30 @@
 /**
+ * Races `step` against a hard timeout. A step that loses keeps running; its later rejection goes to
+ * `onLateError` instead of being left unhandled.
+ */
+export async function withTimeout<T>(step: () => Promise<T>, timeoutMs: number, onLateError: (error: unknown) => void) {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let abandoned = false;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      abandoned = true;
+      reject(new Error(`step timed out after ${timeoutMs} ms`));
+    }, timeoutMs);
+  });
+  const running = Promise.resolve().then(step);
+  running.catch((error: unknown) => {
+    if (abandoned) onLateError(error);
+  });
+  try {
+    return await Promise.race([running, timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
+
+/**
  * The runner's serial queue: one step at a time, so intents, the timer and the reconcile never
  * touch the same issue at once. Every step runs with a hard timeout and caught errors, so no single
  * promise can stall the queue; a step that times out is logged and the queue moves on.
@@ -9,28 +35,13 @@ export function serialQueue(log: (event: string, detail: Record<string, unknown>
   function serial<T>(name: string, step: () => Promise<T>): Promise<T | undefined> {
     const next = chain.then(async () => {
       const started = Date.now();
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      let abandoned = false;
-      const timeout = new Promise<never>((_, reject) => {
-        timer = setTimeout(() => {
-          abandoned = true;
-          reject(new Error(`step timed out after ${timeoutMs} ms`));
-        }, timeoutMs);
-      });
       try {
-        const running = Promise.resolve().then(step);
-        // If the timeout wins, this step is abandoned; its later rejection is logged, not left unhandled.
-        running.catch((error: unknown) => {
-          if (abandoned) log(`${name}:late-error`, { error: error instanceof Error ? error.message : String(error) });
-        });
-        const result = await Promise.race([running, timeout]);
+        const result = await withTimeout(step, timeoutMs, (error) => log(`${name}:late-error`, { error: message(error) }));
         log(name, { ms: Date.now() - started, result });
         return result;
       } catch (error) {
-        log(`${name}:error`, { ms: Date.now() - started, error: error instanceof Error ? error.message : String(error) });
+        log(`${name}:error`, { ms: Date.now() - started, error: message(error) });
         return undefined;
-      } finally {
-        clearTimeout(timer);
       }
     });
     chain = next;

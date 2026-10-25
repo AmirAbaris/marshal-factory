@@ -42,7 +42,7 @@ export async function claimReplies(
       answer,
       updated_at: at,
       ...(relaunchContext
-        ? { resume_context: relaunchContext, t3_thread_id: null, session_id: null }
+        ? { resume_context: relaunchContext, t3_thread_id: null, session_id: null, machine_id: null }
         : {}),
     })
     .where(

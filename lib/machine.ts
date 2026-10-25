@@ -46,9 +46,16 @@ export const inventorySchema = z.object({
 });
 export type Inventory = z.infer<typeof inventorySchema>;
 
+/** Each field on its own, so one bad stat shows as unknown without hiding the others. */
 export const parseHeartbeat = (value: unknown): Heartbeat | null => {
-  const parsed = heartbeatSchema.safeParse(value);
-  return parsed.success ? parsed.data : null;
+  if (typeof value !== "object" || value === null) return null;
+  const fields = value as Record<string, unknown>;
+  return Object.fromEntries(
+    Object.entries(heartbeatSchema.shape).map(([key, schema]) => {
+      const parsed = schema.safeParse(fields[key]);
+      return [key, parsed.success ? parsed.data : UNKNOWN];
+    }),
+  ) as Heartbeat;
 };
 
 export const parseInventory = (value: unknown): Inventory | null => {
