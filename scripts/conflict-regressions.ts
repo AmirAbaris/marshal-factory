@@ -34,11 +34,11 @@ try {
 
   const prUrl = `https://github.com/ski043/factory-demo/pull/${Date.now()}`;
   await db.update(jobs).set({ stage: "pr", pr_url: prUrl, conflict_head: null, t3_thread_id: "thread-1" }).where(eq(jobs.id, jid));
-  let ours: PullRequest = { state: "open", mergeable: "unknown", headSha: "head-3" };
+  let ours: PullRequest = { state: "open", mergeable: "unknown", headSha: "head-3", title: "t" };
   github.pullRequest = async (url) => {
     if (url === bad.url) throw new Error(`${url} is not a GitHub pull request URL`);
-    if (url === loose.pr_url) return { state: "merged", mergeable: "unknown", headSha: "loose" };
-    return url === prUrl ? ours : { state: "open", mergeable: "mergeable", headSha: "other" };
+    if (url === loose.pr_url) return { state: "merged", mergeable: "unknown", headSha: "loose", title: "t" };
+    return url === prUrl ? ours : { state: "open", mergeable: "mergeable", headSha: "other", title: "t" };
   };
   const sent: string[] = [];
   threads.state = async () => "running";

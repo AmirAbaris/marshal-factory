@@ -7,12 +7,14 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
-import type { AgentRow, EventRow, JobRow, MachineRow, RunRow } from "@/db/schema";
+import type { AgentRow, AuditRow, EventRow, JobRow, MachineRow, RunRow } from "@/db/schema";
 import { parseInventory, t3ThreadLink, UNKNOWN } from "@/lib/machine";
 import { sourceLink } from "@/lib/sources/shapes";
 import { AgentTree } from "./agent-tree";
 import { EventFeed } from "./event-feed";
+import { AuditLog } from "./audit-log";
 import { formatUsd, runCost, runTitle, shortId } from "./format";
+import { MergeButton } from "./merge-button";
 import { ModelChip } from "./model-chip";
 import { useFeed, type Feed } from "./sealed";
 import { StageTimeline } from "./stage-timeline";
@@ -25,10 +27,12 @@ export function RunDetail({
   events,
   stages,
   stagesPath,
+  audit,
   job,
   machine,
   jobSpend,
 }: {
+  audit: { feed: Feed<AuditRow>; path: string } | undefined;
   jobSpend: { usd: number; capUsd: number; attempt: number } | undefined;
   stagesPath: string;
   job: JobRow | undefined;
@@ -103,6 +107,7 @@ export function RunDetail({
                 </a>
               </Button>
             )}
+            {job?.stage === "pr" && job.pr_url && <MergeButton key={job.pr_url} jobId={job.id} jobKey={job.key} />}
             {run.t3_thread_id && (
               <Button asChild variant="outline" size="sm" className={job || run.pr_url ? "" : "ml-auto"}>
                 <a
@@ -153,6 +158,7 @@ export function RunDetail({
           </h3>
           <StageTimeline events={stageRows} />
         </section>
+        {audit && <AuditLog feed={audit.feed} path={audit.path} />}
         <Separator />
         <section className="flex flex-col gap-2.5 px-4.5 py-3.5">
           <h3 className="text-xs font-semibold tracking-wider text-faint uppercase">

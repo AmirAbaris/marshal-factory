@@ -2,7 +2,8 @@ import { createRealtime } from "@neon/realtime/server";
 import { drizzleAdapter } from "@neon/realtime-drizzle";
 import { and, asc, desc, eq, getTableColumns, ne } from "drizzle-orm";
 import { db } from "@/db/client";
-import { agents, events, jobs, machines, runs } from "@/db/schema";
+import { agents, auditLog, events, jobs, machines, runs } from "@/db/schema";
+import type { JobId } from "@/lib/sources/shapes";
 import { assertOwner } from "@/lib/auth/server";
 import { liveUpdates } from "@/lib/live-mode";
 
@@ -88,13 +89,30 @@ export const jobStagesQuery = (jobKey: string) =>
     .orderBy(asc(events.at), asc(events.event_id))
     .limit(STAGE_HISTORY_LIMIT);
 
-export async function runJobKey(sessionId: string) {
+export const AUDIT_LIMIT = 50;
+
+export const jobAuditQuery = (jobId: JobId) =>
+  db
+    .select(getTableColumns(auditLog))
+    .from(auditLog)
+    .where(eq(auditLog.job_id, jobId))
+    .orderBy(desc(auditLog.at), desc(auditLog.id))
+    .limit(AUDIT_LIMIT);
+
+export async function jobIdForKey(jobKey: string) {
+  await assertOwner();
+  const [row] = await db.select({ id: jobs.id }).from(jobs).where(eq(jobs.key, jobKey));
+  return row?.id;
+}
+
+export async function runJob(sessionId: string) {
   await assertOwner();
   const [row] = await db
-    .select({ jobKey: runs.job_key })
+    .select({ jobKey: runs.job_key, jobId: jobs.id })
     .from(runs)
+    .leftJoin(jobs, eq(jobs.key, runs.job_key))
     .where(eq(runs.session_id, sessionId));
-  return row?.jobKey ?? undefined;
+  return { jobKey: row?.jobKey ?? undefined, jobId: row?.jobId ?? undefined };
 }
 
 /** Runs the query for server rendering and seals it for the browser subscription. */

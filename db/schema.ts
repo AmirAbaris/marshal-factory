@@ -209,6 +209,30 @@ export const machines = pgTable("machines", {
   inventory_at: ts("inventory_at"),
 });
 
+export const auditAction = pgEnum("audit_action", ["merge_requested", "merge_succeeded", "merge_failed"]);
+export const auditResult = pgEnum("audit_result", ["ok", "head_moved", "not_mergeable", "refused", "error"]);
+
+/** Who asked the factory to change something outside it, and what happened. */
+export const auditLog = pgTable(
+  "audit_log",
+  {
+    id: text("id").primaryKey(),
+    at: ts("at").notNull(),
+    /** The owner's email from the session. */
+    actor: text("actor").notNull(),
+    action: auditAction("action").notNull(),
+    job_id: text("job_id").notNull().$type<JobId>(),
+    /** The PR URL. */
+    target: text("target").notNull(),
+    head_sha: text("head_sha").notNull(),
+    /** Null on a request; set on its outcome. */
+    result: auditResult("result"),
+    /** GitHub's message, or why the panel refused. */
+    detail: text("detail"),
+  },
+  (t) => [index("audit_log_job_at_idx").on(t.job_id, t.at)],
+);
+
 export type EventRow = typeof events.$inferSelect;
 export type RunRow = typeof runs.$inferSelect;
 export type AgentRow = typeof agents.$inferSelect;
@@ -216,3 +240,4 @@ export type JobRow = typeof jobs.$inferSelect;
 export type IntentRow = typeof intents.$inferSelect;
 export type IntentKind = IntentRow["kind"];
 export type MachineRow = typeof machines.$inferSelect;
+export type AuditRow = typeof auditLog.$inferSelect;

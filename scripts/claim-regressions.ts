@@ -92,7 +92,7 @@ try {
     linearJob(`${prefix}-free-pr`, `${prefix}-free-pr`, { stage: "pr", pr_url: pr(3) }),
   ]);
   github.pullRequest = async (url) =>
-    url === pr(3) ? { state: "open", mergeable: "conflicting", headSha: "h" } : { state: "merged", mergeable: "unknown", headSha: "h" };
+    url === pr(3) ? { state: "open", mergeable: "conflicting", headSha: "h", title: "t" } : { state: "merged", mergeable: "unknown", headSha: "h", title: "t" };
   const checked = await checkPullRequests();
   const erroredKeys = checked.errors.map((e) => e.key);
   assert.ok(erroredKeys.includes(`${prefix}-resume`), "a merged PR of a job no machine holds is posted as merged (refused in test mode)");
