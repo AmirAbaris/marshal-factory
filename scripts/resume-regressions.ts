@@ -62,11 +62,12 @@ try {
   const [row] = await db.select().from(jobs).where(eq(jobs.id, jid));
   assert.deepEqual(row!.delivered_reply_ids, ["c-1", "c-2"]);
 
-  await db.update(jobs).set({ t3_thread_id: "dead-thread", session_id: "old-session" }).where(eq(jobs.id, jid));
+  await db.update(jobs).set({ t3_thread_id: "dead-thread", session_id: "old-session", machine_id: "old-machine" }).where(eq(jobs.id, jid));
   assert.equal(await claimReplies(db, jid, ["c-3"], "c", now, "## Q&A"), true);
   const [relaunch] = await db.select().from(jobs).where(eq(jobs.id, jid));
   assert.equal(relaunch!.t3_thread_id, null, "claiming for a dead thread unlinks it in the same update");
   assert.equal(relaunch!.session_id, null);
+  assert.equal(relaunch!.machine_id, null, "the relaunch is free for any machine to claim");
   assert.equal(relaunch!.resume_context, "## Q&A");
   console.log("resume regressions passed");
 } catch (error) {
