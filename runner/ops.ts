@@ -429,7 +429,7 @@ export async function writeBack() {
       ),
   );
   const synced: string[] = [];
-  for (const job of pending) {
+  await eachJob(pending, "write back", async (job) => {
     const written = await sourceFor(job.source).writeBack(job, { stage: job.stage, eventId: job.stage_event_id! });
     // Only this event counts as synced; a newer one that landed meanwhile goes next pass.
     await db
@@ -437,8 +437,21 @@ export async function writeBack() {
       .set({ synced_event_id: job.stage_event_id })
       .where(and(eq(jobs.id, job.id), eq(jobs.stage_event_id, job.stage_event_id!)));
     if (written) synced.push(`${job.key}:${job.stage}`);
-  }
+  });
   return synced;
+}
+
+/**
+ * Runs a source step for each job on its own, so one issue the source refuses (deleted, no access,
+ * a malformed state) does not hold back the rest. The failures are thrown together at the end, so
+ * an intent is retried and the timer reports them; the jobs that went through are not redone.
+ */
+async function eachJob(list: readonly Job[], what: string, step: (job: Job) => Promise<void>) {
+  const failed: string[] = [];
+  for (const job of list) {
+    await step(job).catch((error: unknown) => void failed.push(`${job.key}: ${error instanceof Error ? error.message : String(error)}`));
+  }
+  if (failed.length > 0) throw new Error(`could not ${what} ${failed.join("; ")}`);
 }
 
 /** This machine's factory checkouts, keyed by the GitHub repo each one tracks. */
@@ -520,6 +533,7 @@ export async function claim({
             conflict_head: null,
             resume_context: null,
             stop_sent_to: null,
+            stop_event_id: null,
             answered_at: null,
             answer: null,
             title: draft.title,
@@ -551,9 +565,7 @@ export async function announceClaims() {
     .from(jobs)
     .where(and(await mine(), eq(jobs.stage, "queued")))
     .orderBy(asc(jobs.claimed_at), asc(jobs.key));
-  for (const job of parseJobs(queued)) {
-    await sourceFor(job.source).announceClaim(job);
-  }
+  await eachJob(parseJobs(queued), "announce", (job) => sourceFor(job.source).announceClaim(job));
 }
 
 function launchMessage(job: Job) {
@@ -676,14 +688,19 @@ export async function stopJob(id: JobId, detail: string) {
     if (!row) return "not claimed";
     const job = parseJob(row);
     // Stopped already, perhaps by a retry whose side effects failed: finish them, they are idempotent.
-    if (isStopped(job)) return finishStop(job, reopen);
+    // A stopped job that merged since is done; only a stop still owed to its thread is left to send.
+    if (isStopped(job)) {
+      if (job.stage === "failed") return finishStop(job, reopen);
+      await deliverStops(job.id);
+      return "stopped";
+    }
     if (!canTransition(job.stage, "failed", "stop")) return "not running";
 
     const eventId = runnerEventId("stop", job.external_id, job.attempt, job.stage_event_id ?? job.stage);
     const now = new Date();
     const [stopped] = await db
       .update(jobs)
-      .set({ stage: "failed", stage_at: now, stage_summary: `Stopped: ${detail}.`, question: null, stage_event_id: eventId, synced_event_id: eventId, updated_at: now })
+      .set({ stage: "failed", stage_at: now, stage_summary: `Stopped: ${detail}.`, question: null, stage_event_id: eventId, synced_event_id: eventId, stop_event_id: eventId, updated_at: now })
       .where(and(eq(jobs.id, id), eq(jobs.stage, job.stage), sql`${jobs.stage_event_id} is not distinct from ${job.stage_event_id}`))
       .returning();
     if (!stopped) continue;
@@ -781,7 +798,7 @@ export async function deliverStops(id?: JobId) {
       if ((await threads.state(threadId)) !== "gone") {
         await threads.send(
           threadId,
-          `Stop working on ${job.key}. ${job.stage_summary} Do not push, do not open or update a PR. End the turn now.`,
+          `Stop working on ${job.key}. ${job.stage === "failed" ? job.stage_summary : "The factory stopped this run."} Do not push, do not open or update a PR. End the turn now.`,
         );
       }
     } catch (error) {

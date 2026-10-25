@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "no
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { promisify } from "node:util";
+import { CONFIG_PATH } from "../lib/config";
 import { stageReportSchema, type FactoryEvent, type Usage } from "../lib/events";
 import { jobKeyFromBranch, REPORT_STAGE_TOOL } from "../lib/factory";
 import { rememberSessionBranch, sessionBranch, writeSpend } from "../lib/spend-cache";
@@ -34,9 +35,8 @@ const str = (value: unknown) =>
   typeof value === "string" && value !== "" ? value : undefined;
 
 function readConfig() {
-  const file = join(homedir(), ".config", "marshal-factory", "config.json");
-  if (!existsSync(file)) return undefined;
-  const config = JSON.parse(readFileSync(file, "utf8")) as {
+  if (!existsSync(CONFIG_PATH)) return undefined;
+  const config = JSON.parse(readFileSync(CONFIG_PATH, "utf8")) as {
     ingestUrl?: string;
     secret?: string;
   };

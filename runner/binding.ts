@@ -1,10 +1,11 @@
-import { and, eq, isNotNull, sql } from "drizzle-orm";
+import { and, isNotNull, sql } from "drizzle-orm";
 import { jobs, type JobRow } from "../db/schema";
 
 // How a job relates to its T3 thread, and when a stop is still owed to it.
 //
 //   binding   t3_thread_id is null (none), a `pending:` launch marker, or a real thread id (bound)
-//   stopped   stage failed by a stop (its stage event id starts with `stop:`)
+//   stopped   a stop was recorded for this attempt (stop_event_id, which starts with `stop:`); a later
+//             stage such as a merge leaves it, so a stop owed to a thread that is still running is sent
 //   owed      stopped, and either a launch is pending (its thread may still appear) or the bound
 //             thread is not the one stop_sent_to names
 //
@@ -13,7 +14,7 @@ import { jobs, type JobRow } from "../db/schema";
 // start) is caught by the runner's jobs subscription and its timer. A new attempt is refused
 // while any launch is pending or a stop is owed, so no thread is left running unbound.
 
-type Row = Pick<JobRow, "stage" | "stage_event_id" | "t3_thread_id" | "stop_sent_to">;
+type Row = Pick<JobRow, "stage" | "stop_event_id" | "t3_thread_id" | "stop_sent_to">;
 
 export const PENDING = "pending:";
 
@@ -22,7 +23,7 @@ export function bindingOf(threadId: string | null) {
   return threadId.startsWith(PENDING) ? "pending" : "bound";
 }
 
-export const isStopped = (i: Row) => i.stage === "failed" && Boolean(i.stage_event_id?.startsWith("stop:"));
+export const isStopped = (i: Row) => Boolean(i.stop_event_id?.startsWith("stop:"));
 
 export function stopOwed(i: Row) {
   if (!isStopped(i)) return false;
@@ -36,7 +37,7 @@ export const canReclaim = (i: Row) => i.stage === "failed" && bindingOf(i.t3_thr
 
 // The same rules as SQL, for the queries that claim rows. scripts/launch-regressions.ts checks
 // that each one agrees with its predicate above in every state.
-const stoppedSql = and(eq(jobs.stage, "failed"), sql`${jobs.stage_event_id} like 'stop:%'`);
+const stoppedSql = sql`${jobs.stop_event_id} like 'stop:%'`;
 const pendingSql = sql`${jobs.t3_thread_id} like 'pending:%'`;
 const boundSql = and(isNotNull(jobs.t3_thread_id), sql`${jobs.t3_thread_id} not like 'pending:%'`);
 const unsentSql = sql`${jobs.stop_sent_to} is distinct from ${jobs.t3_thread_id}`;

@@ -137,6 +137,8 @@ export const jobs = pgTable(
     nudged_stage: runStage("nudged_stage"),
     /** The thread a stop message reached; a stop recorded before the thread was known waits for it. */
     stop_sent_to: text("stop_sent_to"),
+    /** The stop recorded for this attempt. A later stage, such as a merge, leaves it, so an owed stop is still sent. */
+    stop_event_id: text("stop_event_id"),
     /** The PR head the factory last sent back to its thread because it conflicted with main. */
     conflict_head: text("conflict_head"),
     t3_thread_id: text("t3_thread_id"),
