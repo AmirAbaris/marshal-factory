@@ -48,14 +48,15 @@ const T3 = process.env.T3CODE_CLI_PATH ?? "t3";
  * main while its job sits in pr sends the thread back to merge main. The conflict is handled
  * once per PR head, so a pass never repeats the request while the thread works on it. Each PR is
  * checked on its own: one that fails (an uninstalled repo, a bad URL, a GitHub hiccup) is reported
- * and the next timer pass retries it, while the rest of this pass goes on.
+ * and the next timer pass retries it, while the rest of this pass goes on. A job no machine holds,
+ * such as a resume waiting for a fresh thread, has no thread to send back, but its merge counts.
  */
 export async function checkPullRequests() {
   const open = parseJobs(
     await db
       .select()
       .from(jobs)
-      .where(and(await mine(), isNotNull(jobs.pr_url), ne(jobs.stage, "merged")))
+      .where(and(or(await mine(), isNull(jobs.machine_id)), isNotNull(jobs.pr_url), ne(jobs.stage, "merged")))
       .orderBy(asc(jobs.key)),
   );
   const conflicts: string[] = [];
@@ -66,7 +67,7 @@ export async function checkPullRequests() {
   for (const job of open) {
     await each(job.key, job.pr_url!, async () => {
       const pr = await github.pullRequest(job.pr_url!);
-      if (pr.state === "open" && pr.mergeable === "conflicting" && job.stage === "pr") {
+      if (pr.state === "open" && pr.mergeable === "conflicting" && job.stage === "pr" && job.machine_id !== null) {
         if (await sendBackForConflict(job, pr.headSha)) conflicts.push(job.key);
         return;
       }

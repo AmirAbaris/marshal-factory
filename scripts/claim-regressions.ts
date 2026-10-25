@@ -4,7 +4,8 @@ import { eq, like, sql } from "drizzle-orm";
 
 const { db } = await import("../db/client");
 const { intentReceipts, intents, jobs, machines } = await import("../db/schema");
-const { claim, claimLaunch, deliverStops, threads } = await import("../runner/ops");
+const { checkPullRequests, claim, claimLaunch, deliverStops, threads } = await import("../runner/ops");
+const { github } = await import("../lib/github/pulls");
 const { closeBroadcast, deliveryFor, leaseIntent, receiptIntent } = await import("../runner/intents");
 const { linearJob } = await import("./fixtures");
 type Adapter = NonNullable<Parameters<typeof claim>[0]>["source"];
@@ -82,6 +83,21 @@ try {
   );
   assert.deepEqual(await deliverStops(), [], "a stop owed to another machine's thread is left to that machine");
   assert.deepEqual(sent, [], "and nothing is sent from here");
+
+  const pr = (n: number) => `https://github.com/ski043/factory-demo/pull/${900_000 + n}`;
+  await db.insert(jobs).values([
+    linearJob(`${prefix}-resume`, `${prefix}-resume`, { stage: "queued", pr_url: pr(1) }),
+    linearJob(`${prefix}-their-pr`, `${prefix}-their-pr`, { stage: "pr", pr_url: pr(2), machine_id: `${prefix}-other`, t3_thread_id: "their-pr-thread" }),
+    linearJob(`${prefix}-free-pr`, `${prefix}-free-pr`, { stage: "pr", pr_url: pr(3) }),
+  ]);
+  github.pullRequest = async (url) =>
+    url === pr(3) ? { state: "open", mergeable: "conflicting", headSha: "h" } : { state: "merged", mergeable: "unknown", headSha: "h" };
+  const checked = await checkPullRequests();
+  const erroredKeys = checked.errors.map((e) => e.key);
+  assert.ok(erroredKeys.includes(`${prefix}-resume`), "a merged PR of a job no machine holds is posted as merged (refused in test mode)");
+  assert.ok(!erroredKeys.includes(`${prefix}-their-pr`), "another machine's PR is left to that machine");
+  assert.deepEqual(checked.conflicts, [], "a conflicting PR of a job no machine holds is not sent back");
+  assert.deepEqual(sent, [], "so no thread is messaged");
 
   await db.delete(jobs).where(eq(jobs.repo, REPO));
   await db.insert(jobs).values([
