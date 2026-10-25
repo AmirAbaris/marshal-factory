@@ -65,7 +65,7 @@ for (const cause of RUNNER_CAUSES) {
 }
 assert.equal(causeOf("6e4900b4c22c2f3554c3955c41923e5ebe07a3ff"), "report", "a hook's hashed event id is a thread report");
 assert.equal(causeOf("regress-1-7"), "report");
-const stopped = { stage: "failed" as const, stage_event_id: runnerEventId("stop", "x", 1, "e"), t3_thread_id: null, stop_sent_to: null };
+const stopped = { stage: "failed" as const, stop_event_id: runnerEventId("stop", "x", 1, "e"), t3_thread_id: null, stop_sent_to: null };
 assert.equal(isStopped(stopped), true, "runner/binding.ts reads a stop from the prefix runnerEventId writes");
 
 const row = { key: "FAC-7", stage: "implementing" as Stage, stage_at: new Date(1_000), attempt: 2, stage_event_id: "e-1" };

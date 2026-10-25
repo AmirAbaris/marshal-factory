@@ -4,7 +4,8 @@ import { eq, like, sql } from "drizzle-orm";
 
 const { db } = await import("../db/client");
 const { intentReceipts, intents, jobs, machines } = await import("../db/schema");
-const { checkPullRequests, claim, claimLaunch, deliverStops, threads, writeBack } = await import("../runner/ops");
+const { announceClaims, checkPullRequests, claim, claimLaunch, deliverStops, threads, writeBack } = await import("../runner/ops");
+const { TEST_MACHINE_ID } = await import("../lib/config");
 const { sourceFor } = await import("../lib/sources");
 const { github } = await import("../lib/github/pulls");
 const { closeBroadcast, deliveryFor, leaseIntent, receiptIntent } = await import("../runner/intents");
@@ -108,6 +109,31 @@ try {
   await writeBack();
   assert.ok(written.includes(`${prefix}-resume:merged`), "the merge of a job no machine holds reaches its source");
   assert.ok(!written.some((w) => w.startsWith(`${prefix}-their-pr:`)), "another machine's job is written back by that machine");
+
+  await db.insert(jobs).values([
+    linearJob(`${prefix}-wb-bad`, `${prefix}-wb-bad`, { stage: "failed", stage_event_id: "e-bad", machine_id: TEST_MACHINE_ID }),
+    linearJob(`${prefix}-wb-good`, `${prefix}-wb-good`, { stage: "failed", stage_event_id: "e-good", machine_id: TEST_MACHINE_ID }),
+  ]);
+  linear.writeBack = async (job) => {
+    if (job.key === `${prefix}-wb-bad`) throw new Error("Linear says the issue is gone");
+    return true;
+  };
+  await assert.rejects(writeBack(), /could not write back .*wb-bad: Linear says the issue is gone/, "a failing write-back is reported");
+  const synced = async (key: string) => (await db.select().from(jobs).where(eq(jobs.key, key)))[0]!.synced_event_id;
+  assert.equal(await synced(`${prefix}-wb-good`), "e-good", "and the job after it is still written back");
+  assert.equal(await synced(`${prefix}-wb-bad`), null, "while the failed one stays unsynced for the next pass");
+
+  await db.insert(jobs).values([
+    linearJob(`${prefix}-an-bad`, `${prefix}-an-bad`, { stage: "queued", machine_id: TEST_MACHINE_ID }),
+    linearJob(`${prefix}-an-good`, `${prefix}-an-good`, { stage: "queued", machine_id: TEST_MACHINE_ID }),
+  ]);
+  const announced: string[] = [];
+  linear.announceClaim = async (job) => {
+    if (job.key === `${prefix}-an-bad`) throw new Error("no access");
+    announced.push(job.key);
+  };
+  await assert.rejects(announceClaims(), /could not announce .*an-bad: no access/, "a failing announcement is reported");
+  assert.ok(announced.includes(`${prefix}-an-good`), "and the job after it is still announced");
 
   await db.delete(jobs).where(eq(jobs.repo, REPO));
   await db.insert(jobs).values([
