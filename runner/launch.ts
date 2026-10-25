@@ -5,7 +5,7 @@ import { z } from "zod";
 import { forbidInTest } from "../lib/test-mode";
 import { PENDING } from "./binding";
 import { thisMachine } from "./heartbeat";
-import { bindThread, claimLaunch, config, pendingLaunches, releaseLaunch, toLaunch } from "./ops";
+import { bindThread, claimLaunch, config, factoryCheckouts, machineInFlight, pendingLaunches, releaseLaunch, toLaunch } from "./ops";
 
 const run = promisify(execFile);
 const T3 = process.env.T3CODE_CLI_PATH ?? "t3";
@@ -66,19 +66,26 @@ const PENDING_STALE_MS = 120_000;
  * A launch that died between starting the thread and recording it leaves a pending marker. Once
  * it is stale, look for the thread T3 made on that branch and record it, or clear the marker.
  */
-async function recoverPending(repo: string) {
-  const stale = (await pendingLaunches()).filter((p) => Date.now() - Number(p.marker.slice(PENDING.length)) > PENDING_STALE_MS);
-  if (stale.length === 0) return [];
-  const list = z.array(z.object({ threadId: z.string() })).parse(JSON.parse(await sh(T3, ["thread", "list", "--project", repo, "--json"])));
-  const branches = await Promise.all(
+async function threadBranches(checkout: string) {
+  const list = z.array(z.object({ threadId: z.string() })).parse(JSON.parse(await sh(T3, ["thread", "list", "--project", checkout, "--json"])));
+  return Promise.all(
     list.map(async ({ threadId }) => ({
       threadId,
       branch: z.object({ thread: z.object({ branch: z.string().nullable() }) }).parse(JSON.parse(await sh(T3, ["thread", "show", threadId, "--json"]))).thread.branch,
     })),
   );
+}
+
+async function recoverPending(checkouts: ReadonlyMap<string, string>) {
+  // A pending launch whose repo left this machine's config has no project to look in; it waits for the repo to come back.
+  const stale = (await pendingLaunches()).filter(
+    (p) => checkouts.has(p.repo) && Date.now() - Number(p.marker.slice(PENDING.length)) > PENDING_STALE_MS,
+  );
+  const branchesByRepo = new Map<string, Awaited<ReturnType<typeof threadBranches>>>();
   const recovered = [];
   for (const p of stale) {
-    const found = branches.find((b) => b.branch === p.branch);
+    if (!branchesByRepo.has(p.repo)) branchesByRepo.set(p.repo, await threadBranches(checkouts.get(p.repo)!));
+    const found = branchesByRepo.get(p.repo)!.find((b) => b.branch === p.branch);
     // bindThread delivers an owed stop. Without a thread, clearing the marker leaves nothing owed.
     await (found ? bindThread(p.key, found.threadId) : releaseLaunch(p.key, p.marker));
     recovered.push({ key: p.key, threadId: found?.threadId ?? null });
@@ -86,7 +93,7 @@ async function recoverPending(repo: string) {
   return recovered;
 }
 
-type LaunchEntry = { key: string; branch: string; threadTitle: string; message: string };
+type LaunchEntry = { key: string; repo: string; branch: string; threadTitle: string; message: string };
 
 export type LaunchDeps = {
   claim: (key: string, marker: string) => Promise<boolean>;
@@ -137,21 +144,29 @@ export async function launchEntries(entries: readonly LaunchEntry[], deps: Launc
 }
 
 /**
- * Starts a T3 thread for every queued job that has none, on a worktree cut from freshly fetched
- * origin/main. Each launch is claimed with a pending marker first, so a crash or timeout after T3
- * created the thread can never start a second one on the same branch.
+ * Starts a T3 thread for every queued job no machine holds, in this machine's checkout of the
+ * job's repo, on a worktree cut from freshly fetched origin/main. Each launch is claimed with a
+ * pending marker first, so a crash or timeout after T3 created the thread can never start a
+ * second one on the same branch, and another machine can never start the same job.
  */
 export async function launchQueued(onWorktree: (check: Record<string, unknown>) => void = () => {}) {
-  const repo = config.factory.repos[0];
-  if (!repo) return [];
-  const recovered = await recoverPending(repo);
-  const pending = await toLaunch();
+  const checkouts = await factoryCheckouts();
+  if (checkouts.size === 0) return [];
+  const recovered = await recoverPending(checkouts);
+  const machine = await thisMachine();
+  if ((await machineInFlight(machine.id)) >= config.factory.maxInFlight) return recovered;
+  const pending = (await toLaunch()).filter((entry) => checkouts.has(entry.repo));
   if (pending.length === 0) return recovered;
-  await sh("git", ["fetch", "origin", "--prune"], repo);
-  const origin = await sh("git", ["rev-parse", "origin/main"], repo);
+  const origins = new Map<string, string>();
+  for (const repo of new Set(pending.map((entry) => entry.repo))) {
+    const checkout = checkouts.get(repo)!;
+    await sh("git", ["fetch", "origin", "--prune"], checkout);
+    origins.set(repo, await sh("git", ["rev-parse", "origin/main"], checkout));
+  }
+  const slot = { id: machine.id, repos: [...checkouts.keys()], maxInFlight: config.factory.maxInFlight };
   const launched = await launchEntries(pending, {
-    claim: async (key, marker) => claimLaunch(key, marker, (await thisMachine()).id),
-    start: (entry) => startThread(repo, entry.branch, entry.threadTitle, entry.message),
+    claim: (key, marker) => claimLaunch(key, marker, slot),
+    start: (entry) => startThread(checkouts.get(entry.repo)!, entry.branch, entry.threadTitle, entry.message),
     bind: bindThread,
     release: releaseLaunch,
     now: Date.now,
@@ -159,6 +174,7 @@ export async function launchQueued(onWorktree: (check: Record<string, unknown>) 
   // Diagnostic only and up to 30 s per thread, so it runs off the runner's queue.
   for (const result of launched) {
     if (typeof result.threadId !== "string") continue;
+    const origin = origins.get(pending.find((entry) => entry.key === result.key)!.repo)!;
     void worktreeHead(result.threadId)
       .then((tree) => onWorktree({ key: result.key, worktree: tree?.path, freshFromOrigin: tree ? tree.head === origin : undefined, originMain: origin.slice(0, 7) }))
       .catch((error: unknown) => onWorktree({ key: result.key, error: String(error) }));

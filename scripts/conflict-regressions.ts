@@ -6,6 +6,7 @@ const { db } = await import("../db/client");
 const { jobs } = await import("../db/schema");
 const { jobId } = await import("../lib/sources");
 const { linearJob } = await import("./fixtures");
+const { TEST_MACHINE_ID } = await import("../lib/config");
 const { claimConflict, unclaimedRunsWithPr } = await import("../lib/conflicts");
 const { runs } = await import("../db/schema");
 const { checkPullRequests, pullRequestsSettled, threads } = await import("../runner/ops");
@@ -16,7 +17,7 @@ const id = `conflict-regress-${Date.now()}`;
 const jid = jobId("linear", id);
 // Its key sorts first, so the pass meets the bad PR before the conflicting one.
 const bad = { id: jobId("linear", `${id}-bad`), url: "not a pull request url" };
-await db.insert(jobs).values(linearJob(id, id, { stage: "pr" }));
+await db.insert(jobs).values(linearJob(id, id, { stage: "pr", machine_id: TEST_MACHINE_ID }));
 try {
   assert.equal(await claimConflict(db, jid, "head-1"), true, "a new conflicting head is sent back");
   assert.equal(await claimConflict(db, jid, "head-1"), false, "the same head is never sent back twice");
@@ -46,7 +47,7 @@ try {
   ours = { ...ours, mergeable: "conflicting" };
   assert.equal(await pullRequestsSettled(), true, "a computed mergeable settles it");
 
-  await db.insert(jobs).values(linearJob(`${id}-bad`, `bad-${id}`, { stage: "pr", pr_url: bad.url }));
+  await db.insert(jobs).values(linearJob(`${id}-bad`, `bad-${id}`, { stage: "pr", pr_url: bad.url, machine_id: TEST_MACHINE_ID }));
 
   const first = await checkPullRequests();
   assert.deepEqual(sent, ["thread-1"], "a bad PR earlier in the pass does not stop the conflicting one from being sent back");

@@ -8,7 +8,7 @@ const ops = await import("../runner/ops");
 const { jobId, parseJobs, SOURCES } = await import("../lib/sources");
 const { linearJob } = await import("./fixtures");
 const { createLinearAdapter } = await import("../lib/sources/linear");
-const { factorySchema } = await import("../lib/config");
+const { factorySchema, TEST_MACHINE_ID } = await import("../lib/config");
 
 const calls: unknown[] = [];
 const record = <T>(name: string, result: T) => (...args: unknown[]) => {
@@ -366,7 +366,7 @@ try {
     linearJob("src-triage", "SRC-5", { stage: "triage", stage_event_id: "e-triage" }),
     linearJob("src-q1", "SRC-6", { stage: "queued", state: "Todo" }),
     linearJob("src-q2", "SRC-7", { stage: "queued", attempt: 2, state: "Todo" }),
-  ]);
+  ].map((row) => ({ ...row, machine_id: TEST_MACHINE_ID })));
   const synced = await ops.writeBack();
   await ops.announceClaims();
   const writes = { synced, calls: structuredClone(calls), rows: await snapshot() };
@@ -382,7 +382,7 @@ try {
   await db.insert(jobs).values(linearJob("src-retry", "SRC-9", { stage: "failed", stage_summary: "earlier failure", stage_event_id: "e-r", synced_event_id: "e-r" }));
   readyNodes = [node("src-new", "SRC-8"), node("src-retry", "SRC-9")];
   calls.length = 0;
-  const claimed = await ops.claim({ repo: async () => "test-owner/claimed-repo" });
+  const claimed = await ops.claim({ repos: async () => ["test-owner/claimed-repo"] });
   const claim = { claimed, calls: structuredClone(calls), rows: await snapshot() };
 
   calls.length = 0;

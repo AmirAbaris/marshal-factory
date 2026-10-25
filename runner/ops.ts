@@ -22,13 +22,18 @@ import { nudgeMessage, watch, type ThreadState } from "../lib/watchdog";
 import { forbidInTest } from "../lib/test-mode";
 import { runWithInput } from "../lib/exec";
 import { bindingOf, canReclaimSql, isStopped, PENDING, stopDeliverableSql } from "./binding";
+import { thisMachine } from "./heartbeat";
 import { claimReplies, qaBlock, resumeMessage } from "../lib/resume";
 
 
 // The factory's deterministic work. The runner calls these from webhook intents, its timer and
 // its startup reconcile; every one of them is idempotent, so calling one twice changes nothing.
+// Each acts only on this machine's jobs: another machine's thread, worktree and transcripts are
+// out of reach here, so its own runner watches, bills, writes back and stops them.
 
 export const config = loadConfig();
+
+const mine = async () => eq(jobs.machine_id, (await thisMachine()).id);
 
 /** Stages where a thread is working; waiting, pr, merged and failed free the slot. */
 export const IN_FLIGHT: Stage[] = ["queued", "triage", "investigating", "implementing", "verifying"];
@@ -50,7 +55,7 @@ export async function checkPullRequests() {
     await db
       .select()
       .from(jobs)
-      .where(and(isNotNull(jobs.pr_url), ne(jobs.stage, "merged")))
+      .where(and(await mine(), isNotNull(jobs.pr_url), ne(jobs.stage, "merged")))
       .orderBy(asc(jobs.key)),
   );
   const conflicts: string[] = [];
@@ -187,7 +192,7 @@ const threadAlive = async (threadId: string | null) => (await threads.state(thre
  * the database before anything is sent, so a replayed or concurrent pass never delivers twice.
  */
 export async function resumeAnswered() {
-  const waiting = parseJobs(await db.select().from(jobs).where(eq(jobs.stage, "waiting")));
+  const waiting = parseJobs(await db.select().from(jobs).where(and(await mine(), eq(jobs.stage, "waiting"))));
   const resumed: string[] = [];
   for (const job of waiting) {
     const source = sourceFor(job.source);
@@ -263,7 +268,7 @@ export async function watchdog() {
       ),
     })
     .from(jobs)
-    .where(and(inArray(jobs.stage, IN_FLIGHT), or(isNotNull(jobs.t3_thread_id), isNotNull(jobs.session_id))));
+    .where(and(await mine(), inArray(jobs.stage, IN_FLIGHT), or(isNotNull(jobs.t3_thread_id), isNotNull(jobs.session_id))));
   const actions: string[] = [];
   for (const { job, lastEventAt } of working) {
     const now = new Date();
@@ -383,7 +388,7 @@ export async function reconcileUsage() {
 
 /** Backstop for the budget hook: a working job over its attempt's cap fails even if its thread never reports it. */
 export async function enforceBudget() {
-  const working = await db.select().from(jobs).where(inArray(jobs.stage, IN_FLIGHT));
+  const working = await db.select().from(jobs).where(and(await mine(), inArray(jobs.stage, IN_FLIGHT)));
   const spend = await branchSpend(db, working.map((j) => attemptBranch(j.key, j.attempt)));
   const over: string[] = [];
   for (const job of working) {
@@ -411,6 +416,7 @@ export async function writeBack() {
       .from(jobs)
       .where(
         and(
+          await mine(),
           isNotNull(jobs.stage_event_id),
           or(isNull(jobs.synced_event_id), ne(jobs.synced_event_id, jobs.stage_event_id)),
         ),
@@ -429,30 +435,46 @@ export async function writeBack() {
   return synced;
 }
 
-export async function targetRepo() {
-  const checkout = config.factory.repos[0];
-  if (!checkout) throw new Error("factory.repos is empty, so there is no repository to claim work for");
-  return checkoutRepo(checkout);
+/** This machine's factory checkouts, keyed by the GitHub repo each one tracks. */
+export async function factoryCheckouts() {
+  const checkouts = new Map<string, string>();
+  for (const path of config.factory.repos) checkouts.set(await checkoutRepo(path), path);
+  return checkouts;
 }
 
-/** Claims ready jobs up to the in-flight cap. The row insert is the claim; the advisory lock serializes claimers. */
+const factoryRepos = async () => [...(await factoryCheckouts()).keys()];
+
+/**
+ * Claims ready jobs this machine has room for: its own working jobs plus the queued jobs no
+ * machine holds yet in its repos stay under maxInFlight, so each machine queues only what it could
+ * launch and the rest waits for one with room. The row insert is the claim; the advisory lock
+ * serializes claimers. A source names no repo yet, so a new job goes to this machine's first one.
+ */
 export async function claim({
   source = sourceFor("linear"),
-  repo = targetRepo,
-}: { source?: SourceAdapter<JobSource>; repo?: () => Promise<string> } = {}) {
+  repos = factoryRepos,
+}: { source?: SourceAdapter<JobSource>; repos?: () => Promise<string[]> } = {}) {
   const ready: JobDraft[] = await source.ready();
-  let target: string | undefined;
+  if (ready.length === 0) return { claimed: [], inFlight: 0 };
+  const targets = await repos();
+  const target = targets[0];
+  if (!target) throw new Error("factory.repos is empty, so there is no repository to claim work for");
+  const me = await mine();
   return db.transaction(async (tx) => {
     await tx.execute(sql`select pg_advisory_xact_lock(hashtext('marshal-factory linear-poll'))`);
     const [{ count }] = await tx
       .select({ count: sql<number>`count(*)::int` })
       .from(jobs)
-      .where(inArray(jobs.stage, IN_FLIGHT));
+      .where(
+        or(
+          and(me, inArray(jobs.stage, IN_FLIGHT)),
+          and(isNull(jobs.machine_id), eq(jobs.stage, "queued"), inArray(jobs.repo, targets)),
+        ),
+      );
     let inFlight = count;
     const claimed: string[] = [];
     for (const draft of ready) {
       if (inFlight >= config.factory.maxInFlight) break;
-      target ??= await repo();
       const now = new Date();
       const inserted = await tx
         .insert(jobs)
@@ -518,7 +540,11 @@ export async function claim({
 
 /** Tells each queued job's source it was picked up; the adapter skips jobs it already announced. */
 export async function announceClaims() {
-  const queued = await db.select().from(jobs).where(eq(jobs.stage, "queued")).orderBy(asc(jobs.claimed_at), asc(jobs.key));
+  const queued = await db
+    .select()
+    .from(jobs)
+    .where(and(await mine(), eq(jobs.stage, "queued")))
+    .orderBy(asc(jobs.claimed_at), asc(jobs.key));
   for (const job of parseJobs(queued)) {
     await sourceFor(job.source).announceClaim(job);
   }
@@ -561,10 +587,13 @@ export async function toLaunch() {
         or(eq(jobs.stage, "queued"), and(eq(jobs.stage, "waiting"), isNotNull(jobs.resume_context))),
         isNull(jobs.t3_thread_id),
         isNull(jobs.session_id),
+        isNull(jobs.machine_id),
       ),
-    );
+    )
+    .orderBy(asc(jobs.claimed_at), asc(jobs.key));
   return parseJobs(rows).map((job) => ({
     key: job.key,
+    repo: job.repo,
     branch: attemptBranch(job.key, job.attempt),
     threadTitle: `${job.key} ${job.title}`,
     message: launchMessage(job),
@@ -616,7 +645,7 @@ export async function bindThread(key: string, threadId: string) {
 
 /** True when GitHub has finished computing mergeability for every open factory PR. */
 export async function pullRequestsSettled() {
-  const open = await db.select().from(jobs).where(and(eq(jobs.stage, "pr"), isNotNull(jobs.pr_url)));
+  const open = await db.select().from(jobs).where(and(await mine(), eq(jobs.stage, "pr"), isNotNull(jobs.pr_url)));
   for (const job of open) {
     if ((await github.pullRequest(job.pr_url!)).mergeable === "unknown") return false;
   }
@@ -678,12 +707,30 @@ async function finishStop(job: Job, reopen: boolean) {
   return "stopped";
 }
 
-/** Marks a queued job as being launched; false when another launch already holds it. */
-export async function claimLaunch(key: string, marker: string, machineId: string) {
+export type LaunchSlot = { id: string; repos: readonly string[]; maxInFlight: number };
+
+/**
+ * Marks a queued job as being launched by this machine, as one compare-and-set: false when another
+ * launch or machine holds the job, the machine has no checkout of its repo, or the machine is full.
+ * The capacity count is read in the same statement, which holds because one machine runs one
+ * runner and its launches run one at a time.
+ */
+export async function claimLaunch(key: string, marker: string, machine: LaunchSlot) {
+  if (machine.repos.length === 0) return false;
+  const working = sql.join(IN_FLIGHT.map((stage) => sql`${stage}`), sql`, `);
   const claimed = await db
     .update(jobs)
-    .set({ t3_thread_id: marker, machine_id: machineId })
-    .where(and(eq(jobs.key, key), isNull(jobs.t3_thread_id), isNull(jobs.session_id)))
+    .set({ t3_thread_id: marker, machine_id: machine.id })
+    .where(
+      and(
+        eq(jobs.key, key),
+        isNull(jobs.t3_thread_id),
+        isNull(jobs.session_id),
+        isNull(jobs.machine_id),
+        inArray(jobs.repo, [...machine.repos]),
+        sql`(select count(*) from jobs held where held.machine_id = ${machine.id} and held.stage in (${working})) < ${machine.maxInFlight}`,
+      ),
+    )
     .returning({ key: jobs.key });
   return claimed.length > 0;
 }
@@ -701,8 +748,11 @@ export async function machineInFlight(machineId: string) {
 }
 
 export async function pendingLaunches() {
-  const rows = await db.select().from(jobs).where(sql`${jobs.t3_thread_id} like ${`${PENDING}%`}`);
-  return rows.map((i) => ({ key: i.key, marker: i.t3_thread_id!, branch: attemptBranch(i.key, i.attempt), stage: i.stage }));
+  const rows = await db
+    .select()
+    .from(jobs)
+    .where(and(await mine(), sql`${jobs.t3_thread_id} like ${`${PENDING}%`}`));
+  return rows.map((i) => ({ key: i.key, repo: i.repo, marker: i.t3_thread_id!, branch: attemptBranch(i.key, i.attempt), stage: i.stage }));
 }
 
 
@@ -711,7 +761,7 @@ export async function deliverStops(id?: JobId) {
   const due = await db
     .select()
     .from(jobs)
-    .where(id ? and(stopDeliverableSql, eq(jobs.id, id)) : stopDeliverableSql);
+    .where(and(await mine(), stopDeliverableSql, id ? eq(jobs.id, id) : undefined));
   const delivered: string[] = [];
   for (const job of due) {
     const threadId = job.t3_thread_id!;
@@ -755,7 +805,8 @@ export async function reconcileStops({
   /** Restricts the check to these jobs; the regression script uses it to stay off live ones. */
   only?: JobId[];
 } = {}) {
-  const unfinished = and(eq(jobs.source, source.source), inArray(jobs.stage, STOPPABLE));
+  // A job no machine holds yet has no thread, so any machine may record its stop.
+  const unfinished = and(eq(jobs.source, source.source), inArray(jobs.stage, STOPPABLE), or(await mine(), isNull(jobs.machine_id)));
   const open = parseJobs(await db.select().from(jobs).where(only ? and(unfinished, inArray(jobs.id, only)) : unfinished));
   if (open.length === 0) return [];
   let wanted: Awaited<ReturnType<typeof source.stopWanted>>;

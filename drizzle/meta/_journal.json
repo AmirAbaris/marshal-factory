@@ -106,6 +106,13 @@
       "when": 1792884587170,
       "tag": "0014_machines",
       "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "7",
+      "when": 1792949812771,
+      "tag": "0015_claims",
+      "breakpoints": true
     }
   ]
 }
