@@ -1,4 +1,5 @@
-import { existsSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 import { exec, type ExecOptions } from "./exec";
 import { forbidInTest } from "./test-mode";
 
@@ -12,6 +13,8 @@ export type JobHost = {
   run(command: string, args: string[], options?: ExecOptions): Promise<{ stdout: string; stderr: string }>;
   /** The file's text, or null when it does not exist. */
   readFile(path: string): Promise<string | null>;
+  /** Writes the file, creating its parent directories. */
+  writeFile(path: string, text: string): Promise<void>;
   exists(path: string): Promise<boolean>;
   list(dir: string): Promise<string[]>;
   mtimeMs(path: string): Promise<number>;
@@ -38,13 +41,28 @@ export const localHost: JobHost = {
       throw error;
     }
   },
+  async writeFile(path, text) {
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, text);
+  },
   exists: async (path) => existsSync(path),
   list: async (dir) => readdirSync(dir),
   mtimeMs: async (path) => statSync(path).mtimeMs,
   remove: async (path) => rmSync(path, { recursive: true, force: true }),
 };
 
-export type HostedJob = { key: string };
+/** Thrown by a host whose machine no longer exists, such as a terminated sandbox: its threads are gone. */
+export class HostGoneError extends Error {}
 
-/** Resolves the host per job; a job that runs elsewhere gets its own host here. Regressions swap in a fake. */
-export const hosts: { forJob: (job: HostedJob) => JobHost } = { forJob: () => localHost };
+export type HostedJob = { key: string; sandbox_id: string | null };
+
+/**
+ * Resolves the host per job: a job with a sandbox runs there, any other on this machine. The runner
+ * registers `sandbox`, so hooks that import this module never load the Modal SDK. Regressions swap in fakes.
+ */
+export const hosts: { forJob: (job: HostedJob) => JobHost; sandbox: (sandboxId: string) => JobHost } = {
+  forJob: (job) => (job.sandbox_id ? hosts.sandbox(job.sandbox_id) : localHost),
+  sandbox: (sandboxId) => {
+    throw new Error(`no sandbox host is registered for ${sandboxId}`);
+  },
+};

@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { z } from "zod";
 import { DEFAULT_MODEL, DEFAULT_PROVIDER } from "./harness";
 import { inTestMode } from "./test-mode";
@@ -10,7 +10,32 @@ export const CONFIG_PATH = process.env.MARSHAL_FACTORY_CONFIG ?? join(homedir(),
 /** The machine a regression run's runner code acts as, so the jobs a script creates can belong to it. */
 export const TEST_MACHINE_ID = "test-machine";
 
+/** The Modal image runners launch sandboxes from; scripts/sandbox-image.ts writes it. */
+export const SANDBOX_IMAGE_PATH = process.env.MARSHAL_FACTORY_SANDBOX_IMAGE ?? join(dirname(CONFIG_PATH), "sandbox-image.json");
+
 export const GITHUB_APP_PATH = process.env.MARSHAL_FACTORY_GITHUB_APP ?? join(homedir(), ".config/marshal-factory/github-app.json");
+
+const home = (path: string) => path.replace(/^~(?=\/|$)/, homedir());
+
+/** Modal sandboxes, used when the panel's settings say jobs run on Modal. */
+export const sandboxSchema = z
+  .object({
+    appName: z.string().default("marshal-factory"),
+    t3Version: z.string().default("0.1.3-nightly.20261023.3566"),
+    /** Cores and MiB a sandbox reserves, and the most it may burst to. */
+    cpu: z.number().positive().default(1),
+    cpuLimit: z.number().positive().default(2),
+    memoryMiB: z.number().int().positive().default(2048),
+    memoryLimitMiB: z.number().int().positive().default(8192),
+    timeoutMs: z.number().int().positive().default(4 * 3_600_000),
+    /** CODEX_HOME dirs on this machine, each with its own ChatGPT login; a sandbox holds one at a time. */
+    codexSlots: z.array(z.string().transform(home)).default(["~/.codex-factory-1"].map(home)),
+    maxParallel: z.number().int().positive().default(3),
+    /** The Codex model a Claude Code job falls back to when this runner has no Claude token. */
+    codexModel: z.string().default("gpt-6-astra"),
+  })
+  .prefault({});
+export type SandboxLimits = z.infer<typeof sandboxSchema>;
 
 /** Every factory limit lives here, with defaults; the config file overrides any of them. */
 export const factorySchema = z
@@ -45,6 +70,7 @@ export const factorySchema = z
     inventoryMinutes: z.number().positive().default(10),
     /** Ids of the webhooks scripts/install-webhooks.ts created. It records `linear`; GitHub deliveries come from the GitHub App. */
     webhooks: z.record(z.string(), z.union([z.string(), z.number()])).default({}),
+    sandbox: sandboxSchema,
   })
   .prefault({});
 export type FactoryLimits = z.infer<typeof factorySchema>;
