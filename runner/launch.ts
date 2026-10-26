@@ -1,18 +1,14 @@
-import { execFile } from "node:child_process";
-import { runWithInput, type ExecError } from "../lib/exec";
-import { promisify } from "node:util";
 import { z } from "zod";
-import { forbidInTest } from "../lib/test-mode";
+import type { ExecError } from "../lib/exec";
+import { hosts, localHost, type JobHost } from "../lib/host";
 import { PENDING } from "./binding";
 import { thisMachine } from "./heartbeat";
 import type { JobSource } from "../lib/sources/types";
 import type { HarnessChoice } from "../lib/settings";
 import { bindThread, claimLaunch, config, effectiveHarness, factoryCheckouts, machineInFlight, pendingLaunches, releaseLaunch, toLaunch, withLocalImages } from "./ops";
 
-const run = promisify(execFile);
-const T3 = process.env.T3CODE_CLI_PATH ?? "t3";
-const sh = async (cmd: string, args: string[], cwd?: string) =>
-  (await run(cmd, args, { cwd, timeout: 60_000 })).stdout.trim();
+const sh = async (host: JobHost, cmd: string, args: string[], cwd?: string) =>
+  (await host.run(cmd, args, { cwd, timeoutMs: 60_000 })).stdout.trim();
 
 /** Thrown when T3 may have created the thread even though the start did not report it. */
 export class MaybeStartedError extends Error {}
@@ -25,10 +21,9 @@ export function parseThreadId(stdout: string) {
   }
 }
 
-async function startThread(repo: string, branch: string, title: string, message: string, { provider, model }: HarnessChoice) {
-  forbidInTest("t3 thread start");
-  const stdout = await runWithInput(
-    T3,
+export async function startThread(host: JobHost, repo: string, branch: string, title: string, message: string, { provider, model }: HarnessChoice) {
+  const { stdout } = await host.run(
+    host.t3,
     [
       "thread", "start", repo, "-",
       "--worktree", "origin/main",
@@ -38,21 +33,20 @@ async function startThread(repo: string, branch: string, title: string, message:
       "--model", model,
       "--json",
     ],
-    message,
-    60_000,
+    { input: message, timeoutMs: 60_000, maxBuffer: 16 * 1024 * 1024 },
   );
   return parseThreadId(stdout);
 }
 
 /** T3 prepares the worktree after start returns; wait for it and confirm it sits on fresh origin/main. */
-async function worktreeHead(threadId: string) {
+async function worktreeHead(threadId: string, host: JobHost) {
   for (let i = 0; i < 30; i++) {
     const { thread } = z
       .object({ thread: z.object({ worktreePath: z.string().nullable() }) })
-      .parse(JSON.parse(await sh(T3, ["thread", "show", threadId, "--json"])));
+      .parse(JSON.parse(await sh(host, host.t3, ["thread", "show", threadId, "--json"])));
     if (thread.worktreePath) {
       try {
-        return { path: thread.worktreePath, head: await sh("git", ["rev-parse", "HEAD"], thread.worktreePath) };
+        return { path: thread.worktreePath, head: await sh(host, "git", ["rev-parse", "HEAD"], thread.worktreePath) };
       } catch {
         // The directory exists before git has finished checking it out.
       }
@@ -68,12 +62,12 @@ const PENDING_STALE_MS = 120_000;
  * A launch that died between starting the thread and recording it leaves a pending marker. Once
  * it is stale, look for the thread T3 made on that branch and record it, or clear the marker.
  */
-async function threadBranches(checkout: string) {
-  const list = z.array(z.object({ threadId: z.string() })).parse(JSON.parse(await sh(T3, ["thread", "list", "--project", checkout, "--json"])));
+async function threadBranches(checkout: string, host: JobHost) {
+  const list = z.array(z.object({ threadId: z.string() })).parse(JSON.parse(await sh(host, host.t3, ["thread", "list", "--project", checkout, "--json"])));
   return Promise.all(
     list.map(async ({ threadId }) => ({
       threadId,
-      branch: z.object({ thread: z.object({ branch: z.string().nullable() }) }).parse(JSON.parse(await sh(T3, ["thread", "show", threadId, "--json"]))).thread.branch,
+      branch: z.object({ thread: z.object({ branch: z.string().nullable() }) }).parse(JSON.parse(await sh(host, host.t3, ["thread", "show", threadId, "--json"]))).thread.branch,
     })),
   );
 }
@@ -83,11 +77,15 @@ async function recoverPending(checkouts: ReadonlyMap<string, string>) {
   const stale = (await pendingLaunches()).filter(
     (p) => checkouts.has(p.repo) && Date.now() - Number(p.marker.slice(PENDING.length)) > PENDING_STALE_MS,
   );
-  const branchesByRepo = new Map<string, Awaited<ReturnType<typeof threadBranches>>>();
+  type Branches = Awaited<ReturnType<typeof threadBranches>>;
+  const branchesByHost = new Map<JobHost, Map<string, Branches>>();
   const recovered = [];
   for (const p of stale) {
-    if (!branchesByRepo.has(p.repo)) branchesByRepo.set(p.repo, await threadBranches(checkouts.get(p.repo)!));
-    const found = branchesByRepo.get(p.repo)!.find((b) => b.branch === p.branch);
+    const host = hosts.forJob(p);
+    if (!branchesByHost.has(host)) branchesByHost.set(host, new Map());
+    const byRepo = branchesByHost.get(host)!;
+    if (!byRepo.has(p.repo)) byRepo.set(p.repo, await threadBranches(checkouts.get(p.repo)!, host));
+    const found = byRepo.get(p.repo)!.find((b) => b.branch === p.branch);
     // bindThread delivers an owed stop. Without a thread, clearing the marker leaves nothing owed.
     await (found ? bindThread(p.key, found.threadId) : releaseLaunch(p.key, p.marker));
     recovered.push({ key: p.key, threadId: found?.threadId ?? null });
@@ -162,8 +160,8 @@ export async function launchQueued(onWorktree: (check: Record<string, unknown>) 
   const origins = new Map<string, string>();
   for (const repo of new Set(pending.map((entry) => entry.repo))) {
     const checkout = checkouts.get(repo)!;
-    await sh("git", ["fetch", "origin", "--prune"], checkout);
-    origins.set(repo, await sh("git", ["rev-parse", "origin/main"], checkout));
+    await sh(localHost, "git", ["fetch", "origin", "--prune"], checkout);
+    origins.set(repo, await sh(localHost, "git", ["rev-parse", "origin/main"], checkout));
   }
   const slot = { id: machine.id, repos: [...checkouts.keys()], maxInFlight: config.factory.maxInFlight };
   const harness = await effectiveHarness();
@@ -171,7 +169,7 @@ export async function launchQueued(onWorktree: (check: Record<string, unknown>) 
     claim: (key, marker) => claimLaunch(key, marker, slot, harness),
     // After the claim, so a job another machine wins downloads nothing here.
     start: async (entry) =>
-      startThread(checkouts.get(entry.repo)!, entry.branch, entry.threadTitle, await withLocalImages(entry.source, entry.key, entry.message), harness),
+      startThread(hosts.forJob(entry), checkouts.get(entry.repo)!, entry.branch, entry.threadTitle, await withLocalImages(entry.source, entry.key, entry.message), harness),
     bind: bindThread,
     release: releaseLaunch,
     now: Date.now,
@@ -179,8 +177,9 @@ export async function launchQueued(onWorktree: (check: Record<string, unknown>) 
   // Diagnostic only and up to 30 s per thread, so it runs off the runner's queue.
   for (const result of launched) {
     if (typeof result.threadId !== "string") continue;
-    const origin = origins.get(pending.find((entry) => entry.key === result.key)!.repo)!;
-    void worktreeHead(result.threadId)
+    const entry = pending.find((e) => e.key === result.key)!;
+    const origin = origins.get(entry.repo)!;
+    void worktreeHead(result.threadId, hosts.forJob(entry))
       .then((tree) => onWorktree({ key: result.key, worktree: tree?.path, freshFromOrigin: tree ? tree.head === origin : undefined, originMain: origin.slice(0, 7) }))
       .catch((error: unknown) => onWorktree({ key: result.key, error: String(error) }));
   }

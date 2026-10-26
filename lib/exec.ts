@@ -1,24 +1,34 @@
 import { execFile } from "node:child_process";
 
-/** The error from a run whose stdin broke; the command may still have read its input. */
-export type ExecError = Error & { killed?: boolean; code?: string | number; stdinError?: Error };
+/** A failed run, shaped like promisified execFile's error; a run whose stdin broke also carries `stdinError`. */
+export type ExecError = Error & { killed?: boolean; code?: string | number; stdout?: string; stderr?: string; stdinError?: Error };
+
+export type ExecOptions = { input?: string; cwd?: string; timeoutMs?: number; maxBuffer?: number };
 
 /**
- * Runs a command with `input` on stdin and returns stdout. The outcome comes from the process
- * itself: it settles when the process exits, with its exit code and output, or when it never
- * started. A stdin error such as EPIPE does not settle anything on its own (the command may
- * have read the input before closing stdin); it is attached to a failure as `stdinError`.
- * Parse the output after awaiting it, never inside a callback where a throw would be lost.
+ * Runs a command and returns its output. The outcome comes from the process itself: it settles
+ * when the process exits, with its exit code and output, or when it never started. With `input`,
+ * a stdin error such as EPIPE does not settle anything on its own (the command may have read the
+ * input before closing stdin); it is attached to a failure as `stdinError`. Parse the output after
+ * awaiting it, never inside a callback where a throw would be lost.
  */
-export function runWithInput(command: string, args: string[], input: string, timeoutMs: number) {
-  return new Promise<string>((resolve, reject) => {
+export function exec(command: string, args: string[], { input, cwd, timeoutMs, maxBuffer }: ExecOptions = {}) {
+  return new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
     let stdinError: Error | undefined;
-    const child = execFile(command, args, { timeout: timeoutMs, maxBuffer: 16 * 1024 * 1024 }, (error, stdout) => {
-      if (!error) return resolve(stdout);
-      const failure = error as ExecError;
+    // An option set to undefined would override execFile's default rather than keep it.
+    const options = {
+      encoding: "utf8" as const,
+      ...(cwd !== undefined && { cwd }),
+      ...(timeoutMs !== undefined && { timeout: timeoutMs }),
+      ...(maxBuffer !== undefined && { maxBuffer }),
+    };
+    const child = execFile(command, args, options, (error, stdout, stderr) => {
+      if (!error) return resolve({ stdout, stderr });
+      const failure = Object.assign(error, { stdout, stderr }) as ExecError;
       if (stdinError) failure.stdinError = stdinError;
       reject(failure);
     });
+    if (input === undefined) return;
     child.stdin?.on("error", (error) => {
       stdinError = error;
     });

@@ -1,7 +1,8 @@
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { Usage } from "./events";
+import type { JobHost } from "./host";
 
 type Line = {
   requestId?: string;
@@ -48,9 +49,9 @@ export function sumUsage(transcript: string): Usage {
 }
 
 /** The meta file can be caught mid-write; then the agent is counted by id alone until the next snapshot. */
-function toolUseIdFrom(metaPath: string) {
+async function toolUseIdFrom(metaPath: string, host: JobHost) {
   try {
-    return (JSON.parse(readFileSync(metaPath, "utf8")) as { toolUseId?: string }).toolUseId;
+    return (JSON.parse((await host.readFile(metaPath)) ?? "") as { toolUseId?: string }).toolUseId;
   } catch {
     return undefined;
   }
@@ -62,17 +63,20 @@ export type SubagentTranscript = { agentId: string; toolUseId: string | undefine
  * Claude Code writes each subagent's transcript to <session dir>/<session id>/subagents/agent-<id>.jsonl
  * as it runs, next to a .meta.json naming the Agent tool_use that spawned it.
  */
-export function subagentTranscripts(transcriptPath: string, sessionId: string): SubagentTranscript[] {
+export async function subagentTranscripts(transcriptPath: string, sessionId: string, host: JobHost): Promise<SubagentTranscript[]> {
   const dir = join(dirname(transcriptPath), sessionId, "subagents");
-  if (!existsSync(dir)) return [];
-  return readdirSync(dir)
-    .filter((name) => name.startsWith("agent-") && name.endsWith(".jsonl"))
-    .map((name) => {
+  if (!(await host.exists(dir))) return [];
+  const names = (await host.list(dir)).filter((name) => name.startsWith("agent-") && name.endsWith(".jsonl"));
+  const all = await Promise.all(
+    names.map(async (name) => {
       const agentId = name.slice("agent-".length, -".jsonl".length);
-      const metaPath = join(dir, `agent-${agentId}.meta.json`);
-      return { agentId, toolUseId: toolUseIdFrom(metaPath), usage: sumUsage(readFileSync(join(dir, name), "utf8")) };
-    })
-    .filter((s) => s.usage.model !== "unknown");
+      const path = join(dir, name);
+      const text = await host.readFile(path);
+      if (text === null) throw new Error(`${path} vanished while it was read`);
+      return { agentId, toolUseId: await toolUseIdFrom(join(dir, `agent-${agentId}.meta.json`), host), usage: sumUsage(text) };
+    }),
+  );
+  return all.filter((s) => s.usage.model !== "unknown");
 }
 
 /** Where Claude Code keeps a session's transcript: the cwd with every / and . turned into -. */
