@@ -20,7 +20,7 @@ const job = {
   external_id: id,
   stage_event_id: stageEventId,
   question: "Which layout?",
-  source_state: { state: "In Progress", labels: [], factoryCommentIds: [claim.id, question.id] },
+  source_state: { state: "In Progress", labels: [], labelGroups: [], factoryCommentIds: [claim.id, question.id] },
   delivered_reply_ids: [] as string[],
 };
 const open = { name: "In Progress", type: "started" };

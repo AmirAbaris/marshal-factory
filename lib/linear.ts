@@ -13,7 +13,7 @@ const issueSchema = z.object({
   description: z.string().nullable(),
   createdAt: z.string(),
   state: z.object({ name: z.string(), type: z.string() }),
-  labels: z.object({ nodes: z.array(z.object({ name: z.string() })) }),
+  labels: z.object({ nodes: z.array(z.object({ name: z.string(), parent: z.object({ name: z.string() }).nullish() })) }),
 });
 export type LinearIssue = z.infer<typeof issueSchema>;
 
@@ -115,7 +115,7 @@ export function linearClient(apiKey: string, { fetch: fetchImpl = realFetch, sle
             labels: { some: { name: { eqIgnoreCase: $label } } },
             state: { type: { eq: "unstarted" } }
           }) {
-            nodes { id identifier title url description createdAt state { name type } labels { nodes { name } } }
+            nodes { id identifier title url description createdAt state { name type } labels { nodes { name parent { name } } } }
           }
         }`,
         { team: teamKey, label },
@@ -223,6 +223,47 @@ export function linearClient(apiKey: string, { fetch: fetchImpl = realFetch, sle
           const existing = await find();
           if (existing) return existing;
         }
+        throw error;
+      }
+    },
+
+    /** The team's labels and the workspace's, with each one's group. */
+    async teamLabels(teamId: string) {
+      const data = await gql(
+        `query($teamId: ID) {
+          issueLabels(first: 250, filter: { or: [{ team: { id: { eq: $teamId } } }, { team: { null: true } }] }) {
+            nodes { id name isGroup team { id } parent { id } }
+          }
+        }`,
+        { teamId },
+        z.object({
+          issueLabels: z.object({
+            nodes: z.array(
+              z.object({
+                id: z.string(),
+                name: z.string(),
+                isGroup: z.boolean(),
+                team: z.object({ id: z.string() }).nullable(),
+                parent: z.object({ id: z.string() }).nullable(),
+              }),
+            ),
+          }),
+        }),
+      );
+      return data.issueLabels.nodes;
+    },
+
+    /** Creates a team label under `id`; false when a label with that id exists already. */
+    async createLabel(input: { id: string; teamId: string; name: string; color: string; isGroup?: boolean; parentId?: string }) {
+      try {
+        await gql(
+          `mutation($input: IssueLabelCreateInput!) { issueLabelCreate(input: $input) { success } }`,
+          { input },
+          z.object({ issueLabelCreate: z.object({ success: z.literal(true) }) }),
+        );
+        return true;
+      } catch (error) {
+        if (error instanceof LinearError && error.code === "conflict") return false;
         throw error;
       }
     },

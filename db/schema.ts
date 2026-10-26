@@ -17,6 +17,7 @@ import type { MergeAssessment } from "../lib/assessment";
 import { DEFAULT_EXECUTION, type Execution } from "../lib/execution";
 import type { Autonomy, MergeDecision } from "../lib/merge-decision";
 import { JOB_SOURCES, type JobId } from "../lib/sources/shapes";
+import type { TicketRecord } from "../lib/ticket-overrides";
 
 // Keys equal column names: the Neon Realtime Drizzle adapter requires it.
 // Token counters are float8 because int8 and numeric reach live subscribers as strings.
@@ -150,6 +151,10 @@ export const jobs = pgTable(
     /** The T3 provider instance and model this attempt's thread was launched with; null before a launch. */
     provider: text("provider"),
     model: text("model"),
+    /** Where this attempt's thread was launched; null before a launch and for launches recorded before it was kept. */
+    execution: text("execution").$type<Execution>(),
+    /** What the ticket's override labels asked for at launch and each fallback the runner took instead; see lib/ticket-overrides.ts. */
+    ticket_overrides: jsonb("ticket_overrides").$type<TicketRecord>(),
     session_id: text("session_id"),
     /** The Modal sandbox this attempt runs in; null when it runs in the machine's own T3. */
     sandbox_id: text("sandbox_id"),
@@ -257,7 +262,7 @@ export const repoSettings = pgTable("repo_settings", {
   updated_by: text("updated_by").notNull(),
 });
 
-export const auditAction = pgEnum("audit_action", ["merge_requested", "merge_succeeded", "merge_failed", "sandbox_login_failed", "merge_decided"]);
+export const auditAction = pgEnum("audit_action", ["merge_requested", "merge_succeeded", "merge_failed", "sandbox_login_failed", "merge_decided", "override_fallback"]);
 export const auditResult = pgEnum("audit_result", ["ok", "head_moved", "not_mergeable", "refused", "error"]);
 
 /** Who asked the factory to change something outside it, and what happened. */

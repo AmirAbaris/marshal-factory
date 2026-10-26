@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { labelGroupSchema } from "../ticket-overrides";
 
 export const JOB_SOURCES = ["linear"] as const;
 export type JobSource = (typeof JOB_SOURCES)[number];
@@ -9,6 +10,8 @@ const linear = {
   sourceState: z.object({
     state: z.string().nullable(),
     labels: z.array(z.string()),
+    /** The labels that sit in a Linear label group, with the group's name; rows stored before groups were read have none. */
+    labelGroups: z.array(labelGroupSchema).default([]),
     /** Every comment the factory posted on the issue; anything else on it is a human. */
     factoryCommentIds: z.array(z.string()).default([]),
   }),

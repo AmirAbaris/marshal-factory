@@ -77,10 +77,20 @@ export interface SourceAdapter<S extends JobSource> {
   localizeImages?(job: Pick<Job<S>, "key">, text: string): Promise<string>;
   /** Files a new job in the source as a person would; the source's own intake then claims it. */
   file?(draft: FileDraft): Promise<FiledJob>;
+  /** Creates the label groups and children the source is missing; it never renames or deletes one. */
+  syncLabelGroups?(groups: readonly LabelGroupSpec[]): Promise<{ team: string; created: string[]; problems: string[] }>;
   /** Stores an image where the source keeps uploads, for a job about to be filed; returns its markdown. */
   uploadImage?(image: ImageFile): Promise<string>;
 }
 
-export type FileDraft = { requestId: string; title: string; description: string };
+export type LabelGroupSpec = { group: string; children: readonly string[] };
+
+export type FileDraft = {
+  requestId: string;
+  title: string;
+  description: string;
+  /** Override labels the job is filed with, each a child of a source label group. */
+  labels?: { group: string; name: string }[];
+};
 export type ImageFile = { filename: string; contentType: string; bytes: Uint8Array<ArrayBuffer> };
 export type FiledJob = { key: string; url: string };

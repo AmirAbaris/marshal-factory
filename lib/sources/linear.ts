@@ -14,7 +14,7 @@ import { commentId, linearClient, type LinearClient, type LinearOptions } from "
 import { forbidInTest } from "../test-mode";
 import { hmacHex, sameHex, type IntentDraft, type Verdict } from "../webhooks";
 import { jobId } from "./shapes";
-import type { Job as AnyJob, FileDraft, FiledJob, ImageFile, Reply, ResumePlan, SourceAdapter, SourceWebhook } from "./types";
+import type { Job as AnyJob, FileDraft, FiledJob, ImageFile, LabelGroupSpec, Reply, ResumePlan, SourceAdapter, SourceWebhook } from "./types";
 
 type Job = AnyJob<"linear">;
 
@@ -260,7 +260,11 @@ export function createLinearAdapter(load: () => LinearDeps | Promise<LinearDeps>
         url: n.url,
         description: n.description,
         writeback: { kind: "linear" as const, issueId: n.id },
-        sourceState: { state: n.state.name, labels: n.labels.nodes.map((l) => l.name) },
+        sourceState: {
+          state: n.state.name,
+          labels: n.labels.nodes.map((l) => l.name),
+          labelGroups: n.labels.nodes.flatMap((l) => (l.parent ? [{ name: l.name, group: l.parent.name }] : [])),
+        },
       }));
     },
 
@@ -343,8 +347,63 @@ export function createLinearAdapter(load: () => LinearDeps | Promise<LinearDeps>
       await postComment(await deps(), job, resumeCommentId(job.writeback.issueId, replyIds), "Answer received, resuming.");
     },
 
+    async syncLabelGroups(groups) {
+      const d = await deps();
+      const { created, problems } = await syncLabelGroups(d.client, (await teamOf(d)).id, groups);
+      return { team: d.limits.teamKey, created, problems };
+    },
+
     describe: (job) => `Linear issue ${job.key}`,
   };
+}
+
+const GROUP_COLOR = "#5e6ad2";
+const CHILD_COLOR = "#95a2b3";
+
+const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
+const labelKey = (group: string, child: string) => `${group.toLowerCase()}/${child.toLowerCase()}`;
+
+/**
+ * Creates the label groups and children the team is missing. It only adds team labels: nothing is
+ * renamed, moved or deleted, and a name already taken elsewhere is reported for a human to fix.
+ */
+async function syncLabelGroups(client: Pick<LinearClient, "teamLabels" | "createLabel">, teamId: string, desired: readonly LabelGroupSpec[]) {
+  const created: string[] = [];
+  const problems: string[] = [];
+  const ids = new Map<string, string>();
+  const labels = await client.teamLabels(teamId);
+  for (const { group, children } of desired) {
+    const named = labels.filter((l) => same(l.name, group));
+    let groupId = named.find((l) => l.isGroup && l.team?.id === teamId)?.id;
+    if (!groupId) {
+      if (named.length > 0) {
+        problems.push(`A label named "${group}" exists but is not a label group of this team; make it one in Linear, or remove it, and sync again.`);
+        continue;
+      }
+      groupId = commentId("label-group", teamId, group.toLowerCase());
+      await client.createLabel({ id: groupId, teamId, name: group, color: GROUP_COLOR, isGroup: true });
+      labels.push({ id: groupId, name: group, isGroup: true, team: { id: teamId }, parent: null });
+      created.push(group);
+    }
+    for (const child of children) {
+      const existing = labels.filter((l) => same(l.name, child));
+      const inGroup = existing.find((l) => l.parent?.id === groupId);
+      if (inGroup) {
+        ids.set(labelKey(group, child), inGroup.id);
+        continue;
+      }
+      if (existing.length > 0) {
+        problems.push(`A label named "${child}" exists outside the ${group} group; move it into the group in Linear.`);
+        continue;
+      }
+      const id = commentId("label", teamId, group.toLowerCase(), child.toLowerCase());
+      await client.createLabel({ id, teamId, name: child, color: CHILD_COLOR, parentId: groupId });
+      labels.push({ id, name: child, isGroup: false, team: { id: teamId }, parent: { id: groupId } });
+      ids.set(labelKey(group, child), id);
+      created.push(`${group} / ${child}`);
+    }
+  }
+  return { created, problems, ids };
 }
 
 /**
@@ -357,11 +416,21 @@ export function linearFiler(apiKey: string, teamKey: string, label: string, opti
     const team = await client.team(teamKey);
     const todo = team.states.find((s) => s.type === "unstarted" && s.name === "Todo") ?? team.states.find((s) => s.type === "unstarted");
     if (!todo) throw new Error(`Linear team ${teamKey} has no Todo state`);
+    const overrides = draft.labels ?? [];
+    const overrideIds: string[] = [];
+    if (overrides.length > 0) {
+      const groups = await syncLabelGroups(client, team.id, overrides.map((l) => ({ group: l.group, children: [l.name] })));
+      for (const l of overrides) {
+        const id = groups.ids.get(labelKey(l.group, l.name));
+        if (!id) throw new Error(`cannot apply the ${l.group} label "${l.name}": ${groups.problems.join(" ")}`);
+        overrideIds.push(id);
+      }
+    }
     const issue = await client.createIssue({
       id: commentId("panel-job", draft.requestId),
       teamId: team.id,
       stateId: todo.id,
-      labelIds: [await client.labelId(team.id, label)],
+      labelIds: [await client.labelId(team.id, label), ...overrideIds],
       title: draft.title,
       description: draft.description,
     });

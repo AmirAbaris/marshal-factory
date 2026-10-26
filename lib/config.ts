@@ -77,6 +77,8 @@ export const factorySchema = z
     inventoryMinutes: z.number().positive().default(10),
     /** Ids of the webhooks scripts/install-webhooks.ts created. It records `linear`; GitHub deliveries come from the GitHub App. */
     webhooks: z.record(z.string(), z.union([z.string(), z.number()])).default({}),
+    /** Whether the runner creates missing Harness and Runs on label groups in the team, about once a day. */
+    syncLinearLabels: z.boolean().default(false),
     sandbox: sandboxSchema,
   })
   .prefault({});
