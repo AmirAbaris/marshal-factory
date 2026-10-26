@@ -1,4 +1,4 @@
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import type * as schema from "../db/schema";
 import { jobs } from "../db/schema";
@@ -24,6 +24,8 @@ export function resumeMessage(subject: string, question: string, answer: string)
  * Marks replies delivered while the job is still waiting. Returns false when another pass
  * already delivered any of them, which is the replay guard: claim first, then send. Only a
  * failed send rolls the claim back; after a successful send the thread's own reports move on.
+ * A relaunch claims only a job that holds no sandbox, snapshot or slot, since toLaunch skips
+ * such a job and, once unlinked from its machine, nothing would tear them down.
  */
 export async function claimReplies(
   db: NodePgDatabase<typeof schema>,
@@ -49,6 +51,7 @@ export async function claimReplies(
       and(
         eq(jobs.id, id),
         eq(jobs.stage, "waiting"),
+        relaunchContext ? and(isNull(jobs.sandbox_id), isNull(jobs.sandbox_snapshot), isNull(jobs.codex_slot)) : undefined,
         sql`not (${jobs.delivered_reply_ids} ?| array[${sql.join(
           replyIds.map((r) => sql`${r}`),
           sql`, `,

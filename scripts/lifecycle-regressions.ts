@@ -7,16 +7,17 @@ import { eq, inArray, like, sql } from "drizzle-orm";
 import { fake, fakeModal, FakeSandbox, sandboxes } from "./fake-modal";
 
 const { db } = await import("../db/client");
-const { auditLog, jobs } = await import("../db/schema");
+const { auditLog, jobs, runs } = await import("../db/schema");
 const { linearJob } = await import("./fixtures");
 const { jobId } = await import("../lib/sources/shapes");
+const { SOURCES } = await import("../lib/sources");
 const { TEST_MACHINE_ID } = await import("../lib/config");
 const { ensureAwake, HostAsleepError, hosts } = await import("../lib/host");
 const { modal } = await import("../lib/modal-host");
 const { CODEX_AUTH, GITHUB_TOKEN_PATH, readSlotHealth, sandboxReadiness } = await import("../lib/sandbox");
 const { github } = await import("../lib/github/pulls");
 const { canReclaim, canReclaimSql } = await import("../runner/binding");
-const { checkPullRequests, config, deliverStops, threads, watchdog } = await import("../runner/ops");
+const { checkPullRequests, config, deliverStops, reconcileUsage, resumeAnswered, sandboxesInFlight, threads, toLaunch, watchdog } = await import("../runner/ops");
 const { hibernateIdle, reap, refreshTokens, teardownFinished, tickSandboxes, TOKEN_REFRESH_MS } = await import("../runner/lifecycle");
 const { launchInSandboxes } = await import("../runner/launch");
 const { CodexLoginError, sandboxRuntime, usableSlots } = await import("../runner/sandbox");
@@ -49,12 +50,13 @@ Object.assign(sandboxRuntime, {
 
 // Thread state per thread id, and whether Codex and Claude accept their logins.
 const running = new Set<string>();
+const archived = new Set<string>();
 let codexOk = true;
 let claudeOk = true;
 fake.answer = (_sandbox, argv) => {
   const line = argv.join(" ");
   if (line.startsWith("t3 thread show ")) {
-    return { stdout: JSON.stringify({ thread: { archived: false, worktreePath: null, activeRunId: running.has(argv[3]!) ? "run-1" : null, branch: null } }) };
+    return { stdout: JSON.stringify({ thread: { archived: archived.has(argv[3]!), worktreePath: null, activeRunId: running.has(argv[3]!) ? "run-1" : null, branch: null } }) };
   }
   if (line === "codex login status") return { code: codexOk ? 0 : 1, stdout: codexOk ? "Logged in using ChatGPT" : "Not logged in" };
   if (line === "claude auth status") return { code: claudeOk ? 0 : 1 };
@@ -64,6 +66,7 @@ fake.answer = (_sandbox, argv) => {
 
 const key = (name: string) => `LC${name}-${stamp}`;
 const ids: string[] = [];
+const runKeys: string[] = [];
 const row = async (k: string) => (await db.select().from(jobs).where(eq(jobs.key, k)))[0]!;
 const hourAgo = new Date(Date.now() - 3_600_000);
 
@@ -258,6 +261,73 @@ try {
   assert.deepEqual([dead.codex_slot, dead.sandbox_id], [null, deadBox.sandboxId], "its sandbox id stays, so its thread reads as gone");
   assert.equal(await threads.state("thread-DEAD", hosts.forJob(dead)), "gone");
 
+  // An answer to a hibernated job whose thread is gone once woken: the woken sandbox and its slot go, so it relaunches.
+  const slotD = mkdtempSync(join(dir, "slot-d-"));
+  writeFileSync(join(slotD, "auth.json"), `{"slot":"${slotD}","v":1}`, { mode: 0o600 });
+  sandboxRuntime.slots = () => [slotD];
+  const answered = new Set<string>();
+  SOURCES.linear.replies = async (job) =>
+    answered.has(job.key) ? { kind: "resume", question: "Which?", replies: [{ id: `reply-${job.key}`, body: "This one", createdAt: new Date().toISOString() }], answer: "This one" } : { kind: "wait" };
+  fake.images.set("im-snap-r2", new Map());
+  const R2 = await insert("R2", { stage: "waiting", question: "Which?", t3_thread_id: "thread-R2", session_id: "session-R2", sandbox_snapshot: "im-snap-r2" });
+  archived.add("thread-R2");
+  answered.add(R2);
+  await assert.rejects(resumeAnswered(), /deployed ingest function/, "the queued event cannot post in a regression");
+  const r2 = await row(R2);
+  const sbR2 = [...sandboxes.values()].find((s) => s.spec?.imageId === "im-snap-r2")!;
+  assert.ok(sbR2.terminated, "the woken sandbox ends");
+  assert.deepEqual(
+    [r2.sandbox_id, r2.sandbox_snapshot, r2.codex_slot, r2.t3_thread_id, r2.machine_id, r2.resume_context?.includes("This one")],
+    [null, null, null, null, null, true],
+    "it holds nothing and is unlinked with the Q&A kept",
+  );
+  assert.ok((await toLaunch()).some((e) => e.key === R2), "so it relaunches");
+  answered.delete(R2);
+
+  // An answer to a job whose sandbox timed out: its slot goes too, so it relaunches.
+  const deadR1 = await sandboxFor(key("R1"));
+  await deadR1.terminate();
+  const R1 = await insert("R1", { stage: "waiting", question: "Which?", t3_thread_id: "thread-R1", session_id: "session-R1", sandbox_id: deadR1.sandboxId, codex_slot: slotD });
+  answered.add(R1);
+  await assert.rejects(resumeAnswered(), /deployed ingest function/);
+  const r1 = await row(R1);
+  assert.deepEqual([r1.sandbox_id, r1.codex_slot, r1.t3_thread_id, r1.machine_id], [null, null, null, null], JSON.stringify(r1));
+  assert.ok((await toLaunch()).some((e) => e.key === R1), "so it relaunches");
+  answered.clear();
+
+  // Usage reconcile skips a run whose sandbox is gone and goes on with the rest.
+  const sbUsage = await sandboxFor(key("UL"));
+  const readPaths: string[] = [];
+  const readText = sbUsage.filesystem.readText;
+  sbUsage.filesystem = { ...sbUsage.filesystem, readText: async (path) => (readPaths.push(path), readText(path)) };
+  sbUsage.files.set("/root/.claude/projects/x/session-UL.jsonl", "");
+  const UG = await insert("UG", { stage: "implementing", sandbox_id: "sb-reconcile-gone" });
+  const UL = await insert("UL", { stage: "implementing", sandbox_id: sbUsage.sandboxId });
+  const runRow = (k: string, path: string) => ({ session_id: `session-${k}`, job_key: k, transcript_path: path, started_at: new Date(), last_event_at: new Date() });
+  await db.insert(runs).values([runRow(UG, "/root/.claude/projects/x/session-UG.jsonl"), runRow(UL, "/root/.claude/projects/x/session-UL.jsonl")]);
+  runKeys.push(UG, UL);
+  assert.deepEqual(await reconcileUsage({ only: [UG, UL] }), [], "a gone sandbox does not abort the pass");
+  assert.deepEqual(readPaths, ["/root/.claude/projects/x/session-UL.jsonl"], "the live run's transcript is still read");
+
+  // A launch whose setup fails cleanly gives its room back, so the next job in the batch still launches.
+  const [P1, P2] = [await insert("P1", { stage: "queued", machine_id: null }), await insert("P2", { stage: "queued", machine_id: null })];
+  const maxParallel = limits.maxParallel;
+  const githubToken = sandboxRuntime.githubToken;
+  let tokenCalls = 0;
+  sandboxRuntime.githubToken = async (repo) => {
+    if (++tokenCalls === 1) throw new Error("GitHub is down");
+    return githubToken(repo);
+  };
+  limits.maxParallel = (await sandboxesInFlight(TEST_MACHINE_ID)) + 1;
+  try {
+    const batch = await launchInSandboxes([entry(P1), entry(P2)], machine, { provider: "codex", model: "gpt-6-astra" });
+    assert.deepEqual(batch.map((r) => [r.key, r.retry ?? r.threadId]), [[P1, "next pass"], [P2, "thread-launched"]], JSON.stringify(batch));
+    assert.deepEqual([(await row(P1)).machine_id, (await row(P1)).codex_slot], [null, null], "the failed launch holds nothing");
+  } finally {
+    limits.maxParallel = maxParallel;
+    sandboxRuntime.githubToken = githubToken;
+  }
+
   // The timer's pass runs every step.
   const ticked = await tickSandboxes();
   assert.ok(!JSON.stringify(ticked).includes('"error'), JSON.stringify(ticked));
@@ -268,6 +338,7 @@ try {
   process.exitCode = 1;
 } finally {
   await db.delete(auditLog).where(like(auditLog.job_id, "linear:lifecycle-regress-%"));
+  if (runKeys.length > 0) await db.delete(runs).where(inArray(runs.job_key, runKeys));
   await db.delete(jobs).where(inArray(jobs.id, ids.map((id) => jobId("linear", id))));
   process.exit(process.exitCode ?? 0);
 }

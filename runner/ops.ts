@@ -1,6 +1,6 @@
 import { and, asc, eq, gt, inArray, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
 import { db } from "../db/client";
-import { agents, jobs, runs } from "../db/schema";
+import { agents, jobs, runs, type RunRow } from "../db/schema";
 import { STAGES, type Stage, type Usage } from "../lib/events";
 import { jobId, parseJob, parseJobs, sourceFor } from "../lib/sources";
 import { parseJobId, SOURCE_SHAPES } from "../lib/sources/shapes";
@@ -18,7 +18,7 @@ import { isTracked } from "../lib/harness";
 import { readHarnesses } from "../lib/t3-state";
 import { readSettings, resolveExecution, resolveHarness, type HarnessChoice } from "../lib/settings";
 import { forbidInTest } from "../lib/test-mode";
-import { ensureAwake, hosts, isHibernated, type JobHost } from "../lib/host";
+import { ensureAwake, HostGoneError, hosts, isHibernated, type JobHost } from "../lib/host";
 import { modalHost } from "../lib/modal-host";
 import { canReclaimSql, isStopped, PENDING, stopDeliverableSql } from "./binding";
 import { config } from "./config";
@@ -189,8 +189,12 @@ export async function resumeAnswered() {
     const replyIds = plan.replies.map((r) => r.id);
     const host = await ensureAwake(job);
     const alive = await threadAlive(job.t3_thread_id, host);
-    // A fresh thread launches in a fresh sandbox, so the dead one's sandbox, snapshot and slot go first.
-    if (!alive) await teardownSandbox(job);
+    // A fresh thread launches in a fresh sandbox, so the dead one's sandbox, snapshot and slot go
+    // first, as they are now: a wake replaced the snapshot with a sandbox and a slot.
+    if (!alive) {
+      const [current] = await db.select().from(jobs).where(eq(jobs.id, job.id));
+      if (current) await teardownSandbox(current);
+    }
     // A dead thread is unlinked in the same update that claims the replies, so the relaunch
     // cannot be lost to a later failure in this pass.
     const relaunch = alive ? undefined : qaBlock(plan.question, plan.answer);
@@ -326,50 +330,66 @@ export async function watchdog() {
 /**
  * Rebuilds usage from transcripts for factory runs whose numbers fell behind, such as a run
  * interrupted before its Stop hook. It goes through the same greatest() projection as every
- * usage event, keyed on the totals, so replays and live updates cannot double count.
+ * usage event, keyed on the totals, so replays and live updates cannot double count. A run whose
+ * sandbox is gone has no transcripts left to read; it is skipped and the rest go on.
  */
-export async function reconcileUsage() {
+export async function reconcileUsage({ only }: { only?: string[] } = {}) {
   const recent = await db
     .select({ run: runs, sandbox_id: jobs.sandbox_id, sandbox_snapshot: jobs.sandbox_snapshot })
     .from(runs)
     .leftJoin(jobs, eq(jobs.key, runs.job_key))
-    .where(and(isNotNull(runs.job_key), gt(runs.last_event_at, new Date(Date.now() - 7 * 86_400_000))));
+    .where(
+      and(
+        isNotNull(runs.job_key),
+        gt(runs.last_event_at, new Date(Date.now() - 7 * 86_400_000)),
+        only ? inArray(runs.job_key, only) : undefined,
+      ),
+    );
   const fixed: string[] = [];
   for (const { run, sandbox_id, sandbox_snapshot } of recent) {
     // A hibernated job's transcripts are in its snapshot; its thread is settled, so nothing is behind.
     if (isHibernated({ key: run.job_key!, sandbox_id, sandbox_snapshot })) continue;
-    const host = hosts.forJob({ key: run.job_key!, sandbox_id });
-    const path = transcriptPathFor(run);
-    const transcript = path ? await host.readFile(path) : null;
-    if (!path || transcript === null) continue;
-    const usage = sumUsage(transcript);
-    if (usage.model === "unknown") continue;
-    const subagents = await subagentTranscripts(path, run.session_id, host);
-    const rows = await db.select().from(agents).where(eq(agents.session_id, run.session_id));
-    const lags = (u: Usage, row: { input_tokens: number; output_tokens: number; cache_read_tokens: number; cache_write_tokens: number } | undefined) =>
-      !row ||
-      u.input > row.input_tokens ||
-      u.output > row.output_tokens ||
-      u.cacheRead > row.cache_read_tokens ||
-      u.cacheWrite > row.cache_write_tokens;
-    const behind = lags(usage, run) || subagents.some((s) => lags(s.usage, rows.find((r) => r.agent_id === s.agentId)));
-    if (!behind) continue;
-    const fingerprint = [usage, ...subagents.map((s) => s.usage)]
-      .map((u) => `${u.input}.${u.output}.${u.cacheRead}.${u.cacheWrite}`)
-      .join(":");
-    await postEvent({
-      eventId: `reconcile:${run.session_id}:${fingerprint}`,
-      sessionId: run.session_id,
-      // The transcript's own last write, so the watchdog never mistakes a reconcile for activity.
-      at: Math.min(Math.floor(await host.mtimeMs(path)), run.last_event_at.getTime()),
-      kind: "usage",
-      usage,
-      agents: subagents,
-      transcriptPath: path,
-    });
-    fixed.push(run.job_key!);
+    try {
+      if (await reconcileRun(run, hosts.forJob({ key: run.job_key!, sandbox_id }))) fixed.push(run.job_key!);
+    } catch (error) {
+      if (!(error instanceof HostGoneError)) throw error;
+      console.log(JSON.stringify({ at: new Date().toISOString(), event: "reconcile:skipped", key: run.job_key, session: run.session_id, reason: error.message }));
+    }
   }
   return fixed;
+}
+
+/** Posts the run's usage when its transcripts are ahead of the board; true when it did. */
+async function reconcileRun(run: RunRow, host: JobHost) {
+  const path = transcriptPathFor(run);
+  const transcript = path ? await host.readFile(path) : null;
+  if (!path || transcript === null) return false;
+  const usage = sumUsage(transcript);
+  if (usage.model === "unknown") return false;
+  const subagents = await subagentTranscripts(path, run.session_id, host);
+  const rows = await db.select().from(agents).where(eq(agents.session_id, run.session_id));
+  const lags = (u: Usage, row: { input_tokens: number; output_tokens: number; cache_read_tokens: number; cache_write_tokens: number } | undefined) =>
+    !row ||
+    u.input > row.input_tokens ||
+    u.output > row.output_tokens ||
+    u.cacheRead > row.cache_read_tokens ||
+    u.cacheWrite > row.cache_write_tokens;
+  const behind = lags(usage, run) || subagents.some((s) => lags(s.usage, rows.find((r) => r.agent_id === s.agentId)));
+  if (!behind) return false;
+  const fingerprint = [usage, ...subagents.map((s) => s.usage)]
+    .map((u) => `${u.input}.${u.output}.${u.cacheRead}.${u.cacheWrite}`)
+    .join(":");
+  await postEvent({
+    eventId: `reconcile:${run.session_id}:${fingerprint}`,
+    sessionId: run.session_id,
+    // The transcript's own last write, so the watchdog never mistakes a reconcile for activity.
+    at: Math.min(Math.floor(await host.mtimeMs(path)), run.last_event_at.getTime()),
+    kind: "usage",
+    usage,
+    agents: subagents,
+    transcriptPath: path,
+  });
+  return true;
 }
 
 /** Backstop for the budget hook: a working job over its attempt's cap fails even if its thread never reports it. */
