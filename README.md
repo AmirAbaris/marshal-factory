@@ -2,7 +2,7 @@
 
 A software factory that turns Linear issues into pull requests while you watch.
 
-You label an issue in Linear, or file one from the panel. A runner on your Mac picks it up within seconds and starts a [T3 Code](https://github.com/pingdotgg/t3code) thread for it on its own branch, `factory/<issue>`. That thread runs Claude Code with PStack and works the issue on its own: triage, investigation, implementation, verification, and a pull request. Every stage, subagent, model and dollar spent streams live to a web panel. When the agent needs a decision, it asks on the Linear issue and continues once you reply. It never merges. You review the PR and merge it from the panel or from GitHub.
+You label an issue in Linear, or file one from the panel. A runner on your Mac picks it up within seconds and starts a [T3 Code](https://github.com/pingdotgg/t3code) thread for it on its own branch, `factory/<issue>`. That thread runs Claude Code with PStack and works the issue on its own: triage, investigation, implementation, verification, and a pull request. Every stage, subagent, model and dollar spent streams live to a web panel. When the agent needs a decision, it asks on the Linear issue and continues once you reply. The agent never merges. You review the PR and merge it from the panel or from GitHub, or let the factory merge PRs that clear its checks in repos you switch to auto-merge, where it reverts a merge that turns main red ([Merge decisions](docs/operations.md#merge-decisions)).
 
 ![The whole factory: sources, Neon, your Mac, Vercel and GitHub, with the numbered path one ticket takes](docs/images/factory-diagram.jpg)
 
