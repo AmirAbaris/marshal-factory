@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { assessmentSchema } from "./assessment";
 
 export const usageSchema = z.object({
   input: z.number().nonnegative(),
@@ -38,10 +39,12 @@ export const stageReportShape = {
     .max(2000)
     .optional()
     .describe("Required for stage waiting: the concrete question the human must answer."),
+  assessment: assessmentSchema.optional().describe("Stage pr only: your merge assessment, as the factory playbook describes."),
 };
 export const stageReportSchema = z
   .object(stageReportShape)
   .refine((r) => r.stage !== "pr" || r.prUrl, { message: "stage pr needs prUrl", path: ["prUrl"] })
+  .refine((r) => r.stage === "pr" || !r.assessment, { message: "only stage pr takes an assessment", path: ["assessment"] })
   .refine((r) => r.stage !== "waiting" || r.question, {
     message: "stage waiting needs question",
     path: ["question"],

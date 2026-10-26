@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { BugbotFinding, ChangedFile, CheckState } from "../merge-decision";
 import { GITHUB_API, GitHubError, githubRequest, installationTokens, type RepoName, type TokenSource } from "./app";
 
 export type PullState = "open" | "closed" | "merged";
@@ -33,6 +34,82 @@ const mergeableOf = (mergeable: boolean | null): Mergeable =>
   mergeable === null ? "unknown" : mergeable ? "mergeable" : "conflicting";
 
 const messageOf = (json: unknown) => z.object({ message: z.string() }).safeParse(json).data?.message ?? "";
+
+export type PullDetail = { state: PullState; mergeable: Mergeable; headSha: string; baseRef: string };
+
+const fileSchema = z.object({
+  filename: z.string(),
+  previous_filename: z.string().optional(),
+  additions: z.number(),
+  deletions: z.number(),
+  patch: z.string().optional(),
+});
+
+const checkRunSchema = z.object({
+  name: z.string(),
+  status: z.string(),
+  conclusion: z.string().nullable(),
+  app: z.object({ slug: z.string() }).nullable().optional(),
+});
+type CheckRun = z.infer<typeof checkRunSchema>;
+const combinedStatusSchema = z.object({ state: z.string(), total_count: z.number() });
+
+const PASSING = new Set(["success", "neutral", "skipped"]);
+const isBugbot = (run: CheckRun) => /bugbot/i.test(run.name);
+
+/**
+ * Every check run and commit status on a commit, Bugbot's run aside. A commit nothing reported on
+ * yet is pending: CI may not have started.
+ */
+export function checkStateOf(runs: readonly CheckRun[], status: z.infer<typeof combinedStatusSchema>): { checks: CheckState; bugbotFinished: boolean } {
+  const others = runs.filter((run) => !isBugbot(run));
+  const states: CheckState[] = others.map((run) =>
+    run.status !== "completed" ? "pending" : PASSING.has(run.conclusion ?? "") ? "success" : "failure",
+  );
+  if (status.total_count > 0) states.push(status.state === "success" ? "success" : status.state === "pending" ? "pending" : "failure");
+  const checks: CheckState = states.includes("failure") ? "failure" : states.length === 0 || states.includes("pending") ? "pending" : "success";
+  return { checks, bugbotFinished: runs.some((run) => isBugbot(run) && run.status === "completed") };
+}
+
+const SEVERITY = /\*\*(High|Medium|Low) Severity\*\*/;
+const BUGBOT_LOGIN = /^cursor(\[bot\])?$/;
+
+const threadsSchema = z.object({
+  data: z.object({
+    repository: z.object({
+      pullRequest: z.object({
+        reviewThreads: z.object({
+          nodes: z.array(
+            z.object({
+              isResolved: z.boolean(),
+              comments: z.object({ nodes: z.array(z.object({ author: z.object({ login: z.string() }).nullable(), body: z.string() })) }),
+            }),
+          ),
+        }),
+      }),
+    }),
+  }),
+});
+
+/** Bugbot's findings: its review threads, each with the severity its first comment states. */
+export function bugbotFindingsOf(json: unknown): BugbotFinding[] {
+  const { nodes } = threadsSchema.parse(json).data.repository.pullRequest.reviewThreads;
+  return nodes.flatMap((thread) => {
+    const first = thread.comments.nodes[0];
+    const severity = first && BUGBOT_LOGIN.test(first.author?.login ?? "") ? SEVERITY.exec(first.body)?.[1] : undefined;
+    return severity ? [{ severity: severity.toLowerCase() as BugbotFinding["severity"], resolved: thread.isResolved }] : [];
+  });
+}
+
+const THREADS_QUERY = `query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      reviewThreads(first: 100) { nodes { isResolved comments(first: 1) { nodes { author { login } body } } } }
+    }
+  }
+}`;
+
+const FILE_PAGES = 30;
 
 export function pullsClient({ api, tokens }: { api: string; tokens: TokenSource }) {
   // A cached token GitHub stops accepting (revoked, or the installation changed) is dropped and
@@ -82,6 +159,50 @@ export function pullsClient({ api, tokens }: { api: string; tokens: TokenSource 
       if (open) return { url: open.url, state: "open" };
       const merged = pulls.filter((p) => p.state === "merged").sort((a, b) => b.mergedAt.localeCompare(a.mergedAt))[0];
       return merged ? { url: merged.url, state: "merged" } : null;
+    },
+
+    async pullDetail(url: string): Promise<PullDetail> {
+      const { repo, number } = parsePullUrl(url);
+      const { json } = await request(repo, "GET", `/repos/${repo}/pulls/${number}`);
+      const pull = pullSchema.extend({ mergeable: z.boolean().nullable(), base: z.object({ ref: z.string() }) }).parse(json);
+      return { state: stateOf(pull), mergeable: mergeableOf(pull.mergeable), headSha: pull.head.sha, baseRef: pull.base.ref };
+    },
+
+    /** How many commits the base branch has that the head lacks. */
+    async behindBy(repo: RepoName, base: string, head: string): Promise<number> {
+      const { json } = await request(repo, "GET", `/repos/${repo}/compare/${encodeURIComponent(base)}...${head}`);
+      return z.object({ behind_by: z.number() }).parse(json).behind_by;
+    },
+
+    async pullFiles(url: string): Promise<ChangedFile[]> {
+      const { repo, number } = parsePullUrl(url);
+      const files: ChangedFile[] = [];
+      for (let page = 1; page <= FILE_PAGES; page++) {
+        const { json } = await request(repo, "GET", `/repos/${repo}/pulls/${number}/files?per_page=100&page=${page}`);
+        const batch = z.array(fileSchema).parse(json);
+        files.push(
+          ...batch.map((f) => ({ path: f.filename, previousPath: f.previous_filename, additions: f.additions, deletions: f.deletions, patch: f.patch })),
+        );
+        if (batch.length < 100) break;
+      }
+      return files;
+    },
+
+    async checkState(repo: RepoName, sha: string) {
+      const [runs, status] = await Promise.all([
+        request(repo, "GET", `/repos/${repo}/commits/${sha}/check-runs?per_page=100`),
+        request(repo, "GET", `/repos/${repo}/commits/${sha}/status`),
+      ]);
+      return checkStateOf(z.object({ check_runs: z.array(checkRunSchema) }).parse(runs.json).check_runs, combinedStatusSchema.parse(status.json));
+    },
+
+    async bugbotFindings(url: string): Promise<BugbotFinding[]> {
+      const { repo, number } = parsePullUrl(url);
+      const [owner, name] = repo.split("/");
+      const { json } = await request(repo, "POST", "/graphql", { body: { query: THREADS_QUERY, variables: { owner, name, number } } });
+      const errors = z.object({ errors: z.array(z.object({ message: z.string() })) }).safeParse(json);
+      if (errors.success) throw new Error(`GitHub GraphQL: ${errors.data.errors.map((e) => e.message).join("; ")}`);
+      return bugbotFindingsOf(json);
     },
 
     async mergePull(url: string, headSha: string): Promise<MergeResult> {

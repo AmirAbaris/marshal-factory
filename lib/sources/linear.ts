@@ -181,7 +181,14 @@ const FAILED_LABEL = "factory-failed";
 const writeBackTable = (factoryLabel: string): Partial<Record<Stage, WriteBack>> => ({
   pr: {
     state: "In Review",
-    comment: (i) => `marshal-factory has a pull request ready for review: ${i.pr_url}\n\n${i.stage_summary ?? ""}`.trim(),
+    comment: (i) =>
+      [
+        `marshal-factory has a pull request ready for review: ${i.pr_url}`,
+        i.stage_summary ?? "",
+        i.merge_assessment?.assumptions.length ? `**Assumptions I made**\n\n${i.merge_assessment.assumptions.map((a) => `- ${a}`).join("\n")}` : "",
+      ]
+        .filter(Boolean)
+        .join("\n\n"),
   },
   waiting: {
     comment: (i) =>
@@ -316,6 +323,11 @@ export function createLinearAdapter(load: () => LinearDeps | Promise<LinearDeps>
       const stillLabeled = (await client.labelsOf(externalId)).some((l) => l.name.toLowerCase() === limits.label.toLowerCase());
       if (stillLabeled && !["canceled", "completed"].includes(state.type)) return { stop: false };
       return { stop: true, reopen: state.type === "started" };
+    },
+
+    async labels(job) {
+      const { client } = await deps();
+      return (await client.labelsOf(job.writeback.issueId)).map((l) => l.name);
     },
 
     async reopen(job) {

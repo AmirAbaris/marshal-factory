@@ -347,6 +347,8 @@ async function moveJob(tx: Tx, event: Extract<FactoryEvent, { kind: "stage" }>):
       stage_summary: event.summary,
       question: event.question ?? null,
       pr_url: sql`coalesce(${event.prUrl ?? null}, ${jobs.pr_url})`,
+      // Each pr report replaces the assessment, so the latest report on this attempt wins.
+      ...(event.stage === "pr" && { merge_assessment: event.assessment ?? null }),
       stage_event_id: event.eventId,
       updated_at: at,
     })

@@ -8,6 +8,7 @@ const ACTION: Record<AuditRow["action"], { label: string; tone: string }> = {
   merge_succeeded: { label: "Merged", tone: "text-success" },
   merge_failed: { label: "Merge failed", tone: "text-destructive" },
   sandbox_login_failed: { label: "Sandbox login failed", tone: "text-destructive" },
+  merge_decided: { label: "Merge decision", tone: "text-foreground" },
 };
 
 const RESULT: Record<NonNullable<AuditRow["result"]>, string> = {

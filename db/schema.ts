@@ -13,7 +13,9 @@ import {
   uniqueIndex,
 } from "drizzle-orm/pg-core";
 import { STAGES } from "../lib/events";
+import type { MergeAssessment } from "../lib/assessment";
 import { DEFAULT_EXECUTION, type Execution } from "../lib/execution";
+import type { Autonomy, MergeDecision } from "../lib/merge-decision";
 import { JOB_SOURCES, type JobId } from "../lib/sources/shapes";
 
 // Keys equal column names: the Neon Realtime Drizzle adapter requires it.
@@ -155,6 +157,10 @@ export const jobs = pgTable(
     sandbox_snapshot: text("sandbox_snapshot"),
     /** The runner-side CODEX_HOME whose ChatGPT login the sandbox holds; one job per slot. */
     codex_slot: text("codex_slot"),
+    /** The agent's assessment from its latest pr report on this attempt; see lib/assessment.ts. */
+    merge_assessment: jsonb("merge_assessment").$type<MergeAssessment>(),
+    /** The runner's latest merge decision while the job sits in pr; see lib/merge-decision.ts. */
+    merge_decision: jsonb("merge_decision").$type<MergeDecision>(),
     claimed_at: ts("claimed_at").notNull(),
     updated_at: ts("updated_at").notNull(),
   },
@@ -238,7 +244,20 @@ export const settings = pgTable("settings", {
   updated_by: text("updated_by").notNull(),
 });
 
-export const auditAction = pgEnum("audit_action", ["merge_requested", "merge_succeeded", "merge_failed", "sandbox_login_failed"]);
+/** Per-repo merge policy the panel edits; a repo with no row is off with the default limits. */
+export const repoSettings = pgTable("repo_settings", {
+  /** The GitHub full name, owner/name. */
+  repo: text("repo").primaryKey(),
+  autonomy: text("autonomy").$type<Autonomy>().notNull().default("off"),
+  /** Globs a PR may not touch to merge on its own; null means the defaults. */
+  protected_paths: jsonb("protected_paths").$type<string[]>(),
+  /** Most additions plus deletions a PR may have to merge on its own; null means the default. */
+  max_changed_lines: integer("max_changed_lines"),
+  updated_at: ts("updated_at").notNull(),
+  updated_by: text("updated_by").notNull(),
+});
+
+export const auditAction = pgEnum("audit_action", ["merge_requested", "merge_succeeded", "merge_failed", "sandbox_login_failed", "merge_decided"]);
 export const auditResult = pgEnum("audit_result", ["ok", "head_moved", "not_mergeable", "refused", "error"]);
 
 /** Who asked the factory to change something outside it, and what happened. */
@@ -270,4 +289,5 @@ export type IntentRow = typeof intents.$inferSelect;
 export type IntentKind = IntentRow["kind"];
 export type MachineRow = typeof machines.$inferSelect;
 export type SettingsRow = typeof settings.$inferSelect;
+export type RepoSettingsRow = typeof repoSettings.$inferSelect;
 export type AuditRow = typeof auditLog.$inferSelect;

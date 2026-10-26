@@ -4,9 +4,11 @@ import { Spinner } from "@/components/ui/spinner";
 import type { AgentRow, RunRow } from "@/db/schema";
 import type { SandboxState } from "@/lib/execution";
 import { harnessLabel } from "@/lib/harness";
+import type { MergeDecision } from "@/lib/merge-decision";
 import { cn } from "@/lib/utils";
 import type { BoardCard } from "./cards";
 import { formatUsd, runCost, runTitle, shortId } from "./format";
+import { decisionLine } from "./merge-decision";
 import { ModelChip } from "./model-chip";
 import { Time } from "./time";
 
@@ -67,6 +69,11 @@ export function SandboxBadge({ state }: { state: SandboxState }) {
   );
 }
 
+function MergeLine({ decision }: { decision: MergeDecision | null }) {
+  const line = decisionLine(decision);
+  return <p className={cn("line-clamp-2 text-xs", line.tone)}>{line.text}</p>;
+}
+
 const prLabel = (url: string) => {
   const number = url.match(/\/pull\/(\d+)/)?.[1];
   return number ? `PR #${number}` : "PR";
@@ -111,6 +118,7 @@ export function StageCard({
         </span>
       </div>
       <div className="line-clamp-2 font-medium leading-snug">{card.title}</div>
+      {card.stage === "pr" && card.sourceLink && <MergeLine decision={card.mergeDecision} />}
       {card.nudgedAt && (
         <p className="text-xs text-warning">
           Stuck · nudged <Time date={card.nudgedAt} />

@@ -13,6 +13,7 @@ import type { MachineRow, SettingsRow } from "@/db/schema";
 import { DEFAULT_EXECUTION, EXECUTIONS, type Execution } from "@/lib/execution";
 import { DEFAULT_MODEL, DEFAULT_PROVIDER, harnessLabel, isTracked, type Harness } from "@/lib/harness";
 import { imageOutdated, reportedHarnesses, reportedSandbox, type SandboxReadiness } from "@/lib/machine";
+import { MergingSettings, type RepoMerging } from "./merging-settings";
 import { useFeed, type Feed } from "./sealed";
 import { PanelHeader } from "./panel-header";
 import { useAfterHydration, useNow } from "./time";
@@ -196,7 +197,7 @@ function Current({ saved, harnesses }: { saved: SettingsRow | null; harnesses: r
   );
 }
 
-export function SettingsForm({ machines, saved }: { machines: Feed<MachineRow>; saved: SettingsRow | null }) {
+export function SettingsForm({ machines, saved, merging }: { machines: Feed<MachineRow>; saved: SettingsRow | null; merging: readonly RepoMerging[] }) {
   const router = useRouter();
   const { rows, status } = useFeed(machines, "/api/live/machines");
   const now = useNow(CLOCK_TICK_MS);
@@ -239,7 +240,7 @@ export function SettingsForm({ machines, saved }: { machines: Feed<MachineRow>; 
   return (
     <>
       <PanelHeader title="Settings" status={status} />
-      <div className="min-h-0 flex-1 overflow-y-auto p-5">
+      <div className="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto p-5">
         <Card className="max-w-2xl">
           <CardHeader>
             <CardTitle>Harness and model</CardTitle>
@@ -338,6 +339,7 @@ export function SettingsForm({ machines, saved }: { machines: Feed<MachineRow>; 
             </CardFooter>
           )}
         </Card>
+        <MergingSettings repos={merging} />
       </div>
     </>
   );
