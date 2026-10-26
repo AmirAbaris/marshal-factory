@@ -345,9 +345,19 @@ export async function openT3(jobId: JobId): Promise<PairingResult> {
   if (isHibernated(job)) return { refused: HIBERNATED_MESSAGE };
   if (!job.sandbox_id) return { refused: "This job does not run in a Modal sandbox." };
   try {
-    const url = await tunnelUrl(job.sandbox_id, T3_PORT);
-    if (!url) return { refused: "This sandbox started before T3 was reachable from outside it. It will be once it hibernates and wakes again." };
-    return await pairT3(modalHost(job.sandbox_id), url);
+    const tunnel = await tunnelUrl(job.sandbox_id, T3_PORT);
+    switch (tunnel.kind) {
+      case "url":
+        return await pairT3(modalHost(job.sandbox_id), tunnel.url);
+      case "no port":
+        return { refused: "This sandbox started before T3 was reachable from outside it. It will be once it hibernates and wakes again." };
+      case "not ready":
+        return { refused: "The sandbox's T3 isn't reachable yet; try again in a moment." };
+      default: {
+        const never: never = tunnel;
+        throw new Error(`unknown tunnel ${JSON.stringify(never)}`);
+      }
+    }
   } catch (error) {
     if (error instanceof HostGoneError) return { refused: SANDBOX_GONE };
     throw error;

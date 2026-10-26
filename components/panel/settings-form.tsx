@@ -12,7 +12,7 @@ import { Spinner } from "@/components/ui/spinner";
 import type { MachineRow, SettingsRow } from "@/db/schema";
 import { DEFAULT_EXECUTION, EXECUTIONS, type Execution } from "@/lib/execution";
 import { DEFAULT_MODEL, DEFAULT_PROVIDER, harnessLabel, isTracked, type Harness } from "@/lib/harness";
-import { reportedHarnesses, reportedSandbox, type SandboxReadiness } from "@/lib/machine";
+import { imageOutdated, reportedHarnesses, reportedSandbox, type SandboxReadiness } from "@/lib/machine";
 import { useFeed, type Feed } from "./sealed";
 import { PanelHeader } from "./panel-header";
 import { useAfterHydration, useNow } from "./time";
@@ -60,7 +60,6 @@ const CHECK_ICON: Record<Check["tone"], ReactNode> = {
 
 function sandboxChecks(readiness: SandboxReadiness): Check[] {
   const { imageInfo, pinnedT3Version } = readiness;
-  const outdated = imageInfo && pinnedT3Version && imageInfo.t3Version !== pinnedT3Version;
   const buildImage = (
     <>
       Run <Cmd>bun scripts/sandbox-image.ts</Cmd> on the runner Mac.
@@ -81,10 +80,10 @@ function sandboxChecks(readiness: SandboxReadiness): Check[] {
         },
     !readiness.image
       ? { tone: "missing", label: "No sandbox image built", howTo: buildImage }
-      : outdated
+      : imageOutdated(readiness)
         ? {
             tone: "missing",
-            label: `The sandbox image has T3 ${imageInfo.t3Version}, but the runner pins ${pinnedT3Version}`,
+            label: `The sandbox image has T3 ${imageInfo?.t3Version}, but the runner pins ${pinnedT3Version}`,
             howTo: buildImage,
           }
         : {

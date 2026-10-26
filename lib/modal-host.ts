@@ -139,12 +139,15 @@ export async function snapshotSandbox(sandboxId: string, ttlMs: number) {
   }
 }
 
-/** The public https URL of the sandbox's tunnel to `port`, or null when it was created without one. */
-export async function tunnelUrl(sandboxId: string, port: number) {
+export type Tunnel = { kind: "url"; url: string } | { kind: "no port" } | { kind: "not ready" };
+
+/** The public https URL of the sandbox's tunnel to `port`; "no port" when it was created without one, "not ready" while Modal is still opening it. */
+export async function tunnelUrl(sandboxId: string, port: number): Promise<Tunnel> {
   try {
-    return (await (await handle(sandboxId)).tunnels(30_000))[port]?.url ?? null;
+    const url = (await (await handle(sandboxId)).tunnels(30_000))[port]?.url;
+    return url ? { kind: "url", url } : { kind: "no port" };
   } catch (error) {
-    if (error instanceof SandboxTimeoutError) return null;
+    if (error instanceof SandboxTimeoutError) return { kind: "not ready" };
     throw gone(sandboxId, error);
   }
 }

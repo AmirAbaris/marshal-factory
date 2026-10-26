@@ -1,6 +1,7 @@
 import "./test-guard";
 import assert from "node:assert/strict";
 import { eq, inArray, like } from "drizzle-orm";
+import { SandboxTimeoutError } from "modal";
 import { fake, fakeModal, type FakeSandbox } from "./fake-modal";
 
 const OWNER = "owner@example.com";
@@ -80,6 +81,12 @@ try {
   const sbOld = await sandbox("OLD", []);
   const OLD = await insert("OLD", { sandbox_id: sbOld.sandboxId });
   assert.match((await openT3(OLD) as { refused: string }).refused, /hibernates and wakes again/);
+  const sbSlow = await sandbox("SLOW", [3773]);
+  sbSlow.tunnels = async () => {
+    throw new SandboxTimeoutError("Timed out waiting for tunnels");
+  };
+  const SLOW = await insert("SLOW", { sandbox_id: sbSlow.sandboxId });
+  assert.deepEqual(await openT3(SLOW), { refused: "The sandbox's T3 isn't reachable yet; try again in a moment." }, "a slow tunnel is worth retrying");
   const GONE = await insert("GONE", { sandbox_id: "sb-never-existed" });
   assert.match((await openT3(GONE) as { refused: string }).refused, /sandbox is gone/);
   const LOCAL = await insert("LOCAL", {});
