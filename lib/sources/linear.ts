@@ -1,3 +1,7 @@
+import { createHash } from "node:crypto";
+import { mkdir, readdir, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { eq, sql } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import { z } from "zod";
@@ -6,10 +10,11 @@ import { jobs } from "../../db/schema";
 import { loadConfig, type FactoryLimits } from "../config";
 import type { Stage } from "../events";
 import { attemptBranch } from "../factory";
-import { commentId, linearClient, type LinearClient } from "../linear";
+import { commentId, linearClient, type LinearClient, type LinearOptions } from "../linear";
+import { forbidInTest } from "../test-mode";
 import { hmacHex, sameHex, type IntentDraft, type Verdict } from "../webhooks";
 import { jobId } from "./shapes";
-import type { Job as AnyJob, Reply, ResumePlan, SourceAdapter, SourceWebhook } from "./types";
+import type { Job as AnyJob, FileDraft, FiledJob, ImageFile, Reply, ResumePlan, SourceAdapter, SourceWebhook } from "./types";
 
 type Job = AnyJob<"linear">;
 
@@ -326,4 +331,123 @@ export function createLinearAdapter(load: () => LinearDeps | Promise<LinearDeps>
   };
 }
 
-export const linear = createLinearAdapter(runtimeDeps);
+/**
+ * Files a job as a Todo issue with the factory label, under an id derived from the request, so a
+ * double submit or a retry finds the first issue. Linear's webhook then brings it to the runner.
+ */
+export function linearFiler(apiKey: string, teamKey: string, label: string, options?: LinearOptions) {
+  const client = linearClient(apiKey, options);
+  return async (draft: FileDraft): Promise<FiledJob> => {
+    const team = await client.team(teamKey);
+    const todo = team.states.find((s) => s.type === "unstarted" && s.name === "Todo") ?? team.states.find((s) => s.type === "unstarted");
+    if (!todo) throw new Error(`Linear team ${teamKey} has no Todo state`);
+    const issue = await client.createIssue({
+      id: commentId("panel-job", draft.requestId),
+      teamId: team.id,
+      stateId: todo.id,
+      labelIds: [await client.labelId(team.id, label)],
+      title: draft.title,
+      description: draft.description,
+    });
+    return { key: issue.identifier, url: issue.url };
+  };
+}
+
+/** Uploads an image to Linear's storage and returns the markdown that embeds it, as Linear's editor would. */
+export function linearUploader(apiKey: string, options?: LinearOptions & { put?: typeof fetch }) {
+  const client = linearClient(apiKey, options);
+  const put = options?.put ?? fetch;
+  return async (image: ImageFile) => {
+    const upload = await client.fileUpload(image.contentType, image.filename, image.bytes.byteLength);
+    const headers = new Headers({ "content-type": image.contentType, "cache-control": "public, max-age=31536000" });
+    for (const { key, value } of upload.headers) headers.set(key, value);
+    const res = await put(upload.uploadUrl, { method: "PUT", headers, body: image.bytes, signal: AbortSignal.timeout(30_000) });
+    if (!res.ok) throw new Error(`Linear's storage answered ${res.status}`);
+    const alt = image.filename.replace(/[[\]\n]/g, " ").trim() || "image";
+    return `![${alt}](${upload.assetUrl})`;
+  };
+}
+
+// The panel files jobs from Vercel, which has no config file, so filing reads its key from the env.
+const fileFromEnv = (draft: FileDraft) => {
+  const key = process.env.LINEAR_API_KEY;
+  if (!key) throw new Error("LINEAR_API_KEY is not set, so the panel cannot file jobs in Linear");
+  return linearFiler(key, process.env.FACTORY_TEAM_KEY ?? "FAC", process.env.FACTORY_LABEL ?? "factory")(draft);
+};
+
+// Images pasted into Linear live on its upload host behind the API key, which the agent does not have.
+const UPLOAD_IMAGE = /!\[([^\]]*)\]\((https:\/\/uploads\.linear\.app\/[^\s)]+)\)/g;
+const IMAGE_TYPES: Record<string, string> = { "image/png": "png", "image/jpeg": "jpg", "image/webp": "webp", "image/gif": "gif" };
+const MAX_IMAGES = 10;
+const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+
+export const ATTACHMENTS_DIR = join(/* turbopackIgnore: true */ homedir(), ".cache/marshal-factory/attachments");
+
+/**
+ * Downloads the Linear uploads that text embeds as images into `dir` and points the text at the
+ * files, with a list the agent is told to open first. A file already downloaded is reused, so a
+ * relaunch costs nothing. An image that cannot be fetched keeps its link and a note; it never
+ * blocks the launch.
+ */
+export async function localizeLinearImages(text: string, { apiKey, dir, fetch: fetchImpl = fetch }: { apiKey: string; dir: string; fetch?: typeof fetch }) {
+  const urls = [...new Set([...text.matchAll(UPLOAD_IMAGE)].map((m) => m[2]!))].slice(0, MAX_IMAGES);
+  if (urls.length === 0) return text;
+  // Only the runner downloads images; the panel bundles this file but never writes here.
+  await mkdir(/* turbopackIgnore: true */ dir, { recursive: true });
+  const existing = await readdir(/* turbopackIgnore: true */ dir);
+  const saved = new Map<string, string>();
+  const failed = new Map<string, string>();
+  for (const url of urls) {
+    const name = createHash("sha256").update(url).digest("hex").slice(0, 16);
+    const have = existing.find((f) => f.startsWith(`${name}.`));
+    if (have) {
+      saved.set(url, join(/* turbopackIgnore: true */ dir, have));
+      continue;
+    }
+    try {
+      const res = await fetchImpl(url, { headers: { authorization: apiKey }, signal: AbortSignal.timeout(20_000) });
+      const ext = IMAGE_TYPES[(res.headers.get("content-type") ?? "").split(";")[0]!.trim()];
+      if (!res.ok) throw new Error(`Linear answered ${res.status}`);
+      if (!ext) throw new Error("not a PNG, JPEG, WebP or GIF image");
+      const bytes = new Uint8Array(await res.arrayBuffer());
+      if (bytes.byteLength > MAX_IMAGE_BYTES) throw new Error("larger than 10 MB");
+      const path = join(/* turbopackIgnore: true */ dir, `${name}.${ext}`);
+      await writeFile(path, bytes);
+      saved.set(url, path);
+    } catch (error) {
+      failed.set(url, error instanceof Error ? error.message : String(error));
+    }
+  }
+  const rewritten = text.replace(UPLOAD_IMAGE, (whole, alt: string, url: string) => {
+    const path = saved.get(url);
+    if (path) return `[image: ${path}]`;
+    const reason = failed.get(url);
+    return reason ? `${whole} (the factory could not download this image: ${reason})` : whole;
+  });
+  if (saved.size === 0) return rewritten;
+  return [
+    rewritten,
+    "",
+    "## Images",
+    "",
+    `This text refers to ${saved.size === 1 ? "an image" : `${saved.size} images`}, saved on this machine. Open each one with the Read tool before you start; they are part of the spec.`,
+    "",
+    ...[...new Set(saved.values())].map((path) => `- ${path}`),
+  ].join("\n");
+}
+
+const uploadFetch: typeof fetch = (input, init) => {
+  forbidInTest("the Linear upload host");
+  return fetch(input, init);
+};
+
+const localizeImages = (job: { key: string }, text: string) =>
+  localizeLinearImages(text, { apiKey: loadConfig().linearApiKey, dir: join(/* turbopackIgnore: true */ ATTACHMENTS_DIR, job.key), fetch: uploadFetch });
+
+const uploadFromEnv = (image: ImageFile) => {
+  const key = process.env.LINEAR_API_KEY;
+  if (!key) throw new Error("LINEAR_API_KEY is not set, so the panel cannot upload images to Linear");
+  return linearUploader(key)(image);
+};
+
+export const linear: SourceAdapter<"linear"> = { ...createLinearAdapter(runtimeDeps), file: fileFromEnv, uploadImage: uploadFromEnv, localizeImages };

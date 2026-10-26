@@ -227,6 +227,41 @@ export function linearClient(apiKey: string, { fetch: fetchImpl = realFetch, sle
       }
     },
 
+    /** Creates the issue under `id`; a replay finds the issue the first create made. */
+    async createIssue(input: { id: string; teamId: string; stateId: string; labelIds: string[]; title: string; description: string }) {
+      const created = z.object({ identifier: z.string(), url: z.string() });
+      try {
+        const data = await gql(
+          `mutation($input: IssueCreateInput!) { issueCreate(input: $input) { issue { identifier url } } }`,
+          { input },
+          z.object({ issueCreate: z.object({ issue: created }) }),
+        );
+        return data.issueCreate.issue;
+      } catch (error) {
+        if (!(error instanceof LinearError && error.code === "conflict")) throw error;
+        const data = await gql(`query($id: String!) { issue(id: $id) { identifier url } }`, { id: input.id }, z.object({ issue: created }));
+        return data.issue;
+      }
+    },
+
+    /** A signed URL to PUT a file to, the headers that PUT needs, and the URL the file then has. */
+    async fileUpload(contentType: string, filename: string, size: number) {
+      const data = await gql(
+        `mutation($contentType: String!, $filename: String!, $size: Int!) {
+          fileUpload(contentType: $contentType, filename: $filename, size: $size) {
+            uploadFile { uploadUrl assetUrl headers { key value } }
+          }
+        }`,
+        { contentType, filename, size },
+        z.object({
+          fileUpload: z.object({
+            uploadFile: z.object({ uploadUrl: z.string(), assetUrl: z.string(), headers: z.array(z.object({ key: z.string(), value: z.string() })) }),
+          }),
+        }),
+      );
+      return data.fileUpload.uploadFile;
+    },
+
     /** Returns false when a comment with this id already exists. */
     async comment(issueId: string, id: string, body: string) {
       try {
