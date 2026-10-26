@@ -3,10 +3,9 @@ import { Badge } from "@/components/ui/badge";
 import { Spinner } from "@/components/ui/spinner";
 import type { AgentRow, RunRow } from "@/db/schema";
 import type { SandboxState } from "@/lib/execution";
-import { harnessLabel } from "@/lib/harness";
 import type { MergeDecision } from "@/lib/merge-decision";
 import { cn } from "@/lib/utils";
-import type { BoardCard } from "./cards";
+import { harnessLine, whereLine, type BoardCard } from "./cards";
 import { formatUsd, runCost, runTitle, shortId } from "./format";
 import { decisionLine } from "./merge-decision";
 import { ModelChip } from "./model-chip";
@@ -59,12 +58,12 @@ const SANDBOX_HINT: Record<SandboxState, string> = {
   hibernated: "The sandbox is snapshotted while the job waits; it wakes when the job needs it",
 };
 
-/** Where a sandboxed job's sandbox is: running, or hibernated as a snapshot. */
-export function SandboxBadge({ state }: { state: SandboxState }) {
+/** Where a sandboxed job's sandbox is: running, or hibernated as a snapshot. `bare` drops the word sandbox for a line that says it already. */
+export function SandboxBadge({ state, bare = false }: { state: SandboxState; bare?: boolean }) {
   return (
     <Badge variant="outline" className="gap-1.5 rounded-md font-normal text-muted-foreground" title={SANDBOX_HINT[state]}>
       <span className={cn("size-1.5 rounded-full", state === "running" ? "bg-success" : "bg-muted-foreground/50")} />
-      Sandbox · {state}
+      {bare ? state : `Sandbox · ${state}`}
     </Badge>
   );
 }
@@ -146,18 +145,18 @@ export function StageCard({
       ) : (
         card.summary && <p className="line-clamp-2 text-xs text-muted-foreground">{card.summary}</p>
       )}
-      {card.untracked && (
-        <p className="text-xs text-muted-foreground" title="This harness reports no stages, agents or cost; check the run in T3.">
-          {harnessLabel(card.untracked.provider)}
-          {card.untracked.model && <span className="font-mono"> · {card.untracked.model}</span>} · not tracked
-        </p>
-      )}
       <div className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
-        {card.sandbox && <SandboxBadge state={card.sandbox} />}
-        {latest && <ModelChip model={latest.model} />}
+        {card.harness && (
+          <span title={card.harness.tracked ? undefined : "This harness reports no stages, agents or cost; check the run in T3."}>{harnessLine(card.harness)}</span>
+        )}
         {card.attempt > 1 && <span>attempt {card.attempt}</span>}
         <AgentsAndCost runs={card.attemptRuns} allRuns={card.runs} agents={agents} budgetUsd={card.budgetUsd ?? undefined} />
-        {machineName && <span className="ml-auto min-w-0 truncate">{machineName}</span>}
+        {card.runsOn && (
+          <span className="ml-auto flex min-w-0 items-center gap-1.5">
+            <span className="truncate">{whereLine(card.runsOn, machineName)}</span>
+            {card.runsOn.kind === "modal" && card.runsOn.sandbox && <SandboxBadge state={card.runsOn.sandbox} bare />}
+          </span>
+        )}
       </div>
     </div>
   );

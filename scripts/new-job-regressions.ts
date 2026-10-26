@@ -10,28 +10,29 @@ type FileDraft = Parameters<typeof createJob>[0]["file"] extends (d: infer D) =>
 
 const owner = { email: OWNER, emailVerified: true };
 const requestId = "6f0c3f8e-1f4b-4a52-9f0e-2d7c5a8b9c10";
+const harnesses = async () => null;
 const draft = { title: "Show the item count", description: "On the weight sort button.", requestId };
 
 {
   const filed: FileDraft[] = [];
   const file = async (d: FileDraft) => (filed.push(d), { key: "FAC-99", url: "https://linear.app/x/issue/FAC-99" });
   for (const user of [null, { email: "someone@example.com", emailVerified: true }, { email: OWNER, emailVerified: false }]) {
-    const outcome = await createJob({ user: async () => user, file }, draft);
+    const outcome = await createJob({ user: async () => user, file, harnesses }, draft);
     assert.deepEqual([outcome.ok, !outcome.ok && outcome.status], [false, 403], `a non-owner (${user?.email ?? "signed out"}) cannot start a job`);
   }
   assert.equal(filed.length, 0, "and nothing is filed");
 
-  const tooShort = await createJob({ user: async () => owner, file }, { ...draft, title: " a " });
+  const tooShort = await createJob({ user: async () => owner, file, harnesses }, { ...draft, title: " a " });
   assert.equal(!tooShort.ok && tooShort.status, 400, "a title under 3 characters is refused");
-  const noRequest = await createJob({ user: async () => owner, file }, { ...draft, requestId: "not-a-uuid" });
+  const noRequest = await createJob({ user: async () => owner, file, harnesses }, { ...draft, requestId: "not-a-uuid" });
   assert.equal(!noRequest.ok && noRequest.status, 400, "a request without a request id is refused");
   assert.equal(filed.length, 0);
 
-  const ok = await createJob({ user: async () => owner, file }, { ...draft, title: "  Show the item count  " });
+  const ok = await createJob({ user: async () => owner, file, harnesses }, { ...draft, title: "  Show the item count  " });
   assert.deepEqual(ok, { ok: true, identifier: "FAC-99", url: "https://linear.app/x/issue/FAC-99" }, "the owner files a job");
   assert.equal(filed[0]!.title, "Show the item count", "with the title trimmed");
 
-  const down = await createJob({ user: async () => owner, file: async () => Promise.reject(new Error("Linear is down")) }, draft);
+  const down = await createJob({ user: async () => owner, file: async () => Promise.reject(new Error("Linear is down")), harnesses }, draft);
   assert.equal(!down.ok && down.status, 502, "a Linear failure is reported");
   assert.match(!down.ok ? down.message : "", /Linear is down/);
 }

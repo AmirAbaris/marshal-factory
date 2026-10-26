@@ -53,11 +53,9 @@ export function LivePanel({
     () => groupBy(agentRows, (a) => a.session_id),
     [agentRows],
   );
-  const drivers = useMemo(
-    () => new Map((reportedHarnesses(machineRows, 0) ?? []).map((h) => [h.id, h.driver])),
-    [machineRows],
-  );
-  const cards = useMemo(() => boardCards(jobRows, runRows, drivers), [jobRows, runRows, drivers]);
+  const harnesses = useMemo(() => reportedHarnesses(machineRows, 0) ?? [], [machineRows]);
+  const enabledHarnesses = useMemo(() => harnesses.filter((h) => h.enabled), [harnesses]);
+  const cards = useMemo(() => boardCards(jobRows, runRows, harnesses), [jobRows, runRows, harnesses]);
   const unstaged = useMemo(() => {
     const claimed = new Set(jobRows.map((j) => j.key));
     return runRows.filter((r) => r.stage === null && !(r.job_key && claimed.has(r.job_key)));
@@ -81,7 +79,7 @@ export function LivePanel({
         title={view === "board" ? "Board" : "Other activity"}
         status={status}
         note={[`${runRows.filter((r) => r.status === "active").length} active`, sandboxNote].filter(Boolean).join(" · ")}
-        actions={view === "board" ? <NewJobButton /> : undefined}
+        actions={view === "board" ? <NewJobButton harnesses={enabledHarnesses} /> : undefined}
       />
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         <StatsStrip runs={runRows} agentsBySession={agentsBySession} startOfToday={startOfToday} />
@@ -102,6 +100,7 @@ export function LivePanel({
               audit={detail.audit}
               job={selectedJob}
               machine={selectedJob?.machine_id ? machineById.get(selectedJob.machine_id) : undefined}
+              harnesses={harnesses}
               jobSpend={
                 selectedJob
                   ? {

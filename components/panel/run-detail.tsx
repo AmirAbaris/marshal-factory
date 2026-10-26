@@ -10,8 +10,11 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import type { AgentRow, AuditRow, EventRow, JobRow, MachineRow, RunRow } from "@/db/schema";
 import { sandboxState } from "@/lib/execution";
+import { harnessLabel, type Harness } from "@/lib/harness";
 import { parseInventory, t3ThreadLink, UNKNOWN } from "@/lib/machine";
 import { sourceLink } from "@/lib/sources/shapes";
+import { RUNS_ON_LABELS, ticketRecordSchema } from "@/lib/ticket-overrides";
+import { runsOn } from "./cards";
 import { AgentTree } from "./agent-tree";
 import { EventFeed } from "./event-feed";
 import { AuditLog } from "./audit-log";
@@ -37,6 +40,27 @@ function JobRecords({ feed, path, job }: { feed: Feed<AuditRow>; path: string; j
   );
 }
 
+/** What the ticket's override labels chose for this attempt, and what the runner did instead where it could not. */
+function TicketOverrides({ job, harnesses }: { job: JobRow; harnesses: readonly Harness[] }) {
+  const ticket = ticketRecordSchema.safeParse(job.ticket_overrides).data;
+  if (!ticket) return null;
+  const provider = ticket.provider;
+  const chosen = [
+    provider && `Harness ${harnesses.find((h) => h.id === provider)?.name ?? harnessLabel(provider)}`,
+    ticket.execution && `Runs on ${RUNS_ON_LABELS[ticket.execution]}`,
+  ].filter(Boolean);
+  return (
+    <div className="flex flex-col gap-1 text-xs">
+      {chosen.length > 0 && <p className="text-muted-foreground">From the ticket: {chosen.join(" · ")}</p>}
+      {ticket.notes.map((note) => (
+        <p key={note} className="text-warning">
+          {note}
+        </p>
+      ))}
+    </div>
+  );
+}
+
 export function RunDetail({
   run,
   agents,
@@ -46,8 +70,10 @@ export function RunDetail({
   audit,
   job,
   machine,
+  harnesses,
   jobSpend,
 }: {
+  harnesses: readonly Harness[];
   audit: { feed: Feed<AuditRow>; path: string } | undefined;
   jobSpend: { usd: number; capUsd: number; attempt: number } | undefined;
   stagesPath: string;
@@ -69,6 +95,7 @@ export function RunDetail({
   const t3 = machine && parseInventory(machine.inventory)?.t3;
   const environmentId = t3 && t3 !== UNKNOWN ? t3.environmentId : null;
   const sandboxed = job ? sandboxState(job) !== null : false;
+  const where = job && runsOn(job);
 
   return (
     <aside className="flex min-h-0 flex-col border-l bg-card">
@@ -98,7 +125,9 @@ export function RunDetail({
             </Badge>
             <ModelChip model={run.model} />
             {run.repo && <span className="text-muted-foreground">{run.repo}</span>}
-            {machineName && <span className="text-muted-foreground">on {machineName}</span>}
+            {machineName && (
+              <span className="text-muted-foreground">{where?.kind === "modal" ? `Modal sandbox · Managed by ${machineName}` : `Local · ${machineName}`}</span>
+            )}
             <span className="font-mono text-muted-foreground">
               {jobSpend ? (
                 <span className={cn(jobSpend.usd >= jobSpend.capUsd && "text-destructive")}>
@@ -139,6 +168,7 @@ export function RunDetail({
               </Button>
             )}
           </div>
+          {job && <TicketOverrides job={job} harnesses={harnesses} />}
         </div>
         {job?.nudged_at && job.nudged_stage === job.stage && (
           <div className="mx-4.5 mb-3.5 rounded-lg border border-warning/40 bg-warning/10 px-3 py-2.5 text-xs">
