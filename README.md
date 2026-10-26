@@ -227,6 +227,20 @@ The optional `factory` object in `~/.config/marshal-factory/config.json` overrid
 
 If you change the team key or label, also change them in the ingest Function (`FACTORY_TEAM_KEY` and `FACTORY_LABEL`, with the `neon functions deploy` command from step 6) and in Vercel. Then rerun `bun scripts/install-webhooks.ts` for a new team.
 
+## Running jobs in Modal sandboxes
+
+Instead of this Mac's T3, the runner can start each job in its own Modal sandbox, so jobs don't share a machine and more of them run at once. On the runner Mac:
+
+```sh
+uv tool install modal && modal token new
+bun scripts/sandbox-image.ts
+mkdir -p ~/.codex-factory-1 && CODEX_HOME=~/.codex-factory-1 codex login --device-auth
+```
+
+For Claude Code jobs, run `claude setup-token`, add the token as `CLAUDE_CODE_OAUTH_TOKEN=...` to `.env.local` in the live checkout and restart the runner. Without it, those jobs run on Codex. Each extra Codex login (`~/.codex-factory-2` and so on) lets one more sandbox run; list them in `factory.sandbox.codexSlots`, and raise `factory.maxInFlight` and `factory.sandbox.maxParallel` to match.
+
+Then set **Run jobs on** to Modal in the panel's Settings, which shows anything still missing. A job waiting for review or an answer hibernates to a snapshot after five minutes and wakes when it is needed, so it does not pay for a running sandbox while it waits. Only Claude Code jobs show stages and cost. Rebuild the image when you change T3's version or the hooks. [docs/operations.md](docs/operations.md#running-jobs-in-modal-sandboxes) has the details, including opening a sandboxed job in T3.
+
 ## Updating
 
 Pull the latest version into the live checkout with the runner paused, so it never runs half-updated code:
