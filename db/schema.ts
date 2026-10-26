@@ -10,8 +10,10 @@ import {
   primaryKey,
   text,
   timestamp,
+  uniqueIndex,
 } from "drizzle-orm/pg-core";
 import { STAGES } from "../lib/events";
+import { DEFAULT_EXECUTION, type Execution } from "../lib/execution";
 import { JOB_SOURCES, type JobId } from "../lib/sources/shapes";
 
 // Keys equal column names: the Neon Realtime Drizzle adapter requires it.
@@ -147,11 +149,16 @@ export const jobs = pgTable(
     provider: text("provider"),
     model: text("model"),
     session_id: text("session_id"),
+    /** The Modal sandbox this attempt runs in; null when it runs in the machine's own T3. */
+    sandbox_id: text("sandbox_id"),
+    /** The runner-side CODEX_HOME whose ChatGPT login the sandbox holds; one job per slot. */
+    codex_slot: text("codex_slot"),
     claimed_at: ts("claimed_at").notNull(),
     updated_at: ts("updated_at").notNull(),
   },
   (t) => [
     index("jobs_claimed_at_idx").on(t.claimed_at),
+    uniqueIndex("jobs_codex_slot_idx").on(t.codex_slot).where(sql`${t.codex_slot} is not null`),
     check("jobs_id_check", sql`${t.id} = ${t.source}::text || ':' || ${t.external_id}`),
   ],
 );
@@ -220,6 +227,8 @@ export const settings = pgTable("settings", {
   /** The T3 provider instance new threads start on. */
   provider: text("provider").notNull(),
   model: text("model").notNull(),
+  /** Where runners start new threads; see lib/execution.ts. */
+  execution: text("execution").$type<Execution>().notNull().default(DEFAULT_EXECUTION),
   updated_at: ts("updated_at").notNull(),
   /** The owner's email. */
   updated_by: text("updated_by").notNull(),

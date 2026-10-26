@@ -95,11 +95,11 @@ assert.deepEqual(
 
 const owner = { email: OWNER, emailVerified: true };
 const reported = [harness("claudeAgent", true, ["model-a"]), harness("codex", true, ["codex-one"]), harness("cursor", false)];
-const choices: { provider: string; model: string; by: string }[] = [];
+const choices: { provider: string; model: string; execution: string; by: string }[] = [];
 const deps = (user: { email: string; emailVerified: boolean } | null, harnesses: Harness[] | null = reported) => ({
   user: async () => user,
   harnesses: async () => harnesses,
-  save: async (choice: { provider: string; model: string }, by: string) => void choices.push({ ...choice, by }),
+  save: async (choice: { provider: string; model: string; execution: string }, by: string) => void choices.push({ ...choice, by }),
 });
 
 for (const user of [null, { email: "someone@example.com", emailVerified: true }, { email: OWNER, emailVerified: false }]) {
@@ -113,6 +113,7 @@ for (const [input, why] of [
   [{ provider: "nope", model: "codex-one" }, "a harness no machine reports"],
   [{ provider: "cursor", model: "m1" }, "a disabled harness"],
   [{ provider: "codex", model: "model-a" }, "another harness's model"],
+  [{ provider: "codex", model: "codex-one", execution: "cloud" }, "an unknown execution"],
 ] as const) {
   const outcome = await saveSettings(deps(owner), input);
   assert.equal(!outcome.ok && outcome.status, 400, `${why} is refused`);
@@ -120,13 +121,15 @@ for (const [input, why] of [
 assert.deepEqual(choices, [], "and nothing is saved");
 assert.deepEqual(await saveSettings(deps(owner), { provider: " codex ", model: "codex-one" }), { ok: true }, "the owner saves a reported pair");
 assert.deepEqual(await saveSettings(deps(owner, null), { provider: "anything", model: "goes" }), { ok: true }, "before any machine reports harnesses, any pair is taken");
+assert.deepEqual(await saveSettings(deps(owner), { provider: "codex", model: "codex-one", execution: "modal" }), { ok: true }, "the owner moves jobs to Modal");
 assert.deepEqual(
   choices,
   [
-    { provider: "codex", model: "codex-one", by: OWNER },
-    { provider: "anything", model: "goes", by: OWNER },
+    { provider: "codex", model: "codex-one", execution: "local", by: OWNER },
+    { provider: "anything", model: "goes", execution: "local", by: OWNER },
+    { provider: "codex", model: "codex-one", execution: "modal", by: OWNER },
   ],
-  "trimmed, and recorded under the owner's email",
+  "trimmed, local unless chosen, and recorded under the owner's email",
 );
 const failing = await saveSettings({ ...deps(owner), save: async () => Promise.reject(new Error("db down")) }, { provider: "codex", model: "codex-one" });
 assert.equal(!failing.ok && failing.status, 502, "a failed write is reported");
@@ -149,7 +152,7 @@ try {
   assert.equal(rows.length, 1, "saving again updates the one row");
   assert.deepEqual(
     { ...rows[0]!, updated_at: rows[0]!.updated_at.toISOString() },
-    { id: SETTINGS_ID, provider: "antigravity", model: "grav-1", updated_by: "second@example.com", updated_at: "2026-10-26T11:00:00.000Z" },
+    { id: SETTINGS_ID, provider: "antigravity", model: "grav-1", execution: "local", updated_by: "second@example.com", updated_at: "2026-10-26T11:00:00.000Z" },
   );
   assert.deepEqual(await effectiveHarness(), { provider: "antigravity", model: "grav-1", from: "settings" }, "a saved choice wins over the config");
 
