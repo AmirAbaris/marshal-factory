@@ -195,6 +195,21 @@ try {
   shown = { ...shown, worktreePath: "/elsewhere" };
   assert.equal(await realThreads.state("mcp:fake", fake), "gone", "a worktree missing on the job's host means gone");
   assert.equal(await realThreads.state("mcp:gone", fake), "gone", "T3 saying the thread is gone, through the host's error, means gone");
+  const odd: JobHost = {
+    ...fake,
+    run: async () => ({
+      stdout: JSON.stringify({
+        thread: { archived: false, worktreePath: null, activeRunId: null, status: null },
+        messages: [null, { role: "assistant", text: null }, { role: "tool" }, { role: "assistant", text: "done" }],
+      }),
+      stderr: "",
+    }),
+  };
+  assert.deepEqual(
+    await realThreads.read("mcp:odd", odd),
+    { state: "stopped", status: null, lastMessage: "done" },
+    "nulls and unexpected message shapes from T3 never throw",
+  );
   calls.length = 0;
   assert.equal(await realThreads.state("pending:1", fake), "running", "a pending launch asks no host");
   assert.equal(calls.length, 0);

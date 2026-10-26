@@ -29,13 +29,17 @@ async function readThread(threadId: string | null, host: JobHost): Promise<Threa
         archived: z.boolean(),
         worktreePath: z.string().nullable(),
         activeRunId: z.string().nullable(),
-        status: z.string().optional(),
+        status: z.string().nullish().catch(null),
       }),
-      messages: z.array(z.object({ role: z.string(), text: z.string() })).optional(),
+      messages: z.array(z.unknown()).nullish().catch(null),
     })
     .parse(JSON.parse(stdout));
   if (thread.archived || (thread.worktreePath !== null && !(await host.exists(thread.worktreePath)))) return GONE;
-  const lastMessage = messages?.findLast((m) => m.role === "assistant")?.text ?? null;
+  const assistant = z.object({ role: z.literal("assistant"), text: z.string() });
+  const lastMessage = (messages ?? []).flatMap((m) => {
+    const parsed = assistant.safeParse(m);
+    return parsed.success ? [parsed.data.text] : [];
+  }).at(-1) ?? null;
   return { state: thread.activeRunId ? "running" : "stopped", status: thread.status ?? null, lastMessage };
 }
 
