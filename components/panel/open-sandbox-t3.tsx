@@ -6,10 +6,12 @@ import { requestT3Pairing, takeT3Pairing } from "@/app/actions/open-t3";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
-  DialogContent,
+  DialogClose,
   DialogDescription,
   DialogFooter,
   DialogHeader,
+  DialogPanel,
+  DialogPopup,
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
@@ -87,7 +89,7 @@ export function OpenSandboxT3({ jobId, className }: { jobId: JobId; className?: 
         Open in T3
         <ExternalLinkIcon data-icon="inline-end" />
       </Button>
-      <DialogContent className="sm:max-w-md">
+      <DialogPopup className="sm:max-w-md">
         <DialogHeader>
           <DialogTitle>Open the sandbox in T3</DialogTitle>
           <DialogDescription>
@@ -96,27 +98,31 @@ export function OpenSandboxT3({ jobId, className }: { jobId: JobId; className?: 
               : "The job runs in a Modal sandbox, so T3 on your Mac connects to it with a one-time pairing link."}
           </DialogDescription>
         </DialogHeader>
-        {view.kind === "asking" && (
-          <p className="flex items-center gap-2 text-muted-foreground">
-            <Spinner />
-            {view.slow ? "Still waiting; the runner finishes its current step first." : "Asking the runner for a pairing link…"}
-          </p>
-        )}
-        {view.kind === "ready" && (
-          <div className="flex gap-2">
-            <Input readOnly value={view.pairUrl} aria-label="Pairing link" className="font-mono text-xs" onFocus={(e) => e.currentTarget.select()} />
-            <Button variant="outline" size="icon" aria-label="Copy pairing link" onClick={() => void copy(view.pairUrl)}>
-              {copied ? <CheckIcon /> : <CopyIcon />}
-            </Button>
-          </div>
-        )}
-        {view.kind === "failed" && (
-          <p role="alert" className="text-muted-foreground">
-            {view.message}
-          </p>
-        )}
-        <DialogFooter showCloseButton />
-      </DialogContent>
+        <DialogPanel>
+          {view.kind === "asking" && (
+            <p className="flex items-center gap-2 text-muted-foreground">
+              <Spinner />
+              {view.slow ? "Still waiting; the runner finishes its current step first." : "Asking the runner for a pairing link…"}
+            </p>
+          )}
+          {view.kind === "ready" && (
+            <div className="flex gap-2">
+              <Input readOnly value={view.pairUrl} aria-label="Pairing link" className="font-mono text-xs" onFocus={(e) => e.currentTarget.select()} />
+              <Button variant="outline" size="icon" aria-label="Copy pairing link" onClick={() => void copy(view.pairUrl)}>
+                {copied ? <CheckIcon /> : <CopyIcon />}
+              </Button>
+            </div>
+          )}
+          {view.kind === "failed" && (
+            <p role="alert" className="text-muted-foreground">
+              {view.message}
+            </p>
+          )}
+        </DialogPanel>
+        <DialogFooter>
+          <DialogClose render={<Button variant="outline" />}>Close</DialogClose>
+        </DialogFooter>
+      </DialogPopup>
     </Dialog>
   );
 }

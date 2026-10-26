@@ -106,10 +106,8 @@ export function RunDetail({
               {run.job_key ?? shortId(run.session_id)}
               {run.branch ? ` · ${run.branch}` : ""}
             </span>
-            <Button asChild variant="ghost" size="icon-sm" aria-label="Close run">
-              <Link href={pathname} scroll={false}>
-                <XIcon />
-              </Link>
+            <Button render={<Link href={pathname} scroll={false} />} variant="ghost" size="icon-sm" aria-label="Close run">
+              <XIcon />
             </Button>
           </div>
           <h2 className="text-base font-semibold">{job?.title ?? runTitle(run)}</h2>
@@ -139,32 +137,29 @@ export function RunDetail({
               )}
             </span>
             {link && (
-              <Button asChild variant="outline" size="sm" className="ml-auto">
-                <a href={link.href} target="_blank" rel="noreferrer">
-                  {link.label}
-                  <ExternalLinkIcon data-icon="inline-end" />
-                </a>
+              <Button render={<a href={link.href} target="_blank" rel="noreferrer" />} variant="outline" size="sm" className="ml-auto">
+                {link.label}
+                <ExternalLinkIcon data-icon="inline-end" />
               </Button>
             )}
             {run.pr_url && (
-              <Button asChild variant="outline" size="sm" className={job ? "" : "ml-auto"}>
-                <a href={run.pr_url} target="_blank" rel="noreferrer">
-                  Pull request
-                  <ExternalLinkIcon data-icon="inline-end" />
-                </a>
+              <Button render={<a href={run.pr_url} target="_blank" rel="noreferrer" />} variant="outline" size="sm" className={job ? "" : "ml-auto"}>
+                Pull request
+                <ExternalLinkIcon data-icon="inline-end" />
               </Button>
             )}
             {job?.stage === "pr" && job.pr_url && <MergeButton key={job.pr_url} jobId={job.id} jobKey={job.key} />}
             {job && sandboxed ? (
               <OpenSandboxT3 jobId={job.id} />
             ) : run.t3_thread_id && (
-              <Button asChild variant="outline" size="sm" className={job || run.pr_url ? "" : "ml-auto"}>
-                <a
-                  href={t3ThreadLink(run.t3_thread_id, environmentId)}
-                >
-                  Open in T3{machineName && ` on ${machineName}`}
-                  <ExternalLinkIcon data-icon="inline-end" />
-                </a>
+              <Button
+                render={<a href={t3ThreadLink(run.t3_thread_id, environmentId)} />}
+                variant="outline"
+                size="sm"
+                className={job || run.pr_url ? "" : "ml-auto"}
+              >
+                Open in T3{machineName && ` on ${machineName}`}
+                <ExternalLinkIcon data-icon="inline-end" />
               </Button>
             )}
           </div>

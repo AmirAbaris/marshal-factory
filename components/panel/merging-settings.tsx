@@ -4,8 +4,8 @@ import { useRouter } from "next/navigation";
 import { useState, useTransition } from "react";
 import { saveRepoAutonomy } from "@/app/actions/settings";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Field, FieldDescription, FieldGroup, FieldLabel } from "@/components/ui/field";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Field, FieldDescription, FieldLabel } from "@/components/ui/field";
+import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
 import { AUTONOMY_LABELS, AUTONOMY_LEVELS, autonomySchema, type Autonomy, type RepoPolicy } from "@/lib/merge-decision";
 
@@ -17,6 +17,8 @@ const AUTONOMY_HELP: Record<Autonomy, string> = {
   auto: "The factory merges a pull request it is confident about. Until auto-merge ships, this behaves like trial.",
 };
 
+const AUTONOMY_ITEMS = AUTONOMY_LEVELS.map((level) => ({ value: level, label: AUTONOMY_LABELS[level] }));
+
 function RepoRow({ repo, policy }: RepoMerging) {
   const router = useRouter();
   const [autonomy, setAutonomy] = useState<Autonomy>(policy.autonomy);
@@ -24,7 +26,8 @@ function RepoRow({ repo, policy }: RepoMerging) {
   const [pending, startTransition] = useTransition();
   const id = `merging-${repo.replace(/\W/g, "-")}`;
 
-  const change = (value: string) => {
+  const change = (value: Autonomy | null) => {
+    if (value === null) return;
     const next = autonomySchema.parse(value);
     const before = autonomy;
     setAutonomy(next);
@@ -46,17 +49,17 @@ function RepoRow({ repo, policy }: RepoMerging) {
         {repo}
         {pending && <Spinner className="size-3" />}
       </FieldLabel>
-      <Select value={autonomy} onValueChange={change} disabled={pending}>
+      <Select items={AUTONOMY_ITEMS} value={autonomy} onValueChange={change} disabled={pending}>
         <SelectTrigger id={id} className="w-full">
           <SelectValue />
         </SelectTrigger>
-        <SelectContent>
-          {AUTONOMY_LEVELS.map((level) => (
-            <SelectItem key={level} value={level}>
-              {AUTONOMY_LABELS[level]}
+        <SelectPopup>
+          {AUTONOMY_ITEMS.map((item) => (
+            <SelectItem key={item.value} value={item.value}>
+              {item.label}
             </SelectItem>
           ))}
-        </SelectContent>
+        </SelectPopup>
       </Select>
       <FieldDescription>
         {AUTONOMY_HELP[autonomy]}
@@ -85,11 +88,11 @@ export function MergingSettings({ repos }: { repos: readonly RepoMerging[] }) {
         {repos.length === 0 ? (
           <p className="text-sm text-muted-foreground">No repo is known yet. Repos show here once a runner reports them or a job runs in one.</p>
         ) : (
-          <FieldGroup>
+          <div className="flex flex-col gap-5">
             {repos.map((r) => (
               <RepoRow key={r.repo} {...r} />
             ))}
-          </FieldGroup>
+          </div>
         )}
       </CardContent>
     </Card>

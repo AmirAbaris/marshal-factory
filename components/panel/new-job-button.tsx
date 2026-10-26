@@ -9,16 +9,17 @@ import { Button } from "@/components/ui/button";
 import {
   Dialog,
   DialogClose,
-  DialogContent,
   DialogDescription,
   DialogFooter,
   DialogHeader,
+  DialogPanel,
+  DialogPopup,
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
-import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from "@/components/ui/field";
+import { Field, FieldDescription, FieldError, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
 import { EXECUTIONS, executionSchema } from "@/lib/execution";
@@ -49,6 +50,11 @@ async function uploadImage(file: File): Promise<ImageUploadOutcome> {
 
 const SETTINGS_DEFAULT = "settings-default";
 
+const runsOnItems = [
+  { value: SETTINGS_DEFAULT, label: "Settings default" },
+  ...EXECUTIONS.map((e) => ({ value: e, label: RUNS_ON_LABELS[e] })),
+];
+
 /** Starts a job by filing it in Linear, where the factory picks it up like any labeled issue. */
 export function NewJobButton({ harnesses }: { harnesses: readonly Harness[] }) {
   const [open, setOpen] = useState(false);
@@ -58,6 +64,7 @@ export function NewJobButton({ harnesses }: { harnesses: readonly Harness[] }) {
   const form = useForm<NewJob>({ resolver: zodResolver(newJobSchema), defaultValues: blank() });
   const [images, setImages] = useState<JobImage[]>([]);
   const [dragging, setDragging] = useState(false);
+  const harnessItems = [{ value: SETTINGS_DEFAULT, label: "Settings default" }, ...harnesses.map((h) => ({ value: h.id, label: h.name }))];
   const picker = useRef<HTMLInputElement>(null);
   const uploading = images.some((i) => i.status === "uploading");
 
@@ -131,13 +138,11 @@ export function NewJobButton({ harnesses }: { harnesses: readonly Harness[] }) {
         if (next) reset();
       }}
     >
-      <DialogTrigger asChild>
-        <Button size="sm">
-          <PlusIcon data-icon="inline-start" />
-          New job
-        </Button>
+      <DialogTrigger render={<Button size="sm" />}>
+        <PlusIcon data-icon="inline-start" />
+        New job
       </DialogTrigger>
-      <DialogContent className="sm:max-w-lg">
+      <DialogPopup className="sm:max-w-lg">
         {created ? (
           <>
             <DialogHeader>
@@ -147,17 +152,15 @@ export function NewJobButton({ harnesses }: { harnesses: readonly Harness[] }) {
               </DialogDescription>
             </DialogHeader>
             <DialogFooter>
-              <Button variant="outline" asChild>
-                <a href={created.url} target="_blank" rel="noreferrer">
-                  Open in Linear
-                  <ExternalLinkIcon data-icon="inline-end" />
-                </a>
+              <Button variant="outline" render={<a href={created.url} target="_blank" rel="noreferrer" />}>
+                Open in Linear
+                <ExternalLinkIcon data-icon="inline-end" />
               </Button>
               <Button onClick={reset}>Start another</Button>
             </DialogFooter>
           </>
         ) : (
-          <form onSubmit={submit} className="flex flex-col gap-6">
+          <>
             <DialogHeader>
               <DialogTitle>New job</DialogTitle>
               <DialogDescription>
@@ -165,151 +168,157 @@ export function NewJobButton({ harnesses }: { harnesses: readonly Harness[] }) {
                 place other than the Settings default goes on the issue as its Harness or Runs on label.
               </DialogDescription>
             </DialogHeader>
-            <FieldGroup>
-              <Controller
-                name="title"
-                control={form.control}
-                render={({ field, fieldState }) => (
-                  <Field data-invalid={fieldState.invalid}>
-                    <FieldLabel htmlFor="new-job-title">Title</FieldLabel>
-                    <Input {...field} id="new-job-title" aria-invalid={fieldState.invalid} placeholder="Show the item count on the weight sort button" autoFocus />
-                    {fieldState.error && <FieldError errors={[fieldState.error]} />}
-                  </Field>
-                )}
-              />
-              <Controller
-                name="description"
-                control={form.control}
-                render={({ field, fieldState }) => (
-                  <Field data-invalid={fieldState.invalid}>
-                    <FieldLabel htmlFor="new-job-description">Description</FieldLabel>
-                    <Textarea
-                      {...field}
-                      id="new-job-description"
-                      aria-invalid={fieldState.invalid}
-                      rows={6}
-                      placeholder="What should change, and how will you know it works?"
-                      className={cn(dragging && "border-primary ring-1 ring-primary")}
-                      onPaste={onPaste}
-                      onDragOver={(event) => {
-                        if (!event.dataTransfer.types.includes("Files")) return;
-                        event.preventDefault();
-                        setDragging(true);
-                      }}
-                      onDragLeave={() => setDragging(false)}
-                      onDrop={onDrop}
-                    />
-                    <FieldDescription>The agent reads this as the spec. Markdown works; paste or drop screenshots in.</FieldDescription>
-                    {fieldState.error && <FieldError errors={[fieldState.error]} />}
-                  </Field>
-                )}
-              />
-              <div className="grid grid-cols-2 gap-4">
+            <form onSubmit={submit} className="contents">
+              <DialogPanel className="flex flex-col gap-5">
                 <Controller
-                  name="provider"
+                  name="title"
                   control={form.control}
-                  render={({ field }) => (
-                    <Field>
-                      <FieldLabel htmlFor="new-job-harness">Harness</FieldLabel>
-                      <Select value={field.value ?? SETTINGS_DEFAULT} onValueChange={(v) => field.onChange(v === SETTINGS_DEFAULT ? undefined : v)}>
-                        <SelectTrigger id="new-job-harness" className="w-full">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value={SETTINGS_DEFAULT}>Settings default</SelectItem>
-                          {harnesses.map((h) => (
-                            <SelectItem key={h.id} value={h.id}>
-                              {h.name}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
+                  render={({ field, fieldState }) => (
+                    <Field invalid={fieldState.invalid}>
+                      <FieldLabel htmlFor="new-job-title">Title</FieldLabel>
+                      <Input {...field} id="new-job-title" aria-invalid={fieldState.invalid} placeholder="Show the item count on the weight sort button" autoFocus />
+                      {fieldState.error && <FieldError match>{fieldState.error.message}</FieldError>}
                     </Field>
                   )}
                 />
                 <Controller
-                  name="execution"
+                  name="description"
                   control={form.control}
-                  render={({ field }) => (
-                    <Field>
-                      <FieldLabel htmlFor="new-job-runs-on">Runs on</FieldLabel>
-                      <Select value={field.value ?? SETTINGS_DEFAULT} onValueChange={(v) => field.onChange(v === SETTINGS_DEFAULT ? undefined : executionSchema.parse(v))}>
-                        <SelectTrigger id="new-job-runs-on" className="w-full">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value={SETTINGS_DEFAULT}>Settings default</SelectItem>
-                          {EXECUTIONS.map((e) => (
-                            <SelectItem key={e} value={e}>
-                              {RUNS_ON_LABELS[e]}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
+                  render={({ field, fieldState }) => (
+                    <Field invalid={fieldState.invalid}>
+                      <FieldLabel htmlFor="new-job-description">Description</FieldLabel>
+                      <Textarea
+                        {...field}
+                        id="new-job-description"
+                        aria-invalid={fieldState.invalid}
+                        rows={6}
+                        placeholder="What should change, and how will you know it works?"
+                        className={cn(dragging && "border-primary ring-1 ring-primary")}
+                        onPaste={onPaste}
+                        onDragOver={(event) => {
+                          if (!event.dataTransfer.types.includes("Files")) return;
+                          event.preventDefault();
+                          setDragging(true);
+                        }}
+                        onDragLeave={() => setDragging(false)}
+                        onDrop={onDrop}
+                      />
+                      <FieldDescription>The agent reads this as the spec. Markdown works; paste or drop screenshots in.</FieldDescription>
+                      {fieldState.error && <FieldError match>{fieldState.error.message}</FieldError>}
                     </Field>
                   )}
                 />
-              </div>
-              <div className="flex flex-wrap items-start gap-2">
-                {images.map((image) => (
-                  <div key={image.id} className="flex flex-col gap-1">
-                    <div className={cn("relative size-16 overflow-hidden rounded-md border", image.status === "failed" && "border-destructive")}>
-                      {/* A local preview of a file the owner just picked; next/image has nothing to optimize here. */}
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img src={image.preview} alt={image.name} className={cn("size-full object-cover", image.status === "uploading" && "opacity-50")} />
-                      {image.status === "uploading" && <Spinner className="absolute inset-0 m-auto" />}
-                      {image.status !== "uploading" && (
-                        <Button
-                          type="button"
-                          size="icon-xs"
-                          variant="secondary"
-                          className="absolute top-0.5 right-0.5"
-                          aria-label={`Remove ${image.name}`}
-                          onClick={() => removeImage(image)}
+                <div className="grid grid-cols-2 gap-4">
+                  <Controller
+                    name="provider"
+                    control={form.control}
+                    render={({ field }) => (
+                      <Field>
+                        <FieldLabel htmlFor="new-job-harness">Harness</FieldLabel>
+                        <Select
+                          items={harnessItems}
+                          value={field.value ?? SETTINGS_DEFAULT}
+                          onValueChange={(v) => field.onChange(v === null || v === SETTINGS_DEFAULT ? undefined : v)}
                         >
-                          <XIcon />
-                        </Button>
-                      )}
+                          <SelectTrigger id="new-job-harness" className="w-full">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectPopup>
+                            {harnessItems.map((item) => (
+                              <SelectItem key={item.value} value={item.value}>
+                                {item.label}
+                              </SelectItem>
+                            ))}
+                          </SelectPopup>
+                        </Select>
+                      </Field>
+                    )}
+                  />
+                  <Controller
+                    name="execution"
+                    control={form.control}
+                    render={({ field }) => (
+                      <Field>
+                        <FieldLabel htmlFor="new-job-runs-on">Runs on</FieldLabel>
+                        <Select
+                          items={runsOnItems}
+                          value={field.value ?? SETTINGS_DEFAULT}
+                          onValueChange={(v) => field.onChange(v === null || v === SETTINGS_DEFAULT ? undefined : executionSchema.parse(v))}
+                        >
+                          <SelectTrigger id="new-job-runs-on" className="w-full">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectPopup>
+                            {runsOnItems.map((item) => (
+                              <SelectItem key={item.value} value={item.value}>
+                                {item.label}
+                              </SelectItem>
+                            ))}
+                          </SelectPopup>
+                        </Select>
+                      </Field>
+                    )}
+                  />
+                </div>
+                <div className="flex flex-wrap items-start gap-2">
+                  {images.map((image) => (
+                    <div key={image.id} className="flex flex-col gap-1">
+                      <div className={cn("relative size-16 overflow-hidden rounded-md border", image.status === "failed" && "border-destructive")}>
+                        {/* A local preview of a file the owner just picked; next/image has nothing to optimize here. */}
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img src={image.preview} alt={image.name} className={cn("size-full object-cover", image.status === "uploading" && "opacity-50")} />
+                        {image.status === "uploading" && <Spinner className="absolute inset-0 m-auto" />}
+                        {image.status !== "uploading" && (
+                          <Button
+                            type="button"
+                            size="icon-xs"
+                            variant="secondary"
+                            className="absolute top-0.5 right-0.5"
+                            aria-label={`Remove ${image.name}`}
+                            onClick={() => removeImage(image)}
+                          >
+                            <XIcon />
+                          </Button>
+                        )}
+                      </div>
+                      {image.status === "failed" && <span className="max-w-16 text-xs text-destructive">{image.message}</span>}
                     </div>
-                    {image.status === "failed" && <span className="max-w-16 text-xs text-destructive">{image.message}</span>}
-                  </div>
-                ))}
-                <Button type="button" variant="outline" size="sm" onClick={() => picker.current?.click()}>
-                  <ImagePlusIcon data-icon="inline-start" />
-                  Add image
-                </Button>
-                <input
-                  ref={picker}
-                  type="file"
-                  accept={JOB_IMAGE_TYPES.join(",")}
-                  multiple
-                  hidden
-                  onChange={(event) => {
-                    addImages(imagesIn(event.target.files ?? []));
-                    event.target.value = "";
-                  }}
-                />
-              </div>
-            </FieldGroup>
-            {failure && (
-              <p role="alert" className="text-sm text-destructive">
-                {failure}
-              </p>
-            )}
-            <DialogFooter>
-              <DialogClose asChild>
-                <Button type="button" variant="outline" disabled={pending}>
+                  ))}
+                  <Button type="button" variant="outline" size="sm" onClick={() => picker.current?.click()}>
+                    <ImagePlusIcon data-icon="inline-start" />
+                    Add image
+                  </Button>
+                  <input
+                    ref={picker}
+                    type="file"
+                    accept={JOB_IMAGE_TYPES.join(",")}
+                    multiple
+                    hidden
+                    onChange={(event) => {
+                      addImages(imagesIn(event.target.files ?? []));
+                      event.target.value = "";
+                    }}
+                  />
+                </div>
+                {failure && (
+                  <p role="alert" className="text-sm text-destructive">
+                    {failure}
+                  </p>
+                )}
+              </DialogPanel>
+              <DialogFooter>
+                <DialogClose disabled={pending} render={<Button variant="outline" />}>
                   Cancel
+                </DialogClose>
+                <Button type="submit" disabled={pending || uploading}>
+                  {(pending || uploading) && <Spinner data-icon="inline-start" />}
+                  {uploading ? "Uploading images" : "File job"}
                 </Button>
-              </DialogClose>
-              <Button type="submit" disabled={pending || uploading}>
-                {(pending || uploading) && <Spinner data-icon="inline-start" />}
-                {uploading ? "Uploading images" : "File job"}
-              </Button>
-            </DialogFooter>
-          </form>
+              </DialogFooter>
+            </form>
+          </>
         )}
-      </DialogContent>
+      </DialogPopup>
     </Dialog>
   );
 }
