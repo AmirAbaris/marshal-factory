@@ -17,6 +17,7 @@ import { EventFeed } from "./event-feed";
 import { AuditLog } from "./audit-log";
 import { formatUsd, runCost, runTitle, shortId } from "./format";
 import { MergeButton } from "./merge-button";
+import { MergeDecisionSection } from "./merge-decision";
 import { ModelChip } from "./model-chip";
 import { OpenSandboxT3 } from "./open-sandbox-t3";
 import { SandboxSection } from "./sandbox-section";
@@ -170,6 +171,7 @@ export function RunDetail({
             <p className="mt-1 whitespace-pre-wrap">{run.question}</p>
           </div>
         )}
+        {job && <MergeDecisionSection job={job} />}
         <Separator />
         <section className="flex flex-col gap-2.5 px-4.5 py-3.5">
           <h3 className="text-sm font-medium text-muted-foreground">

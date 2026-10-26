@@ -3,6 +3,7 @@ import type { Stage } from "@/lib/events";
 import { sandboxState, type SandboxState } from "@/lib/execution";
 import { attemptBranch } from "@/lib/factory";
 import { isTracked } from "@/lib/harness";
+import { mergeDecisionSchema, type MergeDecision } from "@/lib/merge-decision";
 import { sourceLink } from "@/lib/sources/shapes";
 import { groupBy } from "./format";
 
@@ -31,6 +32,8 @@ export type BoardCard = {
   untracked: { provider: string; model: string | null } | null;
   /** Set when the job runs in a Modal sandbox. */
   sandbox: SandboxState | null;
+  /** The runner's merge decision while the job is in pr. */
+  mergeDecision: MergeDecision | null;
 };
 
 const stagedAt = (run: RunRow) => run.stage_at?.getTime() ?? 0;
@@ -73,6 +76,7 @@ export function boardCards(
           ? { provider: job.provider, model: job.model }
           : null,
       sandbox: sandboxState(job),
+      mergeDecision: job.stage === "pr" ? (mergeDecisionSchema.safeParse(job.merge_decision).data ?? null) : null,
     };
   });
 
@@ -104,6 +108,7 @@ export function boardCards(
         runs: sorted,
         untracked: null,
         sandbox: null,
+        mergeDecision: null,
       };
     },
   );
