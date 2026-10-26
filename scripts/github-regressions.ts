@@ -57,8 +57,8 @@ const revoked = new Set<string>();
 const seen: { method: string; path: string; auth: string | null; version: string | null; body: unknown }[] = [];
 const pulls: Record<number, object> = {
   1: { state: "open", merged_at: null, closed_at: null, mergeable: null, head: { sha: "h1" }, title: "PR 1" },
-  2: { state: "open", merged_at: null, closed_at: null, mergeable: false, head: { sha: "h2" }, title: "PR 2" },
-  3: { state: "closed", merged_at: "2026-10-24T10:00:00Z", closed_at: "2026-10-24T10:00:00Z", mergeable: null, head: { sha: "h3" }, title: "PR 3" },
+  2: { state: "open", merged_at: null, closed_at: null, mergeable: false, head: { sha: "h2" }, title: "PR 2", html_url: "https://github.com/o/r/pull/2" },
+  3: { state: "closed", merged_at: "2026-10-24T10:00:00Z", closed_at: "2026-10-24T10:00:00Z", mergeable: null, head: { sha: "h3" }, title: "PR 3", html_url: "https://github.com/o/r/pull/3" },
 };
 const stub = await serve(0, async (request) => {
     const url = new URL(request.url);
@@ -81,6 +81,12 @@ const stub = await serve(0, async (request) => {
     }
     if (url.pathname === "/repos/o/r/pulls" && url.searchParams.get("head") === "o:factory/FAC-1" && url.searchParams.get("state") === "all") {
       return Response.json([pulls[3], { ...pulls[2], state: "closed", closed_at: "2026-10-23T09:00:00Z" }]);
+    }
+    if (url.pathname === "/repos/o/r/pulls" && url.searchParams.get("head") === "o:factory/FAC-2" && url.searchParams.get("state") === "all") {
+      return Response.json([pulls[3], pulls[2]]);
+    }
+    if (url.pathname === "/repos/o/r/pulls" && url.searchParams.get("head") === "o:factory/FAC-3") {
+      return Response.json([{ ...pulls[2], state: "closed", closed_at: "2026-10-23T09:00:00Z" }]);
     }
     if (url.pathname === "/repos/o/r/pulls/6" || (url.pathname === "/repos/o/r/pulls/5" && revoked.has(auth!.slice(7)))) {
       return Response.json({ message: "Bad credentials" }, { status: 401 });
@@ -155,6 +161,10 @@ try {
       { state: "closed", headSha: "h2", mergedAt: null, closedAt: new Date("2026-10-23T09:00:00Z") },
     ],
   );
+
+  assert.deepEqual(await client.pullRequestForBranch("o/r", "factory/FAC-2"), { url: url(2), state: "open" }, "an open PR wins over a merged one");
+  assert.deepEqual(await client.pullRequestForBranch("o/r", "factory/FAC-1"), { url: url(3), state: "merged" }, "else the merged one; a closed one never counts");
+  assert.equal(await client.pullRequestForBranch("o/r", "factory/FAC-3"), null, "a branch with only a closed PR has none");
 
   assert.deepEqual(await client.mergePull(url(1), "h1"), { kind: "merged", sha: "merge-sha" }, "200 is merged");
   assert.deepEqual(await client.mergePull(url(2), "h2"), { kind: "not_mergeable", message: "Pull Request is not mergeable" }, "405 is not mergeable");

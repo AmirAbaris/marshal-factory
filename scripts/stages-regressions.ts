@@ -36,6 +36,8 @@ const allowed: [Stage, Stage, Cause][] = [
     [from, "failed", "budget"],
     [from, "failed", "stop"],
     [from, "merged", "merged"],
+    [from, "pr", "inferred"],
+    [from, "waiting", "inferred"],
   ]),
 ];
 for (const [from, to, cause] of allowed) {
@@ -55,6 +57,8 @@ const forbidden: [Stage, Stage, Cause][] = [
   ["pr", "failed", "budget"],
   ["triage", "failed", "closed"],
   ["pr", "verifying", "conflict"],
+  ...STAGES.flatMap((to) => (["pr", "waiting"] as const).map((from): [Stage, Stage, Cause] => [from, to, "inferred"])),
+  ...WORKING.flatMap((from) => STAGES.filter((to) => to !== "pr" && to !== "waiting").map((to): [Stage, Stage, Cause] => [from, to, "inferred"])),
 ];
 for (const [from, to, cause] of forbidden) {
   assert.equal(canTransition(from, to, cause), false, `${from} -> ${to} (${cause}) is forbidden`);

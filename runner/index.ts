@@ -23,6 +23,7 @@ const { recheckScheduler } = await import("./recheck");
 const { everyAtMost, serialQueue } = await import("./queue");
 const { isolated, reconcile } = await import("./reconcile");
 const { stopDeliverable } = await import("./binding");
+const { inferUntracked } = await import("./untracked");
 type IntentRow = typeof intents.$inferSelect;
 
 const machine = await thisMachine();
@@ -162,6 +163,8 @@ async function tick() {
     pullRequests: await isolated(ops.checkPullRequests),
     reconciled: await isolated(ops.reconcileUsage),
     overBudget: await isolated(ops.enforceBudget),
+    // Harnesses without hooks report no stage or PR; read them from GitHub and the thread instead.
+    untracked: await isolated(() => inferUntracked()),
     watched: await isolated(ops.watchdog),
     // After the stops and the PR check, so a finished job gives its slot back before this tick's launches.
     sandboxes: await isolated(tickSandboxes),

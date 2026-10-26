@@ -5,6 +5,7 @@ export type PullState = "open" | "closed" | "merged";
 export type Mergeable = "mergeable" | "conflicting" | "unknown";
 export type PullRequest = { state: PullState; mergeable: Mergeable; headSha: string; title: string };
 export type HeadPull = { state: PullState; headSha: string; mergedAt: Date | null; closedAt: Date | null };
+export type BranchPull = { url: string; state: "open" | "merged" };
 export type MergeResult =
   | { kind: "merged"; sha: string }
   | { kind: "not_mergeable"; message: string }
@@ -67,6 +68,20 @@ export function pullsClient({ api, tokens }: { api: string; tokens: TokenSource 
           mergedAt: pull.merged_at ? new Date(pull.merged_at) : null,
           closedAt: pull.closed_at ? new Date(pull.closed_at) : null,
         }));
+    },
+
+    /** The branch's open PR, else its latest merged one; null when it has neither. */
+    async pullRequestForBranch(repo: RepoName, branch: string): Promise<BranchPull | null> {
+      const query = new URLSearchParams({ head: `${repo.split("/")[0]}:${branch}`, state: "all", per_page: "100" });
+      const { json } = await request(repo, "GET", `/repos/${repo}/pulls?${query}`);
+      const pulls = z
+        .array(pullSchema.extend({ html_url: z.string() }))
+        .parse(json)
+        .map((pull) => ({ url: pull.html_url, state: stateOf(pull), mergedAt: pull.merged_at ?? "" }));
+      const open = pulls.find((p) => p.state === "open");
+      if (open) return { url: open.url, state: "open" };
+      const merged = pulls.filter((p) => p.state === "merged").sort((a, b) => b.mergedAt.localeCompare(a.mergedAt))[0];
+      return merged ? { url: merged.url, state: "merged" } : null;
     },
 
     async mergePull(url: string, headSha: string): Promise<MergeResult> {
