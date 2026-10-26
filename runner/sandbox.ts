@@ -1,23 +1,33 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, resolve } from "node:path";
 import type { FactoryConfig, SandboxLimits } from "../lib/config";
-import { installationTokens, type RepoName } from "../lib/github/app";
+import type { ExecError } from "../lib/exec";
+import { sandboxTokens, type RepoName } from "../lib/github/app";
 import type { JobHost } from "../lib/host";
 import { modal, modalHost, rememberSandbox, sandboxName } from "../lib/modal-host";
 import {
+  CODEX_AUTH,
   CODEX_HOME,
   FACTORY_ROOT,
   GITHUB_TOKEN_PATH,
   INGEST_CONFIG_PATH,
   readSandboxImage,
+  readSlotHealth,
   REPO_DIR,
   SANDBOX_HOME,
+  SLOT_HEALTH_PATH,
+  slotAuthMtime,
   slotAuthPath,
+  slotUnusable,
   T3_PORT,
   T3_USERDATA,
   type SandboxImage,
+  type SlotHealth,
 } from "../lib/sandbox";
 import type { HarnessChoice } from "../lib/settings";
 import { readHarnesses } from "../lib/t3-state";
+import { inTestMode } from "../lib/test-mode";
 import { json, reportServer, wiredRoots, withHooks, withServer, type Json } from "../lib/target-wiring";
 
 // A job's Modal sandbox: what it is created with and how it is set up before its thread starts.
@@ -25,14 +35,29 @@ import { json, reportServer, wiredRoots, withHooks, withServer, type Json } from
 const CLAUDE = "claudeAgent";
 const CODEX = "codex";
 
+/** Writes through a temp file and a rename, owner-only, so a reader never sees half a file. */
+function writeAtomic(path: string, text: string) {
+  // A regression may only write login and health files it made in the temp dir.
+  if (inTestMode() && ![tmpdir(), realpathSync(tmpdir())].some((dir) => resolve(path).startsWith(`${dir}/`))) {
+    throw new Error(`a regression run tried to write ${path} outside the temp dir`);
+  }
+  mkdirSync(dirname(path), { recursive: true });
+  const temp = `${path}.${process.pid}.tmp`;
+  writeFileSync(temp, text, { mode: 0o600 });
+  renameSync(temp, path);
+}
+
 /** What a launch reads from this machine; regressions replace any of it. */
 export const sandboxRuntime = {
   image: (): SandboxImage | null => readSandboxImage(),
   claudeToken: (): string | undefined => process.env.CLAUDE_CODE_OAUTH_TOKEN || undefined,
-  githubToken: (repo: RepoName) => installationTokens.get(repo),
+  githubToken: (repo: RepoName) => sandboxTokens.get(repo),
   /** The configured CODEX_HOME dirs that hold a login. */
   slots: (limits: Pick<SandboxLimits, "codexSlots">) => limits.codexSlots.filter((slot) => existsSync(slotAuthPath(slot))),
   slotAuth: (slot: string) => readFileSync(slotAuthPath(slot), "utf8"),
+  writeSlotAuth: (slot: string, text: string) => writeAtomic(slotAuthPath(slot), text),
+  slotAuthMtime,
+  slotHealthPath: SLOT_HEALTH_PATH,
   driverOf: (provider: string) => {
     try {
       return readHarnesses().find((h) => h.id === provider)?.driver ?? provider;
@@ -42,6 +67,30 @@ export const sandboxRuntime = {
   },
   log: (event: string, detail: Record<string, unknown>) => console.log(JSON.stringify({ at: new Date().toISOString(), event, ...detail })),
 };
+
+/** Slots with a login that has not failed in a sandbox since it was last written. */
+export function usableSlots(limits: Pick<SandboxLimits, "codexSlots">) {
+  const health = readSlotHealth(sandboxRuntime.slotHealthPath);
+  return sandboxRuntime.slots(limits).filter((slot) => !slotUnusable(health, slot, sandboxRuntime.slotAuthMtime(slot)));
+}
+
+/** Records that the slot's login failed; it is skipped until its auth.json changes. */
+export function markSlotUnusable(slot: string, reason: string) {
+  const authMtimeMs = sandboxRuntime.slotAuthMtime(slot);
+  if (authMtimeMs === null) return;
+  const health: SlotHealth = [
+    ...readSlotHealth(sandboxRuntime.slotHealthPath).filter((h) => h.slot !== slot),
+    { slot, status: "unusable", reason, at: new Date().toISOString(), authMtimeMs },
+  ];
+  writeAtomic(sandboxRuntime.slotHealthPath, `${JSON.stringify(health, null, 2)}\n`);
+}
+
+/** The slot's login does not work in the sandbox. */
+export class CodexLoginError extends Error {
+  constructor(readonly slot: string) {
+    super(`the Codex login in slot ${slot} is not logged in`);
+  }
+}
 
 /**
  * The sandbox has one Claude Code and one Codex instance, so a harness maps by driver. A Claude
@@ -85,16 +134,36 @@ async function writeSecretFile(host: JobHost, path: string, text: string) {
   await host.run("chmod", ["600", path], { timeoutMs: 30_000 });
 }
 
+/** Whether a CLI's login check exits zero; any other exit means it is not logged in. Output is never kept. */
+async function loggedIn(host: JobHost, command: string, args: string[]) {
+  try {
+    await host.run(command, args, { timeoutMs: 30_000 });
+    return true;
+  } catch (error) {
+    if (typeof (error as ExecError).code === "number") return false;
+    throw error;
+  }
+}
+
 /**
  * The GitHub token the image's git credential helper and gh wrapper read. Rewriting it is all a
  * token refresh takes: nothing caches it, and it is never in the environment.
  */
 export const writeGithubToken = (host: JobHost, token: string) => writeSecretFile(host, GITHUB_TOKEN_PATH, token);
 
+/** Puts the slot's login in the sandbox and checks Codex accepts it; CodexLoginError when it does not. */
+export async function installCodexLogin(host: JobHost, slot: string, auth: string) {
+  await host.run("mkdir", ["-p", CODEX_HOME], { timeoutMs: 30_000 });
+  await host.run("chmod", ["700", CODEX_HOME], { timeoutMs: 30_000 });
+  await writeSecretFile(host, CODEX_AUTH, auth);
+  if (!(await loggedIn(host, "codex", ["login", "status"]))) throw new CodexLoginError(slot);
+}
+
 export type SandboxSetup = {
   repo: string;
   choice: HarnessChoice;
   hasClaude: boolean;
+  slot: string;
   codexAuth: string;
   githubToken: string;
   ingest: string;
@@ -102,20 +171,29 @@ export type SandboxSetup = {
 
 /**
  * Every step before the thread: logins, T3 and Codex settings, the clone, the wiring, a serving T3.
- * Files go through the host's file API, so no secret ever appears in a command line.
+ * Files go through the host's file API, so no secret ever appears in a command line. A Claude Code
+ * job whose token the sandbox's claude does not accept falls back to Codex, as one without a token
+ * does; the harness it runs on comes back.
  */
-export async function setupSandbox(host: JobHost, setup: SandboxSetup) {
-  await host.run("mkdir", ["-p", CODEX_HOME, T3_USERDATA, "/work"], { timeoutMs: 30_000 });
-  await host.run("chmod", ["700", CODEX_HOME], { timeoutMs: 30_000 });
-  await writeSecretFile(host, `${CODEX_HOME}/auth.json`, setup.codexAuth);
+export async function setupSandbox(host: JobHost, setup: SandboxSetup, codexModel: string): Promise<{ choice: HarnessChoice; fallback?: string }> {
+  await host.run("mkdir", ["-p", T3_USERDATA, "/work"], { timeoutMs: 30_000 });
+  await installCodexLogin(host, setup.slot, setup.codexAuth);
+  let { choice, hasClaude } = setup;
+  let fallback: string | undefined;
+  if (choice.provider === CLAUDE && !(await loggedIn(host, "claude", ["auth", "status"]))) {
+    fallback = `claude in the sandbox is not logged in with this runner's CLAUDE_CODE_OAUTH_TOKEN; launching on ${CODEX} / ${codexModel}`;
+    choice = { provider: CODEX, model: codexModel };
+    hasClaude = false;
+  }
   await host.writeFile(`${CODEX_HOME}/config.toml`, codexConfig());
-  await host.writeFile(`${T3_USERDATA}/settings.json`, json(t3Settings(setup.choice, setup.hasClaude)));
+  await host.writeFile(`${T3_USERDATA}/settings.json`, json(t3Settings(choice, hasClaude)));
   await writeSecretFile(host, INGEST_CONFIG_PATH, setup.ingest);
   await writeGithubToken(host, setup.githubToken);
   await host.run("git", ["clone", "--quiet", `https://github.com/${setup.repo}.git`, REPO_DIR], { timeoutMs: 300_000 });
   await wire(host);
   await startT3(host);
   await host.run(host.t3, ["project", "add", REPO_DIR, "--title", setup.repo.split("/").pop()!], { timeoutMs: 60_000 });
+  return { choice, ...(fallback && { fallback }) };
 }
 
 /**
@@ -136,29 +214,46 @@ async function wire(host: JobHost) {
   await host.writeFile(userConfig, json({ ...withServer(parse(await host.readFile(userConfig)), FACTORY_ROOT), hasCompletedOnboarding: true }));
 }
 
-/** Started from an exec, `t3 serve` outlives it. Its log holds a pairing token, so it is never read back. */
-async function startT3(host: JobHost) {
+const T3_RUNTIME = `${T3_USERDATA}/server-runtime.json`;
+
+/**
+ * Started from an exec, `t3 serve` outlives it. Its log holds a pairing token, so it is never read
+ * back. A sandbox woken from a snapshot still has the last server's runtime file, so it goes first.
+ */
+export async function startT3(host: JobHost) {
+  await host.remove(T3_RUNTIME);
   await sh(host, `nohup ${host.t3} serve --host 127.0.0.1 --port ${T3_PORT} ${REPO_DIR} > /work/t3.log 2>&1 &`);
   for (let i = 0; i < 60; i++) {
-    if (await host.exists(`${T3_USERDATA}/server-runtime.json`)) return;
+    if (await host.exists(T3_RUNTIME)) return;
     await new Promise((resolve) => setTimeout(resolve, 2_000));
   }
   throw new Error("t3 serve did not become ready in the sandbox within 120 s");
 }
 
-/** Creates the job's sandbox; its id must be recorded on the job before anything else runs in it. */
-export async function createJobSandbox({ key, attempt, label, image, limits, claudeToken }: {
+/** Ends `t3 serve` so its SQLite state is on disk before a snapshot; a server already down is fine. */
+export async function stopT3(host: JobHost) {
+  // The bracket keeps the pattern from matching this script's own command line.
+  const server = "[t]3 serve";
+  await sh(host, `pkill -TERM -f '${server}'; for i in $(seq 1 20); do pgrep -f '${server}' >/dev/null || exit 0; sleep 0.5; done; pkill -KILL -f '${server}'; exit 0`);
+}
+
+/**
+ * Creates the job's sandbox, from the image or from its hibernation snapshot; its id must be
+ * recorded on the job before anything else runs in it.
+ */
+export async function createJobSandbox({ key, attempt, label, machineId, imageId, limits, claudeToken }: {
   key: string;
   attempt: number;
   label: string;
-  image: SandboxImage;
+  machineId: string;
+  imageId: string;
   limits: SandboxLimits;
   claudeToken: string | undefined;
 }) {
   const sandbox = await modal.api.create({
     name: sandboxName(key, attempt),
-    tags: { job: key, attempt: String(attempt), label },
-    imageId: image.imageId,
+    tags: { job: key, attempt: String(attempt), label, machine: machineId },
+    imageId,
     secrets: sandboxSecrets(claudeToken),
     // Claude Code refuses full access as root unless told it is in a sandbox.
     env: { IS_SANDBOX: "1" },

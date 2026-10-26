@@ -1,9 +1,7 @@
 import { and, asc, eq, gt, inArray, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
-import { z } from "zod";
 import { db } from "../db/client";
 import { agents, jobs, runs } from "../db/schema";
 import { STAGES, type Stage, type Usage } from "../lib/events";
-import { loadConfig } from "../lib/config";
 import { jobId, parseJob, parseJobs, sourceFor } from "../lib/sources";
 import { parseJobId, SOURCE_SHAPES } from "../lib/sources/shapes";
 import type { Job, JobDraft, JobId, JobSource, SourceAdapter } from "../lib/sources/types";
@@ -15,24 +13,26 @@ import { checkoutRepo, cleanupRepo, cleanupSubagentWorktrees } from "../lib/work
 import { github } from "../lib/github/pulls";
 import { claimConflict, conflictMessage, unclaimedRunsWithPr } from "../lib/conflicts";
 import { attemptBranch } from "../lib/factory";
-import { nudgeMessage, watch, type ThreadState } from "../lib/watchdog";
+import { nudgeMessage, watch } from "../lib/watchdog";
 import { isTracked } from "../lib/harness";
 import { readHarnesses } from "../lib/t3-state";
 import { readSettings, resolveExecution, resolveHarness, type HarnessChoice } from "../lib/settings";
 import { forbidInTest } from "../lib/test-mode";
-import { HostGoneError, hosts, type JobHost } from "../lib/host";
+import { ensureAwake, hosts, isHibernated, type JobHost } from "../lib/host";
 import { modalHost } from "../lib/modal-host";
-import { bindingOf, canReclaimSql, isStopped, PENDING, stopDeliverableSql } from "./binding";
+import { canReclaimSql, isStopped, PENDING, stopDeliverableSql } from "./binding";
+import { config } from "./config";
 import { thisMachine } from "./heartbeat";
+import { leaseSlot, teardownSandbox } from "./lifecycle";
+import { threads } from "./threads";
 import { claimReplies, qaBlock, resumeMessage } from "../lib/resume";
-
 
 // The factory's deterministic work. The runner calls these from webhook intents, its timer and
 // its startup reconcile; every one of them is idempotent, so calling one twice changes nothing.
 // Each acts only on this machine's jobs: another machine's thread, worktree and transcripts are
 // out of reach here, so its own runner watches, bills, writes back and stops them.
 
-export const config = loadConfig();
+export { config, threads };
 
 hosts.sandbox = modalHost;
 
@@ -97,8 +97,10 @@ async function postMerged(jobKey: string, prUrl: string, sessionId: string) {
 }
 
 async function sendBackForConflict(job: Job, head: string) {
+  // Handled already: checked before a hibernated job is woken for it.
+  if (job.conflict_head === head) return false;
   // Ask T3 first: a CLI error then fails this PR's check before anything is claimed.
-  const host = hosts.forJob(job);
+  const host = await ensureAwake(job);
   const thread = await threads.state(job.t3_thread_id, host);
   if (!(await claimConflict(db, job.id, head))) return false;
   const release = () => db.update(jobs).set({ conflict_head: job.conflict_head }).where(eq(jobs.id, job.id));
@@ -150,41 +152,6 @@ async function postEvent(event: Record<string, unknown>) {
   for (const refusal of refused) console.log(JSON.stringify({ at: new Date().toISOString(), event: "stage refused", ...refusal }));
 }
 
-/** Gone means T3 no longer has the thread, it is archived, or its worktree left the disk. */
-async function showThread(threadId: string | null, host: JobHost): Promise<ThreadState> {
-  if (!threadId) return "gone";
-  // A launch in progress; the runner records the real id or clears the marker.
-  if (bindingOf(threadId) === "pending") return "running";
-  let stdout: string;
-  try {
-    ({ stdout } = await host.run(host.t3, ["thread", "show", threadId, "--json"], { timeoutMs: 20_000 }));
-  } catch (error) {
-    if (error instanceof HostGoneError) return "gone";
-    // Only T3 saying the thread is gone counts as gone; a timeout or crash must not start a second thread.
-    const output = String((error as { stdout?: string }).stdout ?? "") + String((error as { stderr?: string }).stderr ?? "");
-    if (output.includes("no longer available")) return "gone";
-    throw error;
-  }
-  const { thread } = z
-    .object({
-      thread: z.object({
-        archived: z.boolean(),
-        worktreePath: z.string().nullable(),
-        activeRunId: z.string().nullable(),
-      }),
-    })
-    .parse(JSON.parse(stdout));
-  if (thread.archived || (thread.worktreePath !== null && !(await host.exists(thread.worktreePath)))) return "gone";
-  return thread.activeRunId ? "running" : "stopped";
-}
-
-export const threads = {
-  state: showThread,
-  async send(threadId: string, message: string, host: JobHost) {
-    await host.run(host.t3, ["thread", "send", threadId, "-"], { input: message, timeoutMs: 30_000, maxBuffer: 16 * 1024 * 1024 });
-  },
-};
-
 const threadAlive = async (threadId: string | null, host: JobHost) => (await threads.state(threadId, host)) !== "gone";
 
 /**
@@ -220,8 +187,10 @@ export async function resumeAnswered() {
     }
 
     const replyIds = plan.replies.map((r) => r.id);
-    const host = hosts.forJob(job);
+    const host = await ensureAwake(job);
     const alive = await threadAlive(job.t3_thread_id, host);
+    // A fresh thread launches in a fresh sandbox, so the dead one's sandbox, snapshot and slot go first.
+    if (!alive) await teardownSandbox(job);
     // A dead thread is unlinked in the same update that claims the replies, so the relaunch
     // cannot be lost to a later failure in this pass.
     const relaunch = alive ? undefined : qaBlock(plan.question, plan.answer);
@@ -279,6 +248,8 @@ export async function watchdog() {
     // Unknown instances fall back to their id, which equals the driver for T3's default instances.
   }
   for (const { job, lastEventAt } of working) {
+    // Only pr and waiting jobs hibernate; looking must never wake one.
+    if (isHibernated(job)) continue;
     const now = new Date();
     const host = hosts.forJob(job);
     const action = watch(
@@ -359,12 +330,14 @@ export async function watchdog() {
  */
 export async function reconcileUsage() {
   const recent = await db
-    .select({ run: runs, sandbox_id: jobs.sandbox_id })
+    .select({ run: runs, sandbox_id: jobs.sandbox_id, sandbox_snapshot: jobs.sandbox_snapshot })
     .from(runs)
     .leftJoin(jobs, eq(jobs.key, runs.job_key))
     .where(and(isNotNull(runs.job_key), gt(runs.last_event_at, new Date(Date.now() - 7 * 86_400_000))));
   const fixed: string[] = [];
-  for (const { run, sandbox_id } of recent) {
+  for (const { run, sandbox_id, sandbox_snapshot } of recent) {
+    // A hibernated job's transcripts are in its snapshot; its thread is settled, so nothing is behind.
+    if (isHibernated({ key: run.job_key!, sandbox_id, sandbox_snapshot })) continue;
     const host = hosts.forJob({ key: run.job_key!, sandbox_id });
     const path = transcriptPathFor(run);
     const transcript = path ? await host.readFile(path) : null;
@@ -635,6 +608,7 @@ export async function toLaunch() {
         isNull(jobs.machine_id),
         // An earlier attempt's sandbox still holds its login until teardown hands it back.
         isNull(jobs.sandbox_id),
+        isNull(jobs.sandbox_snapshot),
         isNull(jobs.codex_slot),
       ),
     )
@@ -812,29 +786,13 @@ export async function releaseLaunch(key: string, marker: string) {
     .where(and(eq(jobs.key, key), eq(jobs.t3_thread_id, marker)));
 }
 
-const uniqueViolation = (error: unknown): boolean =>
-  (error as { code?: string })?.code === "23505" || (error instanceof Error && error.cause !== undefined && uniqueViolation(error.cause));
+/** Leases a free login slot to a launch that holds its marker; undefined when every slot is held. */
+export const leaseCodexSlot = (key: string, marker: string, slots: readonly string[]) =>
+  leaseSlot(and(eq(jobs.key, key), eq(jobs.t3_thread_id, marker)), slots);
 
-/**
- * Leases a free login slot to a launch that holds its marker. The partial unique index on
- * codex_slot makes the lease atomic: a slot another launch took in between fails the write and
- * the next free one is tried. Undefined when every slot is held.
- */
-export async function leaseCodexSlot(key: string, marker: string, slots: readonly string[]) {
-  const held = new Set((await db.select({ slot: jobs.codex_slot }).from(jobs).where(isNotNull(jobs.codex_slot))).map((r) => r.slot));
-  for (const slot of slots.filter((s) => !held.has(s))) {
-    try {
-      const leased = await db
-        .update(jobs)
-        .set({ codex_slot: slot })
-        .where(and(eq(jobs.key, key), eq(jobs.t3_thread_id, marker), isNull(jobs.codex_slot)))
-        .returning({ key: jobs.key });
-      return leased.length > 0 ? slot : undefined;
-    } catch (error) {
-      if (!uniqueViolation(error)) throw error;
-    }
-  }
-  return undefined;
+/** Records the harness a launch fell back to after its sandbox refused the one it was claimed with. */
+export async function recordHarness(key: string, marker: string, { provider, model }: HarnessChoice) {
+  await db.update(jobs).set({ provider, model }).where(and(eq(jobs.key, key), eq(jobs.t3_thread_id, marker)));
 }
 
 export async function recordSandbox(key: string, marker: string, sandboxId: string) {
@@ -895,6 +853,11 @@ export async function deliverStops(id?: JobId) {
       .where(and(eq(jobs.id, job.id), eq(jobs.t3_thread_id, threadId), sql`${jobs.stop_sent_to} is distinct from ${threadId}`))
       .returning({ key: jobs.key });
     if (!claimed) continue;
+    // A hibernated thread settled before its sandbox was snapshotted, and teardown discards it: nothing to stop.
+    if (isHibernated(job)) {
+      delivered.push(job.key);
+      continue;
+    }
     const host = hosts.forJob(job);
     try {
       if ((await threads.state(threadId, host)) !== "gone") {

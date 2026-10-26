@@ -35,7 +35,10 @@ export type Projects = z.infer<typeof projectsSchema>;
 export const sandboxReadinessSchema = z.object({
   modal: z.boolean(),
   claude: z.boolean(),
+  /** Slots with a login that is not marked unusable. */
   codexSlots: z.number().int().nonnegative(),
+  /** Slots whose login failed in a sandbox and has not changed since; optional for older inventories. */
+  codexSlotsUnusable: z.number().int().nonnegative().optional(),
   image: z.boolean(),
 });
 export type SandboxReadiness = z.infer<typeof sandboxReadinessSchema>;

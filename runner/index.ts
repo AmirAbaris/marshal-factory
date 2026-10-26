@@ -18,6 +18,7 @@ const ops = await import("./ops");
 const { createBeat, inventoryCollectors, systemCollectors, thisMachine } = await import("./heartbeat");
 const { closeBroadcast, deliveryFor, leaseIntent, receiptIntent, recordReceipt } = await import("./intents");
 const { launchQueued } = await import("./launch");
+const { tickSandboxes } = await import("./lifecycle");
 const { recheckScheduler } = await import("./recheck");
 const { everyAtMost, serialQueue } = await import("./queue");
 const { isolated, reconcile } = await import("./reconcile");
@@ -161,6 +162,8 @@ async function tick() {
     reconciled: await isolated(ops.reconcileUsage),
     overBudget: await isolated(ops.enforceBudget),
     watched: await isolated(ops.watchdog),
+    // After the stops and the PR check, so a finished job gives its slot back before this tick's launches.
+    sandboxes: await isolated(tickSandboxes),
     synced: await isolated(async () => ops.writeBack()),
   };
 }

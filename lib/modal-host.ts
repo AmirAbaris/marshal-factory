@@ -18,7 +18,10 @@ export type SandboxHandle = {
   exec(command: string[], params?: { workdir?: string; timeoutMs?: number }): Promise<SandboxProcess>;
   filesystem: { readText(path: string): Promise<string>; writeText(data: string, path: string): Promise<void> };
   terminate(): Promise<unknown>;
+  snapshotFilesystem(params?: { timeoutMs?: number; ttlMs?: number | null }): Promise<{ imageId: string }>;
 };
+
+export type ListedSandbox = { sandboxId: string; tags: Record<string, string> };
 
 export type SandboxSpec = {
   name: string;
@@ -33,6 +36,9 @@ export type SandboxSpec = {
 export type ModalApi = {
   create(spec: SandboxSpec): Promise<SandboxHandle>;
   fromId(sandboxId: string): Promise<SandboxHandle>;
+  /** The running sandboxes in the app that carry every one of these tags. */
+  list(appName: string, tags: Record<string, string>): Promise<ListedSandbox[]>;
+  deleteImage(imageId: string): Promise<void>;
 };
 
 let client: ModalClient | undefined;
@@ -61,6 +67,20 @@ export const realModal: ModalApi = {
     });
   },
   fromId: async (sandboxId) => modalClient().sandboxes.fromId(sandboxId),
+  async list(appName, tags) {
+    const modal = modalClient();
+    let appId: string;
+    try {
+      appId = (await modal.apps.fromName(appName)).appId;
+    } catch (error) {
+      if (error instanceof NotFoundError) return [];
+      throw error;
+    }
+    const listed: ListedSandbox[] = [];
+    for await (const sandbox of modal.sandboxes.list({ appId, tags })) listed.push({ sandboxId: sandbox.sandboxId, tags: await sandbox.getTags() });
+    return listed;
+  },
+  deleteImage: async (imageId) => modalClient().images.delete(imageId),
 };
 
 /** The Modal client the runner uses; regressions replace `api`. */
@@ -105,6 +125,27 @@ export async function terminateSandbox(sandboxId: string) {
     handles.delete(sandboxId);
   }
 }
+
+/** Snapshots the sandbox's filesystem to an image a new sandbox can start from; a sandbox already gone throws HostGoneError. */
+export async function snapshotSandbox(sandboxId: string, ttlMs: number) {
+  try {
+    return (await (await handle(sandboxId)).snapshotFilesystem({ timeoutMs: 120_000, ttlMs })).imageId;
+  } catch (error) {
+    throw gone(sandboxId, error);
+  }
+}
+
+/** Deletes a snapshot image; one already deleted or expired counts as deleted. */
+export async function deleteSnapshot(imageId: string) {
+  try {
+    await modal.api.deleteImage(imageId);
+  } catch (error) {
+    if (!(error instanceof NotFoundError)) throw error;
+  }
+}
+
+/** Whether Modal no longer has the sandbox or image an error is about. */
+export const isModalGone = isGone;
 
 function execError(message: string, fields: Partial<ExecError>): ExecError {
   return Object.assign(new Error(message), fields);
