@@ -216,16 +216,17 @@ try {
   // Launch preflight: a slot whose login fails sends the job back to queued and is marked.
   const L = await insert("L", { stage: "queued", machine_id: null });
   const machine = { id: TEST_MACHINE_ID, repos: ["ski043/factory-demo"], maxInFlight: 1000 };
-  const entry = (k: string) => ({ key: k, sandbox_id: null, attempt: 1, budgetUsd: 5, source: "linear" as const, repo: "ski043/factory-demo", branch: `factory/${k}`, threadTitle: k, message: `Work ${k}` });
+  const codex = { provider: "codex", model: "gpt-6-astra" };
+  const entry = (k: string, harness = codex) => ({ key: k, sandbox_id: null, attempt: 1, budgetUsd: 5, source: "linear" as const, repo: "ski043/factory-demo", branch: `factory/${k}`, threadTitle: k, message: `Work ${k}`, harness, ticket: null });
   sandboxRuntime.slots = () => [slotC];
   codexOk = false;
-  const [loginless] = await launchInSandboxes([entry(L)], machine, { provider: "codex", model: "gpt-6-astra" });
+  const [loginless] = await launchInSandboxes([entry(L)], machine);
   assert.equal(loginless!.retry, "next pass", JSON.stringify(loginless));
   const l = await row(L);
   assert.deepEqual([l.stage, l.t3_thread_id, l.machine_id, l.sandbox_id, l.codex_slot], ["queued", null, null, null, null], "back to queued, holding nothing");
   assert.ok([...sandboxes.values()].filter((s) => s.spec?.tags.job === L).every((s) => s.terminated));
   assert.ok(readSlotHealth(healthPath).some((m) => m.slot === slotC), "the slot is marked");
-  assert.deepEqual(await launchInSandboxes([entry(L)], machine, { provider: "codex", model: "gpt-6-astra" }), [], "and not leased again while its login is unchanged");
+  assert.deepEqual(await launchInSandboxes([entry(L)], machine), [], "and not leased again while its login is unchanged");
   codexOk = true;
 
   // Claude Code that the sandbox's claude refuses falls back to Codex, recorded on the job.
@@ -233,7 +234,7 @@ try {
   await db.update(jobs).set({ codex_slot: null }).where(eq(jobs.key, RUN));
   claudeToken = "sk-ant-oat-fake";
   claudeOk = false;
-  const [fellBack] = await launchInSandboxes([entry(L)], machine, { provider: "claudeAgent", model: "claude-opus-5-5" });
+  const [fellBack] = await launchInSandboxes([entry(L, { provider: "claudeAgent", model: "claude-opus-5-5" })], machine);
   assert.equal(fellBack!.threadId, "thread-launched", JSON.stringify(fellBack));
   const lf = await row(L);
   assert.deepEqual([lf.provider, lf.model], ["codex", limits.codexModel]);
@@ -320,7 +321,7 @@ try {
   };
   limits.maxParallel = (await sandboxesInFlight(TEST_MACHINE_ID)) + 1;
   try {
-    const batch = await launchInSandboxes([entry(P1), entry(P2)], machine, { provider: "codex", model: "gpt-6-astra" });
+    const batch = await launchInSandboxes([entry(P1), entry(P2)], machine);
     assert.deepEqual(batch.map((r) => [r.key, r.retry ?? r.threadId]), [[P1, "next pass"], [P2, "thread-launched"]], JSON.stringify(batch));
     assert.deepEqual([(await row(P1)).machine_id, (await row(P1)).codex_slot], [null, null], "the failed launch holds nothing");
   } finally {

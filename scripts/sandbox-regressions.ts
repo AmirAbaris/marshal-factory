@@ -111,7 +111,8 @@ Object.assign(sandboxRuntime, {
   log: (event: string, detail: Record<string, unknown>) => void events.push({ event, detail }),
   slotHealthPath: join(mkdtempSync(join(tmpdir(), "slot-health-")), "codex-slots.json"),
 });
-const entry = (key: string) => ({ key, sandbox_id: null, attempt: 1, budgetUsd: 7, source: "linear" as const, repo: "ski043/factory-demo", branch: `factory/${key}`, threadTitle: `${key} t`, message: `Work ${key}` });
+const claudeCode = { provider: "claudeAgent", model: "claude-opus-5-5" };
+const entry = (key: string, harness = claudeCode) => ({ key, sandbox_id: null, attempt: 1, budgetUsd: 7, source: "linear" as const, repo: "ski043/factory-demo", branch: `factory/${key}`, threadTitle: `${key} t`, message: `Work ${key}`, harness, ticket: null });
 const row = async (key: string) => (await db.select().from(jobs).where(eq(jobs.key, key)))[0]!;
 const ids = keys.map((k) => `sandbox-regress-${k}`);
 
@@ -135,20 +136,23 @@ fake.answer = async (sandbox, argv) => {
 const original = await readSettings(db);
 try {
   await db.insert(jobs).values(ids.map((id, i) => linearJob(id, keys[i]!)));
-  const harness = { provider: "claudeAgent", model: "claude-opus-5-5" };
 
   // Without the image nothing is claimed and the runner says why.
   sandboxRuntime.image = () => null;
-  assert.deepEqual(await launchInSandboxes([entry(keys[0]!)], slot, harness), []);
+  assert.deepEqual(await launchInSandboxes([entry(keys[0]!)], slot), []);
   assert.equal((await row(keys[0]!)).t3_thread_id, null, "a job stays queued without an image");
   assert.equal(events.at(-1)!.event, "sandbox:no-image");
   sandboxRuntime.image = () => image;
   assert.equal(fake.created, 0, "and no sandbox was created");
 
   // No Claude token: the Claude Code job runs on Codex, recorded on the job.
-  const [first] = await launchInSandboxes([entry(keys[0]!)], slot, harness);
+  const announced: string[] = [];
+  const ticket = { execution: "modal" as const, notes: [] };
+  const [first] = await launchInSandboxes([{ ...entry(keys[0]!), ticket }], slot, async (e) => void announced.push(e.key));
   assert.equal(first!.threadId, "thread-1", JSON.stringify(first));
+  assert.deepEqual(announced, [keys[0]], "a launch that holds its job and slot announces the ticket's fallbacks");
   const a = await row(keys[0]!);
+  assert.deepEqual([a.execution, a.ticket_overrides], ["modal", ticket], "the job records where it runs and its ticket's overrides");
   const sbA = sandboxes.get(a.sandbox_id!)!;
   assert.deepEqual([a.t3_thread_id, a.codex_slot, a.provider, a.model], ["thread-1", slotA, "codex", "gpt-6-astra"]);
   assert.ok(events.some((e) => e.event === "sandbox:harness-fallback" && e.detail.key === keys[0]), "the fallback is logged");
@@ -188,7 +192,8 @@ try {
   assert.equal(startExec.input, `Work ${keys[0]}`);
 
   // The only slot is held now: the next job stays queued.
-  const none = await launchInSandboxes([entry(keys[1]!)], slot, harness);
+  const none = await launchInSandboxes([entry(keys[1]!)], slot, async (e) => void announced.push(e.key));
+  assert.deepEqual(announced, [keys[0]], "a launch that found no slot announces nothing");
   assert.deepEqual(none, []);
   assert.deepEqual([(await row(keys[1]!)).t3_thread_id, (await row(keys[1]!)).machine_id], [null, null], "no free slot, so the claim is undone");
   assert.equal(events.at(-1)!.event, "sandbox:no-slot");
@@ -196,7 +201,7 @@ try {
   // With a Claude token the job keeps its harness, and the token goes in as a secret.
   claudeToken = "sk-ant-oat-fake";
   slots = [slotA, slotB];
-  await launchInSandboxes([entry(keys[1]!)], slot, harness);
+  await launchInSandboxes([entry(keys[1]!)], slot);
   const b = await row(keys[1]!);
   const sbB = sandboxes.get(b.sandbox_id!)!;
   assert.deepEqual([b.codex_slot, b.provider, b.model], [slotB, "claudeAgent", "claude-opus-5-5"], "the free slot is leased");
@@ -209,7 +214,7 @@ try {
   const maxParallel = config.factory.sandbox.maxParallel;
   config.factory.sandbox.maxParallel = 2;
   try {
-    assert.deepEqual(await launchInSandboxes([entry(keys[2]!)], slot, harness), [], "two working sandboxes fill maxParallel 2");
+    assert.deepEqual(await launchInSandboxes([entry(keys[2]!)], slot), [], "two working sandboxes fill maxParallel 2");
     assert.equal((await row(keys[2]!)).t3_thread_id, null);
   } finally {
     config.factory.sandbox.maxParallel = maxParallel;
@@ -217,7 +222,7 @@ try {
 
   // A clear setup failure ends the sandbox and frees everything for the next pass.
   clone = { code: 128, stderr: "fatal: repository not found" };
-  const [cloneFailed] = await launchInSandboxes([entry(keys[2]!)], slot, harness);
+  const [cloneFailed] = await launchInSandboxes([entry(keys[2]!)], slot);
   assert.equal(cloneFailed!.retry, "next pass", JSON.stringify(cloneFailed));
   const c = await row(keys[2]!);
   assert.deepEqual([c.t3_thread_id, c.machine_id, c.sandbox_id, c.codex_slot, c.provider], [null, null, null, null, null]);
@@ -228,7 +233,7 @@ try {
 
   // A start that may have made the thread keeps the sandbox and the slot for recovery.
   start = { stdout: "not json" };
-  const [maybe] = await launchInSandboxes([entry(keys[3]!)], slot, harness);
+  const [maybe] = await launchInSandboxes([entry(keys[3]!)], slot);
   assert.equal(maybe!.retry, "after launch recovery");
   const d = await row(keys[3]!);
   const sbD = sandboxes.get(d.sandbox_id!)!;

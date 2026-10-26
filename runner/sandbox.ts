@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { dirname, resolve } from "node:path";
+import { homedir, tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import type { FactoryConfig, SandboxLimits } from "../lib/config";
 import type { ExecError } from "../lib/exec";
 import { sandboxTokens, type RepoName } from "../lib/github/app";
@@ -52,6 +52,7 @@ function writeAtomic(path: string, text: string) {
 export const sandboxRuntime = {
   image: (): SandboxImage | null => readSandboxImage(),
   claudeToken: (): string | undefined => process.env.CLAUDE_CODE_OAUTH_TOKEN || undefined,
+  modalToken: () => Boolean(process.env.MODAL_TOKEN_ID) || existsSync(join(homedir(), ".modal.toml")),
   githubToken: (repo: RepoName) => sandboxTokens.get(repo),
   /** The configured CODEX_HOME dirs that hold a login. */
   slots: (limits: Pick<SandboxLimits, "codexSlots">) => limits.codexSlots.filter((slot) => existsSync(slotAuthPath(slot))),

@@ -26,6 +26,7 @@ const { stopDeliverable } = await import("./binding");
 const { inferUntracked } = await import("./untracked");
 const { decideMerges } = await import("./merge-decision");
 const { watchMerges } = await import("./post-merge");
+const { syncLinearLabels } = await import("./overrides");
 type IntentRow = typeof intents.$inferSelect;
 
 const machine = await thisMachine();
@@ -256,11 +257,14 @@ async function subscribe() {
 await subscribe();
 
 const hourlyCleanup = everyAtMost(3_600_000, () => ops.cleanup());
+const labelSync = ops.config.factory.syncLinearLabels ? everyAtMost(86_400_000, () => syncLinearLabels()) : undefined;
+if (ops.config.factory.syncLinearLabels) void serial("labelSync", () => syncLinearLabels());
 setInterval(() => {
   void serial("tick", async () => {
     const result = { ...(await tick()), ...(await launchAndAnnounce()) };
     const cleaned = await hourlyCleanup();
-    return cleaned === undefined ? result : { ...result, cleaned };
+    const labels = await labelSync?.();
+    return { ...result, ...(cleaned !== undefined && { cleaned }), ...(labels !== undefined && { labels }) };
   });
   // Intents the subscription may not have delivered.
   void openIntents().then(takeIntents);

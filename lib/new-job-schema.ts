@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { executionSchema } from "./execution";
 
 // Shared by the new-job form and the server action; kept apart from lib/new-job.ts so the form
 // does not bundle the Linear client.
@@ -8,6 +9,10 @@ export const newJobSchema = z.object({
   description: z.string().trim().max(10_000, "Keep the description under 10,000 characters."),
   /** Chosen when the form opens, so a double submit or a retried request creates one issue. */
   requestId: z.uuid(),
+  /** A harness's provider instance id; unset files the issue without a Harness label, so Settings decide. */
+  provider: z.string().trim().min(1).optional(),
+  /** Unset files the issue without a Runs on label. */
+  execution: executionSchema.optional(),
 });
 export type NewJob = z.infer<typeof newJobSchema>;
 

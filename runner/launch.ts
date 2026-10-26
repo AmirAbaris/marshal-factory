@@ -7,7 +7,9 @@ import { imageProblem, REPO_DIR } from "../lib/sandbox";
 import { PENDING } from "./binding";
 import { thisMachine } from "./heartbeat";
 import type { JobSource } from "../lib/sources/types";
-import type { EffectiveHarness, HarnessChoice } from "../lib/settings";
+import type { Execution } from "../lib/execution";
+import type { HarnessChoice } from "../lib/settings";
+import { ticketLabels, type TicketRecord } from "../lib/ticket-overrides";
 import {
   bindThread,
   claimLaunch,
@@ -26,6 +28,7 @@ import {
   type LaunchSlot,
 } from "./ops";
 import { loginFailed, noteTokenWritten, retireSandbox } from "./lifecycle";
+import { announceFallbacks, capabilities, overrideRuntime, planLaunch, splitByExecution } from "./overrides";
 import { CodexLoginError, createJobSandbox, ingestConfig, sandboxHarness, sandboxRuntime, setupSandbox, usableSlots } from "./sandbox";
 
 const sh = async (host: JobHost, cmd: string, args: string[], cwd?: string) =>
@@ -155,7 +158,7 @@ export async function recoverPending(checkouts: ReadonlyMap<string, string>) {
   return recovered;
 }
 
-type LaunchEntry = {
+export type LaunchEntry = {
   key: string;
   sandbox_id: null;
   attempt: number;
@@ -165,7 +168,13 @@ type LaunchEntry = {
   branch: string;
   threadTitle: string;
   message: string;
+  /** The harness this job's plan chose; a sandbox may still map it to one it has. */
+  harness: HarnessChoice;
+  ticket: TicketRecord | null;
 };
+
+/** Runs once a launch holds the job, before its thread starts. */
+type Claimed = (entry: LaunchEntry) => Promise<void>;
 
 export type LaunchDeps = {
   claim: (key: string, marker: string) => Promise<boolean>;
@@ -216,10 +225,10 @@ export async function launchEntries(entries: readonly LaunchEntry[], deps: Launc
 }
 
 /**
- * Starts a T3 thread for every queued job no machine holds, on this machine or in a Modal sandbox
- * as the settings say. Each launch is claimed with a pending marker first, so a crash or timeout
- * after T3 created the thread can never start a second one on the same branch, and another machine
- * can never start the same job.
+ * Starts a T3 thread for every queued job no machine holds, each where its plan says: on this
+ * machine or in a Modal sandbox, with the ticket's overrides over the settings. Each launch is
+ * claimed with a pending marker first, so a crash or timeout after T3 created the thread can never
+ * start a second one on the same branch, and another machine can never start the same job.
  */
 export async function launchQueued(onWorktree: (check: Record<string, unknown>) => void = () => {}) {
   const checkouts = await factoryCheckouts();
@@ -227,20 +236,38 @@ export async function launchQueued(onWorktree: (check: Record<string, unknown>) 
   const recovered = await recoverPending(checkouts);
   const machine = await thisMachine();
   if ((await machineInFlight(machine.id)) >= config.factory.maxInFlight) return recovered;
-  const pending = (await toLaunch()).filter((entry) => checkouts.has(entry.repo));
-  if (pending.length === 0) return recovered;
+  const queued = (await toLaunch()).filter((entry) => checkouts.has(entry.repo));
+  if (queued.length === 0) return recovered;
   const slot = { id: machine.id, repos: [...checkouts.keys()], maxInFlight: config.factory.maxInFlight };
-  const { harness, execution } = await launchSettings();
-  switch (execution) {
-    case "local":
-      return [...recovered, ...(await launchLocal(pending, checkouts, slot, harness, onWorktree))];
-    case "modal":
-      return [...recovered, ...(await launchInSandboxes(pending, slot, harness))];
-    default: {
-      const never: never = execution;
-      throw new Error(`unknown execution ${String(never)}`);
+  const settings = await launchSettings();
+  const harnesses = await overrideRuntime.harnesses();
+  const can = capabilities();
+  const planned: (LaunchEntry & { execution: Execution })[] = [];
+  const waiting: { key: string; reason: string }[] = [];
+  for (const { job, ...entry } of queued) {
+    const plan = planLaunch(ticketLabels(job.source_state), settings, harnesses, can);
+    switch (plan.kind) {
+      case "launch":
+        planned.push({ ...entry, harness: plan.harness, ticket: plan.ticket, execution: plan.execution });
+        break;
+      case "wait":
+        waiting.push({ key: entry.key, reason: plan.reason });
+        break;
+      default: {
+        const never: never = plan;
+        throw new Error(`unknown plan ${String(never)}`);
+      }
     }
   }
+  if (waiting.length > 0) overrideRuntime.log("override:waiting", { waiting });
+  const jobs = new Map(queued.map((q) => [q.key, q.job]));
+  const claimed: Claimed = (entry) => announceFallbacks(jobs.get(entry.key)!, entry.ticket);
+  const { local, modal } = splitByExecution(planned);
+  return [
+    ...recovered,
+    ...(local.length > 0 ? await launchLocal(local, checkouts, slot, claimed, onWorktree) : []),
+    ...(modal.length > 0 ? await launchInSandboxes(modal, slot, claimed) : []),
+  ];
 }
 
 /** In this machine's checkout of the job's repo, on a worktree cut from freshly fetched origin/main. */
@@ -248,9 +275,10 @@ async function launchLocal(
   pending: readonly LaunchEntry[],
   checkouts: ReadonlyMap<string, string>,
   slot: LaunchSlot,
-  harness: EffectiveHarness,
+  claimed: Claimed,
   onWorktree: (check: Record<string, unknown>) => void,
 ) {
+  const byKey = new Map(pending.map((entry) => [entry.key, entry]));
   const origins = new Map<string, string>();
   for (const repo of new Set(pending.map((entry) => entry.repo))) {
     const checkout = checkouts.get(repo)!;
@@ -258,10 +286,15 @@ async function launchLocal(
     origins.set(repo, await sh(localHost, "git", ["rev-parse", "origin/main"], checkout));
   }
   const launched = await launchEntries(pending, {
-    claim: (key, marker) => claimLaunch(key, marker, slot, harness),
+    async claim(key, marker) {
+      const entry = byKey.get(key)!;
+      if (!(await claimLaunch(key, marker, slot, entry.harness, { execution: "local", ticket: entry.ticket }))) return false;
+      await claimed(entry);
+      return true;
+    },
     // After the claim, so a job another machine wins downloads nothing here.
     start: async (entry) =>
-      startThread(hosts.forJob(entry), checkouts.get(entry.repo)!, entry.branch, entry.threadTitle, await withLocalImages(entry.source, entry.key, entry.message), harness),
+      startThread(hosts.forJob(entry), checkouts.get(entry.repo)!, entry.branch, entry.threadTitle, await withLocalImages(entry.source, entry.key, entry.message), entry.harness),
     bind: bindThread,
     release: releaseLaunch,
     now: Date.now,
@@ -287,7 +320,7 @@ class SandboxSetupError extends Error {}
  * them findable. A failure before the thread start ends the sandbox and frees the slot; a start
  * that may have made the thread keeps both for launch recovery, which asks the sandbox's T3.
  */
-export async function launchInSandboxes(pending: readonly LaunchEntry[], slot: LaunchSlot, harness: HarnessChoice) {
+export async function launchInSandboxes(pending: readonly LaunchEntry[], slot: LaunchSlot, claimed: Claimed = async () => {}) {
   const limits = config.factory.sandbox;
   const runtime = sandboxRuntime;
   const image = runtime.image();
@@ -297,13 +330,15 @@ export async function launchInSandboxes(pending: readonly LaunchEntry[], slot: L
     return [];
   }
   const claudeToken = runtime.claudeToken();
-  const { choice, fallback } = sandboxHarness(harness, runtime.driverOf(harness.provider), Boolean(claudeToken), limits.codexModel);
+  const byKey = new Map(pending.map((entry) => [entry.key, entry]));
   let room = limits.maxParallel - (await sandboxesInFlight(slot.id));
-  const leases = new Map<string, { marker: string; slot: string }>();
+  const leases = new Map<string, { marker: string; slot: string; choice: HarnessChoice }>();
   return launchEntries(pending, {
     async claim(key, marker) {
       if (room <= 0) return false;
-      if (!(await claimLaunch(key, marker, slot, choice))) return false;
+      const entry = byKey.get(key)!;
+      const { choice, fallback } = sandboxHarness(entry.harness, runtime.driverOf(entry.harness.provider), Boolean(claudeToken), limits.codexModel);
+      if (!(await claimLaunch(key, marker, slot, choice, { execution: "modal", ticket: entry.ticket }))) return false;
       const codexSlot = await leaseCodexSlot(key, marker, usableSlots(limits));
       if (!codexSlot) {
         await releaseLaunch(key, marker);
@@ -311,8 +346,9 @@ export async function launchInSandboxes(pending: readonly LaunchEntry[], slot: L
         return false;
       }
       room--;
-      leases.set(key, { marker, slot: codexSlot });
+      leases.set(key, { marker, slot: codexSlot, choice });
       if (fallback) runtime.log("sandbox:harness-fallback", { key, reason: fallback });
+      await claimed(entry);
       return true;
     },
     async start(entry) {
@@ -338,7 +374,7 @@ export async function launchInSandboxes(pending: readonly LaunchEntry[], slot: L
           throw error;
         }
         host = created.host;
-        const setup = { repo: entry.repo, choice, hasClaude: Boolean(claudeToken), slot: lease.slot, codexAuth, githubToken, ingest: ingestConfig(config, entry.budgetUsd) };
+        const setup = { repo: entry.repo, choice: lease.choice, hasClaude: Boolean(claudeToken), slot: lease.slot, codexAuth, githubToken, ingest: ingestConfig(config, entry.budgetUsd) };
         const outcome = await setupSandbox(host, setup, limits.codexModel);
         noteTokenWritten(created.sandboxId);
         ran = outcome.choice;

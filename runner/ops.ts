@@ -17,6 +17,8 @@ import { nudgeMessage, watch } from "../lib/watchdog";
 import { isTracked } from "../lib/harness";
 import { readHarnesses } from "../lib/t3-state";
 import { readSettings, resolveExecution, resolveHarness, type HarnessChoice } from "../lib/settings";
+import type { Execution } from "../lib/execution";
+import type { TicketRecord } from "../lib/ticket-overrides";
 import { forbidInTest } from "../lib/test-mode";
 import { ensureAwake, HostGoneError, hosts, isHibernated, type JobHost } from "../lib/host";
 import { modalHost } from "../lib/modal-host";
@@ -552,6 +554,8 @@ export async function claim({
             machine_id: null,
             provider: null,
             model: null,
+            execution: null,
+            ticket_overrides: null,
             session_id: null,
             nudged_at: null,
             nudged_stage: null,
@@ -654,6 +658,7 @@ export async function toLaunch() {
     )
     .orderBy(asc(jobs.claimed_at), asc(jobs.key));
   return parseJobs(rows).map((job) => ({
+    job,
     key: job.key,
     sandbox_id: null,
     attempt: job.attempt,
@@ -795,15 +800,26 @@ export async function launchSettings() {
  * Marks a queued job as being launched by this machine, as one compare-and-set: false when another
  * launch or machine holds the job, the machine has no checkout of its repo, or the machine is full.
  * The capacity count is read in the same statement, which holds because one machine runs one
- * runner and its launches run one at a time. The harness is recorded with the marker, so a launch
- * that launch recovery binds later still says what it ran on.
+ * runner and its launches run one at a time. The harness, where it runs and the ticket's overrides
+ * are recorded with the marker, so a launch that launch recovery binds later still says what it ran on.
  */
-export async function claimLaunch(key: string, marker: string, machine: LaunchSlot, harness?: HarnessChoice) {
+export async function claimLaunch(
+  key: string,
+  marker: string,
+  machine: LaunchSlot,
+  harness?: HarnessChoice,
+  where?: { execution: Execution; ticket: TicketRecord | null },
+) {
   if (machine.repos.length === 0) return false;
   const working = sql.join(IN_FLIGHT.map((stage) => sql`${stage}`), sql`, `);
   const claimed = await db
     .update(jobs)
-    .set({ t3_thread_id: marker, machine_id: machine.id, ...(harness && { provider: harness.provider, model: harness.model }) })
+    .set({
+      t3_thread_id: marker,
+      machine_id: machine.id,
+      ...(harness && { provider: harness.provider, model: harness.model }),
+      ...(where && { execution: where.execution, ticket_overrides: where.ticket }),
+    })
     .where(
       and(
         eq(jobs.key, key),
@@ -822,7 +838,7 @@ export async function claimLaunch(key: string, marker: string, machine: LaunchSl
 export async function releaseLaunch(key: string, marker: string) {
   await db
     .update(jobs)
-    .set({ t3_thread_id: null, machine_id: null, provider: null, model: null, sandbox_id: null, codex_slot: null })
+    .set({ t3_thread_id: null, machine_id: null, provider: null, model: null, execution: null, ticket_overrides: null, sandbox_id: null, codex_slot: null })
     .where(and(eq(jobs.key, key), eq(jobs.t3_thread_id, marker)));
 }
 

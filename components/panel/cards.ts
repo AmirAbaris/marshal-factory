@@ -2,7 +2,7 @@ import type { JobRow, RunRow } from "@/db/schema";
 import type { Stage } from "@/lib/events";
 import { sandboxState, type SandboxState } from "@/lib/execution";
 import { attemptBranch } from "@/lib/factory";
-import { isTracked } from "@/lib/harness";
+import { harnessLabel, isTracked, type Harness } from "@/lib/harness";
 import { mergeDecisionSchema, type MergeDecision } from "@/lib/merge-decision";
 import { sourceLink } from "@/lib/sources/shapes";
 import { groupBy } from "./format";
@@ -28,13 +28,39 @@ export type BoardCard = {
   /** The run the card opens; null while a claimed job has no session yet. */
   latest: RunRow | null;
   runs: RunRow[];
-  /** Set when the job runs on a harness that reports no stages or cost, so the card says so. */
-  untracked: { provider: string; model: string | null } | null;
-  /** Set when the job runs in a Modal sandbox. */
-  sandbox: SandboxState | null;
+  /** The harness the current attempt launched on; null before a launch. */
+  harness: CardHarness | null;
+  /** Where the current attempt runs; null before a launch. */
+  runsOn: RunsOn | null;
   /** The runner's merge decision while the job is in pr, or once the factory merged it. */
   mergeDecision: MergeDecision | null;
 };
+
+/** Untracked harnesses report no stages or cost, so the card says so. */
+export type CardHarness = { name: string; tracked: boolean };
+
+export type RunsOn = { kind: "modal"; sandbox: SandboxState | null } | { kind: "local"; machineId: string };
+
+export function runsOn(job: Pick<JobRow, "execution" | "machine_id" | "sandbox_id" | "sandbox_snapshot">): RunsOn | null {
+  const sandbox = sandboxState(job);
+  if (job.execution === "modal" || sandbox) return { kind: "modal", sandbox };
+  return job.machine_id ? { kind: "local", machineId: job.machine_id } : null;
+}
+
+export function whereLine(where: RunsOn, machineName: string | null) {
+  switch (where.kind) {
+    case "modal":
+      return "Modal sandbox";
+    case "local":
+      return `Local · ${machineName ?? where.machineId}`;
+    default: {
+      const never: never = where;
+      throw new Error(`unknown place ${String(never)}`);
+    }
+  }
+}
+
+export const harnessLine = (harness: CardHarness) => (harness.tracked ? harness.name : `${harness.name} · not tracked`);
 
 /** The decision a job shows: while in pr, and after a merge the factory made, for its watch on main. */
 export function shownDecision(job: Pick<JobRow, "stage" | "merge_decision">): MergeDecision | null {
@@ -44,12 +70,12 @@ export function shownDecision(job: Pick<JobRow, "stage" | "merge_decision">): Me
 
 const stagedAt = (run: RunRow) => run.stage_at?.getTime() ?? 0;
 
-/** `drivers` maps provider instance ids to their driver, so a renamed Claude Code instance stays tracked. */
-export function boardCards(
-  jobs: readonly JobRow[],
-  runs: readonly RunRow[],
-  drivers: ReadonlyMap<string, string> = new Map(),
-): BoardCard[] {
+/** `harnesses` are the ones the machines report, so a renamed Claude Code instance keeps its name and stays tracked. */
+export function boardCards(jobs: readonly JobRow[], runs: readonly RunRow[], harnesses: readonly Harness[] = []): BoardCard[] {
+  const harnessOf = (provider: string): CardHarness => {
+    const known = harnesses.find((h) => h.id === provider);
+    return { name: known?.name ?? harnessLabel(provider), tracked: isTracked(known?.driver ?? provider) };
+  };
   const byKey = groupBy(
     runs.filter((r) => r.job_key !== null),
     (r) => r.job_key!,
@@ -77,11 +103,8 @@ export function boardCards(
       nudgedAt: job.nudged_stage === job.stage ? job.nudged_at : null,
       latest: attemptRuns.find((r) => r.session_id === job.session_id) ?? attemptRuns[0] ?? null,
       runs: jobRuns,
-      untracked:
-        job.provider && !isTracked(drivers.get(job.provider) ?? job.provider)
-          ? { provider: job.provider, model: job.model }
-          : null,
-      sandbox: sandboxState(job),
+      harness: job.provider ? harnessOf(job.provider) : null,
+      runsOn: runsOn(job),
       mergeDecision: shownDecision(job),
     };
   });
@@ -112,8 +135,8 @@ export function boardCards(
         nudgedAt: null,
         latest,
         runs: sorted,
-        untracked: null,
-        sandbox: null,
+        harness: null,
+        runsOn: null,
         mergeDecision: null,
       };
     },

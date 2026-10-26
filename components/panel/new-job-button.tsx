@@ -18,8 +18,12 @@ import {
 } from "@/components/ui/dialog";
 import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
+import { EXECUTIONS, executionSchema } from "@/lib/execution";
+import type { Harness } from "@/lib/harness";
+import { RUNS_ON_LABELS } from "@/lib/ticket-overrides";
 import { cn } from "@/lib/utils";
 import { JOB_IMAGE_TYPES, MAX_JOB_IMAGE_BYTES, newJobSchema, type ImageUploadOutcome, type NewJob, type NewJobOutcome } from "@/lib/new-job-schema";
 
@@ -43,8 +47,10 @@ async function uploadImage(file: File): Promise<ImageUploadOutcome> {
   return (await res.json().catch(() => ({ ok: false, status: 502, message: `The panel answered ${res.status}.` }))) as ImageUploadOutcome;
 }
 
+const SETTINGS_DEFAULT = "settings-default";
+
 /** Starts a job by filing it in Linear, where the factory picks it up like any labeled issue. */
-export function NewJobButton() {
+export function NewJobButton({ harnesses }: { harnesses: readonly Harness[] }) {
   const [open, setOpen] = useState(false);
   const [created, setCreated] = useState<Extract<NewJobOutcome, { ok: true }> | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
@@ -155,7 +161,8 @@ export function NewJobButton() {
             <DialogHeader>
               <DialogTitle>New job</DialogTitle>
               <DialogDescription>
-                Files a Linear issue with the factory label. Questions and answers then happen on that issue.
+                Files a Linear issue with the factory label. Questions and answers then happen on that issue. A harness or
+                place other than the Settings default goes on the issue as its Harness or Runs on label.
               </DialogDescription>
             </DialogHeader>
             <FieldGroup>
@@ -197,6 +204,52 @@ export function NewJobButton() {
                   </Field>
                 )}
               />
+              <div className="grid grid-cols-2 gap-4">
+                <Controller
+                  name="provider"
+                  control={form.control}
+                  render={({ field }) => (
+                    <Field>
+                      <FieldLabel htmlFor="new-job-harness">Harness</FieldLabel>
+                      <Select value={field.value ?? SETTINGS_DEFAULT} onValueChange={(v) => field.onChange(v === SETTINGS_DEFAULT ? undefined : v)}>
+                        <SelectTrigger id="new-job-harness" className="w-full">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value={SETTINGS_DEFAULT}>Settings default</SelectItem>
+                          {harnesses.map((h) => (
+                            <SelectItem key={h.id} value={h.id}>
+                              {h.name}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </Field>
+                  )}
+                />
+                <Controller
+                  name="execution"
+                  control={form.control}
+                  render={({ field }) => (
+                    <Field>
+                      <FieldLabel htmlFor="new-job-runs-on">Runs on</FieldLabel>
+                      <Select value={field.value ?? SETTINGS_DEFAULT} onValueChange={(v) => field.onChange(v === SETTINGS_DEFAULT ? undefined : executionSchema.parse(v))}>
+                        <SelectTrigger id="new-job-runs-on" className="w-full">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value={SETTINGS_DEFAULT}>Settings default</SelectItem>
+                          {EXECUTIONS.map((e) => (
+                            <SelectItem key={e} value={e}>
+                              {RUNS_ON_LABELS[e]}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </Field>
+                  )}
+                />
+              </div>
               <div className="flex flex-wrap items-start gap-2">
                 {images.map((image) => (
                   <div key={image.id} className="flex flex-col gap-1">
