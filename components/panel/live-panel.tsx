@@ -4,6 +4,7 @@ import { useMemo } from "react";
 import type { AgentRow, AuditRow, EventRow, JobRow, MachineRow, RunRow } from "@/db/schema";
 import { Board } from "./board";
 import { boardCards } from "./cards";
+import { sandboxState } from "@/lib/execution";
 import { attemptBranch } from "@/lib/factory";
 import { reportedHarnesses } from "@/lib/machine";
 import { groupBy, spendOf } from "./format";
@@ -61,6 +62,13 @@ export function LivePanel({
     const claimed = new Set(jobRows.map((j) => j.key));
     return runRows.filter((r) => r.stage === null && !(r.job_key && claimed.has(r.job_key)));
   }, [jobRows, runRows]);
+  const sandboxNote = useMemo(() => {
+    const states = jobRows.map(sandboxState);
+    const running = states.filter((s) => s === "running").length;
+    const hibernated = states.filter((s) => s === "hibernated").length;
+    if (running + hibernated === 0) return null;
+    return `${running} in sandboxes${hibernated > 0 ? `, ${hibernated} hibernated` : ""}`;
+  }, [jobRows]);
   const startOfToday = useAfterHydration(() => new Date().setHours(0, 0, 0, 0), 0);
   const selectedRun = detail && runRows.find((r) => r.session_id === detail.sessionId);
   const selectedJob = selectedRun?.job_key
@@ -72,7 +80,7 @@ export function LivePanel({
       <PanelHeader
         title={view === "board" ? "Board" : "Other activity"}
         status={status}
-        note={`${runRows.filter((r) => r.status === "active").length} active`}
+        note={[`${runRows.filter((r) => r.status === "active").length} active`, sandboxNote].filter(Boolean).join(" · ")}
         actions={view === "board" ? <NewJobButton /> : undefined}
       />
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
