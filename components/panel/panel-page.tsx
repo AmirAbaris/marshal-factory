@@ -49,7 +49,7 @@ async function Panel({ view, searchParams }: { view: PanelView; searchParams: Pr
   );
 }
 
-/** The board and the other-activity page share their data, their live feeds and run detail. */
+/** The board, the list and the other-activity page share their data, their live feeds and run detail. */
 export function PanelPage({ view, searchParams }: { view: PanelView; searchParams: Promise<Record<string, string | string[] | undefined>> }) {
   return (
     <Suspense fallback={<div className="h-full" />}>

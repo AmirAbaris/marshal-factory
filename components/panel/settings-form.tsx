@@ -15,7 +15,7 @@ import { DEFAULT_MODEL, DEFAULT_PROVIDER, harnessLabel, isTracked, type Harness 
 import { imageOutdated, reportedHarnesses, reportedSandbox, type SandboxReadiness } from "@/lib/machine";
 import { MergingSettings, type RepoMerging } from "./merging-settings";
 import { useFeed, type Feed } from "./sealed";
-import { PanelHeader } from "./panel-header";
+import { PanelFooter, PanelHeader } from "./panel-header";
 import { useAfterHydration, useNow } from "./time";
 
 const CLOCK_TICK_MS = 30_000;
@@ -240,7 +240,7 @@ export function SettingsForm({ machines, saved, merging }: { machines: Feed<Mach
 
   return (
     <>
-      <PanelHeader title="Settings" status={status} />
+      <PanelHeader title="Settings" />
       <div className="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto p-5">
         <Card className="max-w-2xl">
           <CardHeader>
@@ -350,6 +350,7 @@ export function SettingsForm({ machines, saved, merging }: { machines: Feed<Mach
         </Card>
         <MergingSettings repos={merging} />
       </div>
+      <PanelFooter status={status} />
     </>
   );
 }

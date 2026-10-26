@@ -1,8 +1,13 @@
+"use client";
+
+import { MenuIcon, PanelLeftIcon } from "lucide-react";
+import { motion } from "motion/react";
+import Link from "next/link";
 import type { ReactNode } from "react";
-import { Separator } from "@/components/ui/separator";
-import { SidebarTrigger } from "@/components/ui/sidebar";
-import { ThemeToggle } from "@/components/theme-toggle";
+import { Button } from "@/components/ui/button";
+import { Kbd } from "@/components/ui/kbd";
 import { cn } from "@/lib/utils";
+import { useShell } from "./panel-shell";
 import type { FeedStatus } from "./sealed";
 
 const STATUS: Record<FeedStatus, { dot: string; label: string }> = {
@@ -11,26 +16,80 @@ const STATUS: Record<FeedStatus, { dot: string; label: string }> = {
   off: { dot: "bg-faint", label: "Live updates off in previews" },
 };
 
-/** The page title beside the sidebar toggle, and how fresh the page's data is on the right. */
-export function PanelHeader({ title, status, note, actions }: { title: string; status: FeedStatus; note?: string; actions?: ReactNode }) {
+export type JobView = "board" | "list";
+
+const JOB_VIEWS = [
+  { view: "board", label: "Board", href: "/" },
+  { view: "list", label: "List", href: "/list" },
+] as const satisfies readonly { view: JobView; label: string; href: string }[];
+
+function ViewSwitch({ current }: { current: JobView }) {
   return (
-    <header className="flex h-(--header-height) shrink-0 items-center gap-2 border-b">
-      <div className="flex w-full items-center gap-1 px-4 lg:gap-2 lg:px-6">
-        <SidebarTrigger className="-ml-1" />
-        <Separator orientation="vertical" className="mx-2 data-[orientation=vertical]:h-4" />
-        <h1 className="text-base font-medium">{title}</h1>
-        <div className="ml-auto flex items-center gap-4">
-          <div className="flex items-center gap-2 text-sm text-muted-foreground">
-            <span className={cn("size-1.5 shrink-0 rounded-full", STATUS[status].dot)} />
-            <span>
-              {STATUS[status].label}
-              {note && ` · ${note}`}
-            </span>
-          </div>
-          {actions}
-          <ThemeToggle />
-        </div>
-      </div>
+    <div role="radiogroup" aria-label="Layout" className="hidden items-center rounded-md border p-0.5 sm:flex">
+      {JOB_VIEWS.map(({ view, label, href }) => (
+        <Link
+          key={view}
+          href={href}
+          role="radio"
+          aria-checked={view === current}
+          className={cn(
+            "relative h-6 rounded-[5px] px-2 text-xs leading-6 outline-none focus-visible:ring-2 focus-visible:ring-ring",
+            view === current ? "text-foreground" : "text-muted-foreground hover:text-foreground",
+          )}
+        >
+          {view === current && (
+            <motion.span layoutId="panel-view-marker" transition={{ type: "spring", stiffness: 500, damping: 40 }} className="absolute inset-0 rounded-[5px] bg-accent" />
+          )}
+          <span className="relative">{label}</span>
+        </Link>
+      ))}
+    </div>
+  );
+}
+
+/** The page's hairline header: the title, the board and list switch on job views, and the page's actions. */
+export function PanelHeader({ title, view, actions }: { title: string; view?: JobView; actions?: ReactNode }) {
+  const { collapsed, expand, openNav } = useShell();
+  return (
+    <header className="flex h-11 shrink-0 items-center gap-2 border-b px-2 md:px-3">
+      <Button aria-label="Open navigation" className="md:hidden" onClick={openNav} size="icon-sm" variant="ghost">
+        <MenuIcon />
+      </Button>
+      {collapsed && (
+        <Button aria-label="Expand sidebar" className="hidden md:inline-flex" onClick={expand} size="icon-sm" variant="ghost">
+          <PanelLeftIcon />
+        </Button>
+      )}
+      <h1 className="min-w-0 flex-1 truncate ps-1 font-medium">{title}</h1>
+      {view && <ViewSwitch current={view} />}
+      {actions}
     </header>
+  );
+}
+
+/** One key and what it does, for the footer's hints. */
+export type KeyHint = { keys: readonly string[]; label: string };
+
+/** The page's hairline footer: a summary on the left, then how fresh the data is and the page's keys. */
+export function PanelFooter({ status, note, summary, keys = [] }: { status: FeedStatus; note?: string; summary?: ReactNode; keys?: readonly KeyHint[] }) {
+  return (
+    <footer className="flex h-10 shrink-0 items-center gap-3 border-t px-4 text-xs text-muted-foreground md:px-5">
+      {summary && <span className="min-w-0 truncate tabular-nums">{summary}</span>}
+      <span className="ms-auto flex shrink-0 items-center gap-1.5">
+        <span className={cn("size-1.5 shrink-0 rounded-full", STATUS[status].dot)} />
+        {STATUS[status].label}
+        {note && ` · ${note}`}
+      </span>
+      <span className="hidden items-center gap-3 lg:flex">
+        {[...keys, { keys: ["["], label: "sidebar" }].map(({ keys: combo, label }) => (
+          <span key={label} className="flex items-center gap-1">
+            {combo.map((k) => (
+              <Kbd key={k}>{k}</Kbd>
+            ))}
+            {label}
+          </span>
+        ))}
+      </span>
+    </footer>
   );
 }
