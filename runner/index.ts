@@ -24,6 +24,7 @@ const { everyAtMost, serialQueue } = await import("./queue");
 const { isolated, reconcile } = await import("./reconcile");
 const { stopDeliverable } = await import("./binding");
 const { inferUntracked } = await import("./untracked");
+const { decideMerges } = await import("./merge-decision");
 type IntentRow = typeof intents.$inferSelect;
 
 const machine = await thisMachine();
@@ -161,6 +162,8 @@ async function tick() {
     stopsReconciled: await isolated(() => ops.reconcileStops()),
     stopsDelivered: await isolated(() => ops.deliverStops()),
     pullRequests: await isolated(ops.checkPullRequests),
+    // After the PR check, so a merged or conflicting PR has already left pr.
+    mergeDecisions: await isolated(() => decideMerges()),
     reconciled: await isolated(ops.reconcileUsage),
     overBudget: await isolated(ops.enforceBudget),
     // Harnesses without hooks report no stage or PR; read them from GitHub and the thread instead.
