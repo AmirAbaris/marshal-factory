@@ -18,9 +18,10 @@ import { attemptBranch } from "../lib/factory";
 import { nudgeMessage, watch, type ThreadState } from "../lib/watchdog";
 import { isTracked } from "../lib/harness";
 import { readHarnesses } from "../lib/t3-state";
-import { readSettings, resolveHarness, type HarnessChoice } from "../lib/settings";
+import { readSettings, resolveExecution, resolveHarness, type HarnessChoice } from "../lib/settings";
 import { forbidInTest } from "../lib/test-mode";
-import { hosts, type JobHost } from "../lib/host";
+import { HostGoneError, hosts, type JobHost } from "../lib/host";
+import { modalHost } from "../lib/modal-host";
 import { bindingOf, canReclaimSql, isStopped, PENDING, stopDeliverableSql } from "./binding";
 import { thisMachine } from "./heartbeat";
 import { claimReplies, qaBlock, resumeMessage } from "../lib/resume";
@@ -32,6 +33,8 @@ import { claimReplies, qaBlock, resumeMessage } from "../lib/resume";
 // out of reach here, so its own runner watches, bills, writes back and stops them.
 
 export const config = loadConfig();
+
+hosts.sandbox = modalHost;
 
 const mine = async () => eq(jobs.machine_id, (await thisMachine()).id);
 
@@ -156,6 +159,7 @@ async function showThread(threadId: string | null, host: JobHost): Promise<Threa
   try {
     ({ stdout } = await host.run(host.t3, ["thread", "show", threadId, "--json"], { timeoutMs: 20_000 }));
   } catch (error) {
+    if (error instanceof HostGoneError) return "gone";
     // Only T3 saying the thread is gone counts as gone; a timeout or crash must not start a second thread.
     const output = String((error as { stdout?: string }).stdout ?? "") + String((error as { stderr?: string }).stderr ?? "");
     if (output.includes("no longer available")) return "gone";
@@ -355,12 +359,13 @@ export async function watchdog() {
  */
 export async function reconcileUsage() {
   const recent = await db
-    .select()
+    .select({ run: runs, sandbox_id: jobs.sandbox_id })
     .from(runs)
+    .leftJoin(jobs, eq(jobs.key, runs.job_key))
     .where(and(isNotNull(runs.job_key), gt(runs.last_event_at, new Date(Date.now() - 7 * 86_400_000))));
   const fixed: string[] = [];
-  for (const run of recent) {
-    const host = hosts.forJob({ key: run.job_key! });
+  for (const { run, sandbox_id } of recent) {
+    const host = hosts.forJob({ key: run.job_key!, sandbox_id });
     const path = transcriptPathFor(run);
     const transcript = path ? await host.readFile(path) : null;
     if (!path || transcript === null) continue;
@@ -628,11 +633,17 @@ export async function toLaunch() {
         isNull(jobs.t3_thread_id),
         isNull(jobs.session_id),
         isNull(jobs.machine_id),
+        // An earlier attempt's sandbox still holds its login until teardown hands it back.
+        isNull(jobs.sandbox_id),
+        isNull(jobs.codex_slot),
       ),
     )
     .orderBy(asc(jobs.claimed_at), asc(jobs.key));
   return parseJobs(rows).map((job) => ({
     key: job.key,
+    sandbox_id: null,
+    attempt: job.attempt,
+    budgetUsd: job.budget_usd,
     source: job.source,
     repo: job.repo,
     branch: attemptBranch(job.key, job.attempt),
@@ -760,6 +771,12 @@ export async function effectiveHarness() {
   return resolveHarness(await readSettings(db), config.factory);
 }
 
+/** One read of the settings for a launch pass: the harness, and where threads start. */
+export async function launchSettings() {
+  const saved = await readSettings(db);
+  return { harness: resolveHarness(saved, config.factory), execution: resolveExecution(saved) };
+}
+
 /**
  * Marks a queued job as being launched by this machine, as one compare-and-set: false when another
  * launch or machine holds the job, the machine has no checkout of its repo, or the machine is full.
@@ -787,11 +804,55 @@ export async function claimLaunch(key: string, marker: string, machine: LaunchSl
   return claimed.length > 0;
 }
 
+/** Clears a launch that made no thread, with any sandbox and login slot it held; the caller ends the sandbox first. */
 export async function releaseLaunch(key: string, marker: string) {
   await db
     .update(jobs)
-    .set({ t3_thread_id: null, machine_id: null, provider: null, model: null })
+    .set({ t3_thread_id: null, machine_id: null, provider: null, model: null, sandbox_id: null, codex_slot: null })
     .where(and(eq(jobs.key, key), eq(jobs.t3_thread_id, marker)));
+}
+
+const uniqueViolation = (error: unknown): boolean =>
+  (error as { code?: string })?.code === "23505" || (error instanceof Error && error.cause !== undefined && uniqueViolation(error.cause));
+
+/**
+ * Leases a free login slot to a launch that holds its marker. The partial unique index on
+ * codex_slot makes the lease atomic: a slot another launch took in between fails the write and
+ * the next free one is tried. Undefined when every slot is held.
+ */
+export async function leaseCodexSlot(key: string, marker: string, slots: readonly string[]) {
+  const held = new Set((await db.select({ slot: jobs.codex_slot }).from(jobs).where(isNotNull(jobs.codex_slot))).map((r) => r.slot));
+  for (const slot of slots.filter((s) => !held.has(s))) {
+    try {
+      const leased = await db
+        .update(jobs)
+        .set({ codex_slot: slot })
+        .where(and(eq(jobs.key, key), eq(jobs.t3_thread_id, marker), isNull(jobs.codex_slot)))
+        .returning({ key: jobs.key });
+      return leased.length > 0 ? slot : undefined;
+    } catch (error) {
+      if (!uniqueViolation(error)) throw error;
+    }
+  }
+  return undefined;
+}
+
+export async function recordSandbox(key: string, marker: string, sandboxId: string) {
+  const recorded = await db
+    .update(jobs)
+    .set({ sandbox_id: sandboxId })
+    .where(and(eq(jobs.key, key), eq(jobs.t3_thread_id, marker)))
+    .returning({ key: jobs.key });
+  if (recorded.length === 0) throw new Error(`${key} no longer holds launch ${marker}`);
+}
+
+/** This machine's working jobs that hold a login slot, so a sandbox in setup counts too. */
+export async function sandboxesInFlight(machineId: string) {
+  const [{ count }] = await db
+    .select({ count: sql<number>`count(*)::int` })
+    .from(jobs)
+    .where(and(eq(jobs.machine_id, machineId), isNotNull(jobs.codex_slot), inArray(jobs.stage, IN_FLIGHT)));
+  return count;
 }
 
 export async function machineInFlight(machineId: string) {
@@ -807,7 +868,15 @@ export async function pendingLaunches() {
     .select()
     .from(jobs)
     .where(and(await mine(), sql`${jobs.t3_thread_id} like ${`${PENDING}%`}`));
-  return rows.map((i) => ({ key: i.key, repo: i.repo, marker: i.t3_thread_id!, branch: attemptBranch(i.key, i.attempt), stage: i.stage }));
+  return rows.map((i) => ({
+    key: i.key,
+    repo: i.repo,
+    marker: i.t3_thread_id!,
+    branch: attemptBranch(i.key, i.attempt),
+    stage: i.stage,
+    sandbox_id: i.sandbox_id,
+    codex_slot: i.codex_slot,
+  }));
 }
 
 

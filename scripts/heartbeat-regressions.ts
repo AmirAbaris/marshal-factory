@@ -187,6 +187,7 @@ try {
       projects: async () => inventoryA.projects,
       repos: async () => inventoryA.repos,
       harnesses: async () => inventoryA.harnesses,
+      sandbox: async () => inventoryA.sandbox,
     },
     inventoryMs: 600_000,
     timeoutMs: 200,
