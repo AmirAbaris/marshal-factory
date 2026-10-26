@@ -1,9 +1,11 @@
 import "./test-guard";
 import assert from "node:assert/strict";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { eq, inArray } from "drizzle-orm";
-import { ConflictError, NotFoundError, SandboxFilesystemNotFoundError } from "modal";
 import type { ExecError } from "../lib/exec";
-import type { SandboxHandle, SandboxProcess, SandboxSpec } from "../lib/modal-host";
+import { fake, fakeModal, FakeSandbox, sandboxes, type Reply } from "./fake-modal";
 
 const { db } = await import("../db/client");
 const { jobs, settings } = await import("../db/schema");
@@ -18,85 +20,7 @@ const { launchInSandboxes, maybeStarted, recoverPending } = await import("../run
 const { sandboxRuntime } = await import("../runner/sandbox");
 const { readSettings, SETTINGS_ID, writeSettings } = await import("../lib/settings");
 
-// A fake Modal: each sandbox records its execs and files, and a per-test handler answers execs.
-type Reply = { code?: number; stdout?: string; stderr?: string; hang?: boolean };
-type Exec = { argv: string[]; params?: { workdir?: string; timeoutMs?: number }; input: string; closed: boolean };
-let answer: (sandbox: FakeSandbox, argv: string[]) => Promise<Reply> | Reply = () => ({});
-
-class FakeSandbox implements SandboxHandle {
-  execs: Exec[] = [];
-  files = new Map<string, string>();
-  terminated = false;
-  constructor(
-    readonly sandboxId: string,
-    readonly spec?: SandboxSpec,
-  ) {}
-  filesystem = {
-    readText: async (path: string) => {
-      this.alive();
-      const text = this.files.get(path);
-      if (text === undefined) throw new SandboxFilesystemNotFoundError(`${path} not found`);
-      return text;
-    },
-    writeText: async (data: string, path: string) => {
-      this.alive();
-      this.files.set(path, data);
-    },
-  };
-  alive() {
-    if (this.terminated) throw new ConflictError(`Sandbox ${this.sandboxId} has already finished`);
-  }
-  async exec(argv: string[], params?: { workdir?: string; timeoutMs?: number }): Promise<SandboxProcess> {
-    this.alive();
-    const exec: Exec = { argv, params, input: "", closed: false };
-    this.execs.push(exec);
-    const reply = Promise.resolve(answer(this, argv));
-    const never = new Promise<never>(() => {});
-    return {
-      stdin: {
-        writeText: async (text) => void (exec.input += text),
-        close: async () => void (exec.closed = true),
-      },
-      stdout: { readText: async () => ((await reply).hang ? never : ((await reply).stdout ?? "")) },
-      stderr: { readText: async () => ((await reply).hang ? never : ((await reply).stderr ?? "")) },
-      wait: async () => ((await reply).hang ? never : ((await reply).code ?? 0)),
-    };
-  }
-  async terminate() {
-    this.terminated = true;
-  }
-}
-
-const sandboxes = new Map<string, FakeSandbox>();
-let created = 0;
-modal.api = {
-  async create(spec) {
-    const sandbox = new FakeSandbox(`sb-test-${++created}`, spec);
-    sandboxes.set(sandbox.sandboxId, sandbox);
-    return sandbox;
-  },
-  async fromId(sandboxId) {
-    const sandbox = sandboxes.get(sandboxId);
-    if (sandbox) return sandbox;
-    return {
-      sandboxId,
-      exec: async () => {
-        throw new NotFoundError(`Sandbox ${sandboxId} not found`);
-      },
-      filesystem: {
-        readText: async () => {
-          throw new NotFoundError(`Sandbox ${sandboxId} not found`);
-        },
-        writeText: async () => {
-          throw new NotFoundError(`Sandbox ${sandboxId} not found`);
-        },
-      },
-      terminate: async () => {
-        throw new NotFoundError(`Sandbox ${sandboxId} not found`);
-      },
-    };
-  },
-};
+modal.api = fakeModal;
 
 const spec = { name: "x", tags: {}, imageId: "im", secrets: {}, env: {}, limits: config.factory.sandbox };
 await assert.rejects(realModal.create(spec), /Modal was called during a regression run/, "the real Modal client refuses to run in a regression");
@@ -106,7 +30,7 @@ await assert.rejects(realModal.fromId("sb-real"), /Modal was called during a reg
 const box = new FakeSandbox("sb-host");
 sandboxes.set(box.sandboxId, box);
 const host = modalHost(box.sandboxId);
-answer = (_sandbox, argv) => {
+fake.answer = (_sandbox, argv) => {
   const [command, ...args] = argv;
   if (command === "echo") return { stdout: args.join(" "), stderr: "warn" };
   if (command === "fail") return { code: 3, stdout: "partial", stderr: "boom" };
@@ -185,6 +109,7 @@ Object.assign(sandboxRuntime, {
   slotAuth: (s: string) => `{"slot":"${s}"}`,
   driverOf: (provider: string) => provider,
   log: (event: string, detail: Record<string, unknown>) => void events.push({ event, detail }),
+  slotHealthPath: join(mkdtempSync(join(tmpdir(), "slot-health-")), "codex-slots.json"),
 });
 const entry = (key: string) => ({ key, sandbox_id: null, attempt: 1, budgetUsd: 7, source: "linear" as const, repo: "ski043/factory-demo", branch: `factory/${key}`, threadTitle: `${key} t`, message: `Work ${key}` });
 const row = async (key: string) => (await db.select().from(jobs).where(eq(jobs.key, key)))[0]!;
@@ -194,7 +119,7 @@ const committedWiring = JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: "comm
 let start: Reply = { stdout: '{"threadId":"thread-1"}' };
 let clone: Reply = {};
 const seenAtFirstExec: Record<string, unknown>[] = [];
-answer = async (sandbox, argv) => {
+fake.answer = async (sandbox, argv) => {
   if (sandbox.execs.length === 1) {
     const [job] = await db.select().from(jobs).where(eq(jobs.sandbox_id, sandbox.sandboxId));
     seenAtFirstExec.push({ sandbox_id: job?.sandbox_id, codex_slot: job?.codex_slot });
@@ -218,7 +143,7 @@ try {
   assert.equal((await row(keys[0]!)).t3_thread_id, null, "a job stays queued without an image");
   assert.equal(events.at(-1)!.event, "sandbox:no-image");
   sandboxRuntime.image = () => image;
-  assert.equal(created, 0, "and no sandbox was created");
+  assert.equal(fake.created, 0, "and no sandbox was created");
 
   // No Claude token: the Claude Code job runs on Codex, recorded on the job.
   const [first] = await launchInSandboxes([entry(keys[0]!)], slot, harness);
@@ -228,7 +153,7 @@ try {
   assert.deepEqual([a.t3_thread_id, a.codex_slot, a.provider, a.model], ["thread-1", slotA, "codex", "gpt-6-astra"]);
   assert.ok(events.some((e) => e.event === "sandbox:harness-fallback" && e.detail.key === keys[0]), "the fallback is logged");
   assert.deepEqual(seenAtFirstExec[0], { sandbox_id: sbA.sandboxId, codex_slot: slotA }, "the sandbox and the slot are on the job before anything runs in it");
-  assert.deepEqual(sbA.spec!.tags, { job: keys[0], attempt: "1", label: config.factory.label });
+  assert.deepEqual(sbA.spec!.tags, { job: keys[0], attempt: "1", label: config.factory.label, machine: TEST_MACHINE_ID });
   assert.equal(sbA.spec!.name, `job-${keys[0]}-a1`);
   assert.equal(sbA.spec!.imageId, "im-test");
   assert.deepEqual(sbA.spec!.secrets, {}, "no Claude token, no secret");
@@ -312,7 +237,7 @@ try {
 
   // Recovery asks the sandbox's T3 for the thread on the job's branch.
   await db.update(jobs).set({ t3_thread_id: "pending:1" }).where(eq(jobs.key, keys[3]!));
-  answer = (_sandbox, argv) => {
+  fake.answer = (_sandbox, argv) => {
     if (argv.join(" ") === `t3 thread list --project ${REPO_DIR} --json`) return { stdout: '[{"threadId":"thread-late"}]' };
     if (argv.join(" ") === "t3 thread show thread-late --json") return { stdout: JSON.stringify({ thread: { branch: `factory/${keys[3]}` } }) };
     return {};
@@ -329,16 +254,23 @@ try {
   const e = await row(keys[4]!);
   assert.deepEqual([e.t3_thread_id, e.machine_id, e.sandbox_id, e.codex_slot], [null, null, null, null]);
 
-  // A sandbox whose T3 cannot answer keeps its marker.
+  // A sandbox whose T3 cannot answer keeps its marker for a while.
   const sbF = new FakeSandbox("sb-quiet");
   sandboxes.set(sbF.sandboxId, sbF);
-  answer = () => ({ code: 1, stderr: "connection refused" });
-  await db.update(jobs).set({ t3_thread_id: "pending:1", machine_id: TEST_MACHINE_ID, sandbox_id: sbF.sandboxId, codex_slot: `/tmp/slot-f-${stamp}` }).where(eq(jobs.key, keys[5]!));
+  fake.answer = () => ({ code: 1, stderr: "connection refused" });
+  const staleMarker = `pending:${Date.now() - 20 * 60_000}`;
+  await db.update(jobs).set({ t3_thread_id: staleMarker, machine_id: TEST_MACHINE_ID, sandbox_id: sbF.sandboxId, codex_slot: `/tmp/slot-f-${stamp}` }).where(eq(jobs.key, keys[5]!));
   const quiet = await recoverPending(checkouts);
   assert.equal(quiet.find((r) => r.key === keys[5])?.retry, "next pass");
-  assert.equal((await row(keys[5]!)).t3_thread_id, "pending:1");
+  assert.equal((await row(keys[5]!)).t3_thread_id, staleMarker);
   assert.equal(sbF.terminated, false);
-  await db.update(jobs).set({ t3_thread_id: null, machine_id: null, sandbox_id: null, codex_slot: null }).where(eq(jobs.key, keys[5]!));
+  // Past the give-up age the sandbox ends, with any thread in it, and the job is free to relaunch.
+  await db.update(jobs).set({ t3_thread_id: "pending:1" }).where(eq(jobs.key, keys[5]!));
+  const givenUp = await recoverPending(checkouts);
+  assert.equal(givenUp.find((r) => r.key === keys[5])?.threadId, null, JSON.stringify(givenUp));
+  const f = await row(keys[5]!);
+  assert.deepEqual([f.t3_thread_id, f.machine_id, f.sandbox_id, f.codex_slot], [null, null, null, null]);
+  assert.equal(sbF.terminated, true);
 
   // A fresh marker is left alone, whatever its sandbox says.
   await db.update(jobs).set({ t3_thread_id: `pending:${Date.now()}`, machine_id: TEST_MACHINE_ID, sandbox_id: "sb-vanished" }).where(eq(jobs.key, keys[4]!));

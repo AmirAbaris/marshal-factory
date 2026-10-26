@@ -17,6 +17,7 @@ import {
   leaseCodexSlot,
   machineInFlight,
   pendingLaunches,
+  recordHarness,
   recordSandbox,
   releaseLaunch,
   sandboxesInFlight,
@@ -24,7 +25,8 @@ import {
   withLocalImages,
   type LaunchSlot,
 } from "./ops";
-import { createJobSandbox, ingestConfig, sandboxHarness, sandboxRuntime, setupSandbox } from "./sandbox";
+import { loginFailed, noteTokenWritten, retireSandbox } from "./lifecycle";
+import { CodexLoginError, createJobSandbox, ingestConfig, sandboxHarness, sandboxRuntime, setupSandbox, usableSlots } from "./sandbox";
 
 const sh = async (host: JobHost, cmd: string, args: string[], cwd?: string) =>
   (await host.run(cmd, args, { cwd, timeoutMs: 60_000 })).stdout.trim();
@@ -78,6 +80,8 @@ async function worktreeHead(threadId: string, host: JobHost) {
 const PENDING_STALE_MS = 120_000;
 /** A sandbox launch creates, clones and starts T3 before its thread exists, so its marker stays fresh longer. */
 const SANDBOX_PENDING_STALE_MS = 15 * 60_000;
+/** A stale sandbox launch whose T3 still cannot answer after this is given up: the sandbox ends with any thread in it. */
+const SANDBOX_GIVE_UP_MS = 45 * 60_000;
 
 /**
  * A launch that died between starting the thread and recording it leaves a pending marker. Once
@@ -97,29 +101,39 @@ type PendingLaunch = Awaited<ReturnType<typeof pendingLaunches>>[number];
 const inSandbox = (p: { sandbox_id: string | null; codex_slot: string | null }) => p.sandbox_id !== null || p.codex_slot !== null;
 
 /** Ends a launch that made no thread: its sandbox first, so a cleared row never points at a live one. */
-export async function releaseSandboxLaunch(key: string, marker: string, sandboxId: string | null) {
-  if (sandboxId) await terminateSandbox(sandboxId);
+export async function releaseSandboxLaunch(key: string, marker: string, sandboxId: string | null, slot: string | null) {
+  if (sandboxId) await retireSandbox(key, sandboxId, slot);
   await releaseLaunch(key, marker);
 }
 
-/** A sandbox that is gone has no thread; one whose T3 cannot answer keeps its marker for the next pass. */
+/**
+ * A sandbox that is gone has no thread; one whose T3 cannot answer keeps its marker for the next
+ * pass, until SANDBOX_GIVE_UP_MS. Then it ends, and any thread in it with it, so the job relaunches.
+ */
 async function recoverSandbox(p: PendingLaunch) {
   let found: { threadId: string } | undefined;
   if (p.sandbox_id) {
     try {
       found = (await threadBranches(REPO_DIR, hosts.forJob(p))).find((b) => b.branch === p.branch);
     } catch (error) {
-      if (!(error instanceof HostGoneError)) return { key: p.key, error: error instanceof Error ? error.message.split("\n")[0] : String(error), retry: "next pass" };
+      if (!(error instanceof HostGoneError)) {
+        const reason = error instanceof Error ? error.message.split("\n")[0] : String(error);
+        if (Date.now() - markedAt(p.marker) <= SANDBOX_GIVE_UP_MS) return { key: p.key, error: reason, retry: "next pass" };
+        await releaseSandboxLaunch(p.key, p.marker, p.sandbox_id, p.codex_slot);
+        return { key: p.key, threadId: null, gaveUp: reason };
+      }
     }
   }
-  await (found ? bindThread(p.key, found.threadId) : releaseSandboxLaunch(p.key, p.marker, p.sandbox_id));
+  await (found ? bindThread(p.key, found.threadId) : releaseSandboxLaunch(p.key, p.marker, p.sandbox_id, p.codex_slot));
   return { key: p.key, threadId: found?.threadId ?? null };
 }
+
+const markedAt = (marker: string) => Number(marker.slice(PENDING.length));
 
 export async function recoverPending(checkouts: ReadonlyMap<string, string>) {
   // A pending launch whose repo left this machine's config has no project to look in; it waits for the repo to come back.
   const stale = (await pendingLaunches()).filter(
-    (p) => checkouts.has(p.repo) && Date.now() - Number(p.marker.slice(PENDING.length)) > (inSandbox(p) ? SANDBOX_PENDING_STALE_MS : PENDING_STALE_MS),
+    (p) => checkouts.has(p.repo) && Date.now() - markedAt(p.marker) > (inSandbox(p) ? SANDBOX_PENDING_STALE_MS : PENDING_STALE_MS),
   );
   type Branches = Awaited<ReturnType<typeof threadBranches>>;
   const branchesByHost = new Map<JobHost, Map<string, Branches>>();
@@ -290,7 +304,7 @@ export async function launchInSandboxes(pending: readonly LaunchEntry[], slot: L
     async claim(key, marker) {
       if (room <= 0) return false;
       if (!(await claimLaunch(key, marker, slot, choice))) return false;
-      const codexSlot = await leaseCodexSlot(key, marker, runtime.slots(limits));
+      const codexSlot = await leaseCodexSlot(key, marker, usableSlots(limits));
       if (!codexSlot) {
         await releaseLaunch(key, marker);
         runtime.log("sandbox:no-slot", { key, slots: limits.codexSlots.length });
@@ -304,10 +318,19 @@ export async function launchInSandboxes(pending: readonly LaunchEntry[], slot: L
     async start(entry) {
       const lease = leases.get(entry.key)!;
       let host: JobHost;
+      let ran: HarnessChoice;
       try {
         const codexAuth = runtime.slotAuth(lease.slot);
         const githubToken = await runtime.githubToken(entry.repo as RepoName);
-        const created = await createJobSandbox({ key: entry.key, attempt: entry.attempt, label: config.factory.label, image, limits, claudeToken });
+        const created = await createJobSandbox({
+          key: entry.key,
+          attempt: entry.attempt,
+          label: config.factory.label,
+          machineId: slot.id,
+          imageId: image.imageId,
+          limits,
+          claudeToken,
+        });
         try {
           await recordSandbox(entry.key, lease.marker, created.sandboxId);
         } catch (error) {
@@ -315,17 +338,25 @@ export async function launchInSandboxes(pending: readonly LaunchEntry[], slot: L
           throw error;
         }
         host = created.host;
-        await setupSandbox(host, { repo: entry.repo, choice, hasClaude: Boolean(claudeToken), codexAuth, githubToken, ingest: ingestConfig(config, entry.budgetUsd) });
+        const setup = { repo: entry.repo, choice, hasClaude: Boolean(claudeToken), slot: lease.slot, codexAuth, githubToken, ingest: ingestConfig(config, entry.budgetUsd) };
+        const outcome = await setupSandbox(host, setup, limits.codexModel);
+        noteTokenWritten(created.sandboxId);
+        ran = outcome.choice;
+        if (outcome.fallback) {
+          await recordHarness(entry.key, lease.marker, ran);
+          runtime.log("sandbox:harness-fallback", { key: entry.key, reason: outcome.fallback });
+        }
       } catch (error) {
+        if (error instanceof CodexLoginError) await loginFailed(entry.key, error.slot);
         throw new SandboxSetupError(`sandbox setup failed: ${error instanceof Error ? error.message.split("\n")[0] : String(error)}`);
       }
       // Images stay on this machine for now; the thread gets the issue text with their links.
-      return startThread(host, REPO_DIR, entry.branch, entry.threadTitle, entry.message, choice);
+      return startThread(host, REPO_DIR, entry.branch, entry.threadTitle, entry.message, ran);
     },
     bind: bindThread,
     release: async (key, marker) => {
       const [row] = (await pendingLaunches()).filter((p) => p.key === key && p.marker === marker);
-      await releaseSandboxLaunch(key, marker, row?.sandbox_id ?? null);
+      await releaseSandboxLaunch(key, marker, row?.sandbox_id ?? null, row?.codex_slot ?? null);
     },
     now: Date.now,
   });

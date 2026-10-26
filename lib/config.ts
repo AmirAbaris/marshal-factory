@@ -27,7 +27,12 @@ export const sandboxSchema = z
     cpuLimit: z.number().positive().default(2),
     memoryMiB: z.number().int().positive().default(2048),
     memoryLimitMiB: z.number().int().positive().default(8192),
+    /** The hard cap on a sandbox's life; one that hits it is gone, and its job follows the gone-thread rules. */
     timeoutMs: z.number().int().positive().default(4 * 3_600_000),
+    /** How long a job waiting in pr or waiting keeps its sandbox running once its thread settles. */
+    hibernateAfterMinutes: z.number().nonnegative().default(5),
+    /** How long a hibernated sandbox's snapshot lives; a job still waiting after that has a gone thread. */
+    snapshotTtlDays: z.number().positive().default(30),
     /** CODEX_HOME dirs on this machine, each with its own ChatGPT login; a sandbox holds one at a time. */
     codexSlots: z.array(z.string().transform(home)).default(["~/.codex-factory-1"].map(home)),
     maxParallel: z.number().int().positive().default(3),

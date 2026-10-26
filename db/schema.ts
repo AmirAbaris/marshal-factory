@@ -151,6 +151,8 @@ export const jobs = pgTable(
     session_id: text("session_id"),
     /** The Modal sandbox this attempt runs in; null when it runs in the machine's own T3. */
     sandbox_id: text("sandbox_id"),
+    /** The Modal image a hibernated sandbox was snapshotted to; set while the job waits with no sandbox running. */
+    sandbox_snapshot: text("sandbox_snapshot"),
     /** The runner-side CODEX_HOME whose ChatGPT login the sandbox holds; one job per slot. */
     codex_slot: text("codex_slot"),
     claimed_at: ts("claimed_at").notNull(),
@@ -234,7 +236,7 @@ export const settings = pgTable("settings", {
   updated_by: text("updated_by").notNull(),
 });
 
-export const auditAction = pgEnum("audit_action", ["merge_requested", "merge_succeeded", "merge_failed"]);
+export const auditAction = pgEnum("audit_action", ["merge_requested", "merge_succeeded", "merge_failed", "sandbox_login_failed"]);
 export const auditResult = pgEnum("audit_result", ["ok", "head_moved", "not_mergeable", "refused", "error"]);
 
 /** Who asked the factory to change something outside it, and what happened. */

@@ -101,11 +101,14 @@ export function tokenSource({
   app,
   now = Date.now,
   onMint = () => {},
+  refreshBeforeMs = REFRESH_BEFORE_MS,
 }: {
   api: string;
   app: () => Pick<AppFile, "client_id" | "pem">;
   now?: () => number;
   onMint?: (repo: RepoName) => void;
+  /** A cached token with less life left than this is minted again. */
+  refreshBeforeMs?: number;
 }) {
   const tokens = new Map<RepoName, { token: string; expiresAt: number }>();
   const minting = new Map<RepoName, Promise<string>>();
@@ -126,7 +129,7 @@ export function tokenSource({
 
   function get(repo: RepoName): Promise<string> {
     const cached = tokens.get(repo);
-    if (cached && cached.expiresAt - now() > REFRESH_BEFORE_MS) return Promise.resolve(cached.token);
+    if (cached && cached.expiresAt - now() > refreshBeforeMs) return Promise.resolve(cached.token);
     let pending = minting.get(repo);
     if (!pending) {
       pending = mint(repo)
@@ -150,11 +153,10 @@ export function tokenSource({
 
 export type TokenSource = ReturnType<typeof tokenSource>;
 
-const liveTokens = tokenSource({
-  api: GITHUB_API,
-  app: () => appCredentials(),
-  onMint: (repo) => console.log(JSON.stringify({ at: new Date().toISOString(), event: `github app token minted for ${repo}` })),
-});
+const onMint = (repo: RepoName) => console.log(JSON.stringify({ at: new Date().toISOString(), event: `github app token minted for ${repo}` }));
+const liveTokens = tokenSource({ api: GITHUB_API, app: () => appCredentials(), onMint });
+// A sandbox's token file is rewritten every 40 minutes, so every token written there has at least 50 left.
+const liveSandboxTokens = tokenSource({ api: GITHUB_API, app: () => appCredentials(), onMint, refreshBeforeMs: 50 * 60_000 });
 
 export const installationTokens: TokenSource = {
   get(repo) {
@@ -162,4 +164,11 @@ export const installationTokens: TokenSource = {
     return liveTokens.get(repo);
   },
   evict: liveTokens.evict,
+};
+
+export const sandboxTokens: Pick<TokenSource, "get"> = {
+  get(repo) {
+    forbidInTest("the GitHub App");
+    return liveSandboxTokens.get(repo);
+  },
 };
