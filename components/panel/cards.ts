@@ -1,5 +1,6 @@
 import type { JobRow, RunRow } from "@/db/schema";
 import type { Stage } from "@/lib/events";
+import { sandboxState, type SandboxState } from "@/lib/execution";
 import { attemptBranch } from "@/lib/factory";
 import { isTracked } from "@/lib/harness";
 import { sourceLink } from "@/lib/sources/shapes";
@@ -28,6 +29,8 @@ export type BoardCard = {
   runs: RunRow[];
   /** Set when the job runs on a harness that reports no stages or cost, so the card says so. */
   untracked: { provider: string; model: string | null } | null;
+  /** Set when the job runs in a Modal sandbox. */
+  sandbox: SandboxState | null;
 };
 
 const stagedAt = (run: RunRow) => run.stage_at?.getTime() ?? 0;
@@ -69,6 +72,7 @@ export function boardCards(
         job.provider && !isTracked(drivers.get(job.provider) ?? job.provider)
           ? { provider: job.provider, model: job.model }
           : null,
+      sandbox: sandboxState(job),
     };
   });
 
@@ -99,6 +103,7 @@ export function boardCards(
         latest,
         runs: sorted,
         untracked: null,
+        sandbox: null,
       };
     },
   );

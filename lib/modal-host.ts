@@ -1,4 +1,4 @@
-import { ConflictError, ModalClient, NotFoundError, SandboxFilesystemNotFoundError } from "modal";
+import { ConflictError, ModalClient, NotFoundError, SandboxFilesystemNotFoundError, SandboxTimeoutError } from "modal";
 import type { SandboxLimits } from "./config";
 import type { ExecError, ExecOptions } from "./exec";
 import { HostGoneError, type JobHost } from "./host";
@@ -19,6 +19,7 @@ export type SandboxHandle = {
   filesystem: { readText(path: string): Promise<string>; writeText(data: string, path: string): Promise<void> };
   terminate(): Promise<unknown>;
   snapshotFilesystem(params?: { timeoutMs?: number; ttlMs?: number | null }): Promise<{ imageId: string }>;
+  tunnels(timeoutMs?: number): Promise<Record<number, { url: string }>>;
 };
 
 export type ListedSandbox = { sandboxId: string; tags: Record<string, string> };
@@ -30,6 +31,8 @@ export type SandboxSpec = {
   /** Injected as environment variables through a Modal secret, so they never show in the sandbox's spec. */
   secrets: Record<string, string>;
   env: Record<string, string>;
+  /** Ports Modal exposes through a TLS tunnel; anything listening there is reachable from the internet. */
+  encryptedPorts: number[];
   limits: Pick<SandboxLimits, "appName" | "cpu" | "cpuLimit" | "memoryMiB" | "memoryLimitMiB" | "timeoutMs">;
 };
 
@@ -48,7 +51,7 @@ const modalClient = () => {
 };
 
 export const realModal: ModalApi = {
-  async create({ name, tags, imageId, secrets, env, limits }) {
+  async create({ name, tags, imageId, secrets, env, encryptedPorts, limits }) {
     const modal = modalClient();
     const app = await modal.apps.fromName(limits.appName, { createIfMissing: true });
     const image = await modal.images.fromId(imageId);
@@ -64,6 +67,7 @@ export const realModal: ModalApi = {
       command: ["sleep", "infinity"],
       secrets: Object.keys(secrets).length > 0 ? [await modal.secrets.fromObject(secrets)] : [],
       env,
+      encryptedPorts,
     });
   },
   fromId: async (sandboxId) => modalClient().sandboxes.fromId(sandboxId),
@@ -131,6 +135,19 @@ export async function snapshotSandbox(sandboxId: string, ttlMs: number) {
   try {
     return (await (await handle(sandboxId)).snapshotFilesystem({ timeoutMs: 120_000, ttlMs })).imageId;
   } catch (error) {
+    throw gone(sandboxId, error);
+  }
+}
+
+export type Tunnel = { kind: "url"; url: string } | { kind: "no port" } | { kind: "not ready" };
+
+/** The public https URL of the sandbox's tunnel to `port`; "no port" when it was created without one, "not ready" while Modal is still opening it. */
+export async function tunnelUrl(sandboxId: string, port: number): Promise<Tunnel> {
+  try {
+    const url = (await (await handle(sandboxId)).tunnels(30_000))[port]?.url;
+    return url ? { kind: "url", url } : { kind: "no port" };
+  } catch (error) {
+    if (error instanceof SandboxTimeoutError) return { kind: "not ready" };
     throw gone(sandboxId, error);
   }
 }

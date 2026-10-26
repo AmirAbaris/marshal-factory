@@ -27,6 +27,7 @@ import {
 } from "../lib/sandbox";
 import type { HarnessChoice } from "../lib/settings";
 import { readHarnesses } from "../lib/t3-state";
+import { PAIRING_TTL_MINUTES, pairingSchema, type T3Pairing } from "../lib/t3-pairing";
 import { inTestMode } from "../lib/test-mode";
 import { json, reportServer, wiredRoots, withHooks, withServer, type Json } from "../lib/target-wiring";
 
@@ -219,15 +220,38 @@ const T3_RUNTIME = `${T3_USERDATA}/server-runtime.json`;
 /**
  * Started from an exec, `t3 serve` outlives it. Its log holds a pairing token, so it is never read
  * back. A sandbox woken from a snapshot still has the last server's runtime file, so it goes first.
+ * It listens on every interface so the sandbox's encrypted tunnel reaches it; T3 refuses any client
+ * that has not paired, so the open port grants nothing without a pairing token.
  */
 export async function startT3(host: JobHost) {
   await host.remove(T3_RUNTIME);
-  await sh(host, `nohup ${host.t3} serve --host 127.0.0.1 --port ${T3_PORT} ${REPO_DIR} > /work/t3.log 2>&1 &`);
+  await sh(host, `nohup ${host.t3} serve --host 0.0.0.0 --port ${T3_PORT} ${REPO_DIR} > /work/t3.log 2>&1 &`);
   for (let i = 0; i < 60; i++) {
     if (await host.exists(T3_RUNTIME)) return;
     await new Promise((resolve) => setTimeout(resolve, 2_000));
   }
   throw new Error("t3 serve did not become ready in the sandbox within 120 s");
+}
+
+/**
+ * Mints a one-time T3 pairing link on `baseUrl`, the sandbox's tunnel. The CLI's output holds the
+ * token, so neither it nor a parse failure's text is ever logged or thrown.
+ */
+export async function pairT3(host: JobHost, baseUrl: string): Promise<T3Pairing> {
+  const { stdout } = await host.run(
+    host.t3,
+    ["auth", "pairing", "create", "--ttl", `${PAIRING_TTL_MINUTES}m`, "--label", "panel", "--base-url", baseUrl, "--json"],
+    { timeoutMs: 60_000 },
+  );
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(stdout);
+  } catch {
+    throw new Error("t3 auth pairing create printed no JSON");
+  }
+  const pairing = pairingSchema.safeParse(parsed);
+  if (!pairing.success) throw new Error("t3 auth pairing create printed no pairing link");
+  return { pairUrl: pairing.data.pairUrl, expiresAt: pairing.data.expiresAt };
 }
 
 /** Ends `t3 serve` so its SQLite state is on disk before a snapshot; a server already down is fine. */
@@ -257,6 +281,7 @@ export async function createJobSandbox({ key, attempt, label, machineId, imageId
     secrets: sandboxSecrets(claudeToken),
     // Claude Code refuses full access as root unless told it is in a sandbox.
     env: { IS_SANDBOX: "1" },
+    encryptedPorts: [T3_PORT],
     limits,
   });
   rememberSandbox(sandbox);

@@ -357,6 +357,7 @@ export async function launchInSandboxes(pending: readonly LaunchEntry[], slot: L
     release: async (key, marker) => {
       const [row] = (await pendingLaunches()).filter((p) => p.key === key && p.marker === marker);
       await releaseSandboxLaunch(key, marker, row?.sandbox_id ?? null, row?.codex_slot ?? null);
+      room++;
     },
     now: Date.now,
   });

@@ -40,6 +40,11 @@ export const sandboxReadinessSchema = z.object({
   /** Slots whose login failed in a sandbox and has not changed since; optional for older inventories. */
   codexSlotsUnusable: z.number().int().nonnegative().optional(),
   image: z.boolean(),
+  /** What the built image holds; the rest are optional for older inventories too. */
+  imageInfo: z.object({ t3Version: z.string(), builtAt: z.string(), factoryCommit: z.string() }).nullable().optional(),
+  /** The T3 version the runner's config pins; an image with another one launches nothing. */
+  pinnedT3Version: z.string().optional(),
+  maxParallel: z.number().int().positive().optional(),
 });
 export type SandboxReadiness = z.infer<typeof sandboxReadinessSchema>;
 
@@ -105,13 +110,18 @@ export function reportedHarnesses(machines: readonly { last_seen_at: Date; inven
   return [...best.values()].map((b) => b.harness).sort((a, b) => a.name.localeCompare(b.name));
 }
 
+/** The image's T3 differs from the one the runner pins, so it launches nothing. */
+export const imageOutdated = ({ imageInfo, pinnedT3Version }: SandboxReadiness) =>
+  Boolean(imageInfo && pinnedT3Version && imageInfo.t3Version !== pinnedT3Version);
+
 /** The most ready sandbox report among online machines; null when none reports one. */
 export function reportedSandbox(machines: readonly { last_seen_at: Date; inventory: unknown }[], now: number): SandboxReadiness | null {
   const reports = machines.flatMap((m) => {
     const sandbox = parseInventory(m.inventory)?.sandbox;
     return isOnline(m.last_seen_at, now) && sandbox && sandbox !== UNKNOWN ? [sandbox] : [];
   });
-  const score = (r: SandboxReadiness) => Number(r.modal) + Number(r.codexSlots > 0) + Number(r.image) + Number(r.claude) / 2;
+  const score = (r: SandboxReadiness) =>
+    Number(r.modal) + Number(r.codexSlots > 0) + Number(r.image && !imageOutdated(r)) + Number(r.claude) / 2;
   return reports.sort((a, b) => score(b) - score(a))[0] ?? null;
 }
 

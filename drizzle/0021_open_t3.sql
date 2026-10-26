@@ -1,0 +1,1 @@
+ALTER TYPE "public"."intent_kind" ADD VALUE 'open_t3';

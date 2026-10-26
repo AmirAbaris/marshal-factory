@@ -174,11 +174,13 @@ export const webhookDeliveries = pgTable("webhook_deliveries", {
   payload: jsonb("payload").notNull(),
 });
 
-export const intentKind = pgEnum("intent_kind", ["claim", "stop", "answer", "merged", "recheck_conflicts"]);
+export const intentKind = pgEnum("intent_kind", ["claim", "stop", "answer", "merged", "recheck_conflicts", "open_t3"]);
 
 /**
  * What a webhook asks the runner to do. Webhooks only record these; the runner acts on each one
  * through the same idempotent code its timer and startup reconcile use, then sets handled_at.
+ * The panel records open_t3 itself; its result holds a one-time T3 pairing link until the panel
+ * shows it or it expires.
  */
 export const intents = pgTable(
   "intents",

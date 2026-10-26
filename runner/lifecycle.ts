@@ -4,14 +4,16 @@ import { db } from "../db/client";
 import { auditLog, jobs, type JobRow } from "../db/schema";
 import type { RepoName } from "../lib/github/app";
 import { HostGoneError, hosts, isHibernated, type HostedJob, type JobHost } from "../lib/host";
-import { deleteSnapshot, isModalGone, modal, modalHost, snapshotSandbox, terminateSandbox } from "../lib/modal-host";
-import { CODEX_AUTH } from "../lib/sandbox";
+import { deleteSnapshot, isModalGone, modal, modalHost, snapshotSandbox, terminateSandbox, tunnelUrl } from "../lib/modal-host";
+import { CODEX_AUTH, T3_PORT } from "../lib/sandbox";
 import { readSettings, resolveExecution } from "../lib/settings";
+import type { JobId } from "../lib/sources/shapes";
+import { HIBERNATED_MESSAGE, type PairingResult } from "../lib/t3-pairing";
 import { bindingOf, PENDING, stopOwed } from "./binding";
 import { config } from "./config";
 import { thisMachine } from "./heartbeat";
 import { isolated } from "./reconcile";
-import { CodexLoginError, createJobSandbox, installCodexLogin, markSlotUnusable, sandboxRuntime, startT3, stopT3, usableSlots, writeGithubToken } from "./sandbox";
+import { CodexLoginError, createJobSandbox, installCodexLogin, markSlotUnusable, pairT3, sandboxRuntime, startT3, stopT3, usableSlots, writeGithubToken } from "./sandbox";
 import { threads } from "./threads";
 
 // What happens to a job's Modal sandbox after its launch. A sandbox bills by the second while it
@@ -329,6 +331,37 @@ export async function refreshTokens(now = Date.now()) {
     tokenWrites.set(sandboxId, now);
     return "token";
   });
+}
+
+const SANDBOX_GONE = "This job's sandbox is gone, so there is no T3 to open.";
+
+/**
+ * A one-time pairing link to the T3 in a running job's sandbox, on the sandbox's encrypted tunnel.
+ * A hibernated job is not woken for it. The link is returned for the intent's result only.
+ */
+export async function openT3(jobId: JobId): Promise<PairingResult> {
+  const [job] = await db.select().from(jobs).where(eq(jobs.id, jobId));
+  if (!job) return { refused: `No job ${jobId}.` };
+  if (isHibernated(job)) return { refused: HIBERNATED_MESSAGE };
+  if (!job.sandbox_id) return { refused: "This job does not run in a Modal sandbox." };
+  try {
+    const tunnel = await tunnelUrl(job.sandbox_id, T3_PORT);
+    switch (tunnel.kind) {
+      case "url":
+        return await pairT3(modalHost(job.sandbox_id), tunnel.url);
+      case "no port":
+        return { refused: "This sandbox started before T3 was reachable from outside it. It will be once it hibernates and wakes again." };
+      case "not ready":
+        return { refused: "The sandbox's T3 isn't reachable yet; try again in a moment." };
+      default: {
+        const never: never = tunnel;
+        throw new Error(`unknown tunnel ${JSON.stringify(never)}`);
+      }
+    }
+  } catch (error) {
+    if (error instanceof HostGoneError) return { refused: SANDBOX_GONE };
+    throw error;
+  }
 }
 
 /** Sandboxes and slots the last reap found without an owner; a second sighting acts, so a launch in flight is never hit. */

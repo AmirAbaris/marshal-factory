@@ -22,7 +22,7 @@ const { readSettings, SETTINGS_ID, writeSettings } = await import("../lib/settin
 
 modal.api = fakeModal;
 
-const spec = { name: "x", tags: {}, imageId: "im", secrets: {}, env: {}, limits: config.factory.sandbox };
+const spec = { name: "x", tags: {}, imageId: "im", secrets: {}, env: {}, encryptedPorts: [], limits: config.factory.sandbox };
 await assert.rejects(realModal.create(spec), /Modal was called during a regression run/, "the real Modal client refuses to run in a regression");
 await assert.rejects(realModal.fromId("sb-real"), /Modal was called during a regression run/);
 

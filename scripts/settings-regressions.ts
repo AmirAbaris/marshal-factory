@@ -10,7 +10,7 @@ process.env.FACTORY_OWNER_EMAILS = OWNER;
 const { db } = await import("../db/client");
 const { jobs, settings } = await import("../db/schema");
 const { DEFAULT_MODEL, DEFAULT_PROVIDER } = await import("../lib/harness");
-const { reportedHarnesses } = await import("../lib/machine");
+const { imageOutdated, reportedHarnesses, reportedSandbox } = await import("../lib/machine");
 const { readSettings, saveSettings, SETTINGS_ID, writeSettings } = await import("../lib/settings");
 const { readHarnesses } = await import("../lib/t3-state");
 const { claimLaunch, effectiveHarness, releaseLaunch } = await import("../runner/ops");
@@ -91,6 +91,27 @@ assert.deepEqual(
   ),
   [harness("claudeAgent", true), harness("codex", true, ["new"]), harness("cursor")],
   "one harness per id, from an online machine first and an enabled entry over a disabled one",
+);
+
+const sandbox = (t3Version: string, claude: boolean) => ({
+  modal: true,
+  claude,
+  codexSlots: 1,
+  image: true,
+  imageInfo: { t3Version, builtAt: "2026-10-26T10:00:00.000Z", factoryCommit: "abc1234" },
+  pinnedT3Version: "0.1.4",
+});
+const outdatedImage = sandbox("0.1.3", true);
+const currentImage = sandbox("0.1.4", false);
+assert.equal(imageOutdated(outdatedImage), true);
+assert.equal(imageOutdated(currentImage), false);
+assert.deepEqual(
+  reportedSandbox(
+    [outdatedImage, currentImage].map((s) => ({ last_seen_at: online, inventory: { ...inventory(undefined), sandbox: s } })),
+    now,
+  ),
+  currentImage,
+  "an image with the pinned T3 outranks an outdated one, even when the outdated runner has a Claude token",
 );
 
 const owner = { email: OWNER, emailVerified: true };

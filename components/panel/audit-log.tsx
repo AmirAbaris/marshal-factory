@@ -1,9 +1,6 @@
-"use client";
-
 import type { AuditRow } from "@/db/schema";
 import { Separator } from "@/components/ui/separator";
 import { cn } from "@/lib/utils";
-import { useFeed, type Feed } from "./sealed";
 import { Time } from "./time";
 
 const ACTION: Record<AuditRow["action"], { label: string; tone: string }> = {
@@ -22,8 +19,7 @@ const RESULT: Record<NonNullable<AuditRow["result"]>, string> = {
 };
 
 /** The job's audit rows, newest first: who asked, when, for which commit, and what came of it. */
-export function AuditLog({ feed, path }: { feed: Feed<AuditRow>; path: string }) {
-  const { rows } = useFeed(feed, path);
+export function AuditLog({ rows }: { rows: readonly AuditRow[] }) {
   if (rows.length === 0) return null;
   return (
     <>

@@ -62,7 +62,13 @@ try {
   const [row] = await db.select().from(jobs).where(eq(jobs.id, jid));
   assert.deepEqual(row!.delivered_reply_ids, ["c-1", "c-2"]);
 
-  await db.update(jobs).set({ t3_thread_id: "dead-thread", session_id: "old-session", machine_id: "old-machine" }).where(eq(jobs.id, jid));
+  await db
+    .update(jobs)
+    .set({ t3_thread_id: "dead-thread", session_id: "old-session", machine_id: "old-machine", sandbox_id: "sb-dead", codex_slot: "/tmp/slot-resume" })
+    .where(eq(jobs.id, jid));
+  assert.equal(await claimReplies(db, jid, ["c-3"], "c", now, "## Q&A"), false, "a job still holding a sandbox or slot is not unlinked for a relaunch");
+  assert.equal((await db.select().from(jobs).where(eq(jobs.id, jid)))[0]!.machine_id, "old-machine", "so its machine still tears them down");
+  await db.update(jobs).set({ sandbox_id: null, codex_slot: null }).where(eq(jobs.id, jid));
   assert.equal(await claimReplies(db, jid, ["c-3"], "c", now, "## Q&A"), true);
   const [relaunch] = await db.select().from(jobs).where(eq(jobs.id, jid));
   assert.equal(relaunch!.t3_thread_id, null, "claiming for a dead thread unlinks it in the same update");

@@ -9,6 +9,7 @@ import { cn } from "@/lib/utils";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import type { AgentRow, AuditRow, EventRow, JobRow, MachineRow, RunRow } from "@/db/schema";
+import { sandboxState } from "@/lib/execution";
 import { parseInventory, t3ThreadLink, UNKNOWN } from "@/lib/machine";
 import { sourceLink } from "@/lib/sources/shapes";
 import { AgentTree } from "./agent-tree";
@@ -17,10 +18,23 @@ import { AuditLog } from "./audit-log";
 import { formatUsd, runCost, runTitle, shortId } from "./format";
 import { MergeButton } from "./merge-button";
 import { ModelChip } from "./model-chip";
+import { OpenSandboxT3 } from "./open-sandbox-t3";
+import { SandboxSection } from "./sandbox-section";
 import { useFeed, type Feed } from "./sealed";
 import { StageTimeline } from "./stage-timeline";
 import { Time } from "./time";
 import { STAGE_META } from "./stages";
+
+/** The job's audit feed, read once for both the sandbox's last login check and the audit log. */
+function JobRecords({ feed, path, job }: { feed: Feed<AuditRow>; path: string; job: JobRow | undefined }) {
+  const { rows } = useFeed(feed, path);
+  return (
+    <>
+      {job && <SandboxSection job={job} audit={rows} />}
+      <AuditLog rows={rows} />
+    </>
+  );
+}
 
 export function RunDetail({
   run,
@@ -53,6 +67,7 @@ export function RunDetail({
   const machineName = machine?.name ?? job?.machine_id ?? null;
   const t3 = machine && parseInventory(machine.inventory)?.t3;
   const environmentId = t3 && t3 !== UNKNOWN ? t3.environmentId : null;
+  const sandboxed = job ? sandboxState(job) !== null : false;
 
   return (
     <aside className="flex min-h-0 flex-col border-l bg-card">
@@ -110,7 +125,9 @@ export function RunDetail({
               </Button>
             )}
             {job?.stage === "pr" && job.pr_url && <MergeButton key={job.pr_url} jobId={job.id} jobKey={job.key} />}
-            {run.t3_thread_id && (
+            {job && sandboxed ? (
+              <OpenSandboxT3 jobId={job.id} />
+            ) : run.t3_thread_id && (
               <Button asChild variant="outline" size="sm" className={job || run.pr_url ? "" : "ml-auto"}>
                 <a
                   href={t3ThreadLink(run.t3_thread_id, environmentId)}
@@ -124,14 +141,14 @@ export function RunDetail({
         </div>
         {job?.nudged_at && job.nudged_stage === job.stage && (
           <div className="mx-4.5 mb-3.5 rounded-lg border border-warning/40 bg-warning/10 px-3 py-2.5 text-xs">
-            <span className="font-semibold tracking-wider text-warning uppercase">Stuck</span> · the
+            <span className="font-semibold text-warning">Stuck</span> · the
             watchdog nudged this run at <Time date={job.nudged_at} /> in{" "}
             {STAGE_META[job.stage].label}. It fails if nothing moves.
           </div>
         )}
         {job?.answered_at && job.answer && job.stage !== "waiting" && (
           <div className="mx-4.5 mb-3.5 rounded-lg border border-success/40 bg-success/10 px-3 py-2.5">
-            <div className="text-xs font-semibold tracking-wider text-success uppercase">
+            <div className="text-xs font-semibold text-success">
               Answer received <Time date={job.answered_at} />
             </div>
             <p className="mt-1 whitespace-pre-wrap">{job.answer}</p>
@@ -139,7 +156,7 @@ export function RunDetail({
         )}
         {job?.stage === "waiting" && job.question ? (
           <div className="mx-4.5 mb-3.5 rounded-lg border border-warning/40 bg-warning/10 px-3 py-2.5">
-            <div className="text-xs font-semibold tracking-wider text-warning uppercase">
+            <div className="text-xs font-semibold text-warning">
               Question for you
             </div>
             <p className="mt-1 whitespace-pre-wrap">{job.question}</p>
@@ -147,7 +164,7 @@ export function RunDetail({
         ) : null}
         {!job && run.stage === "waiting" && run.question && (
           <div className="mx-4.5 mb-3.5 rounded-lg border border-warning/40 bg-warning/10 px-3 py-2.5">
-            <div className="text-xs font-semibold tracking-wider text-warning uppercase">
+            <div className="text-xs font-semibold text-warning">
               Question for you
             </div>
             <p className="mt-1 whitespace-pre-wrap">{run.question}</p>
@@ -155,22 +172,22 @@ export function RunDetail({
         )}
         <Separator />
         <section className="flex flex-col gap-2.5 px-4.5 py-3.5">
-          <h3 className="text-xs font-semibold tracking-wider text-faint uppercase">
+          <h3 className="text-sm font-medium text-muted-foreground">
             Timeline
           </h3>
           <StageTimeline events={stageRows} />
         </section>
-        {audit && <AuditLog feed={audit.feed} path={audit.path} />}
+        {audit ? <JobRecords feed={audit.feed} path={audit.path} job={job} /> : job && <SandboxSection job={job} audit={[]} />}
         <Separator />
         <section className="flex flex-col gap-2.5 px-4.5 py-3.5">
-          <h3 className="text-xs font-semibold tracking-wider text-faint uppercase">
+          <h3 className="text-sm font-medium text-muted-foreground">
             Agents · {agentRows.length}
           </h3>
           <AgentTree run={run} agents={agentRows} />
         </section>
         <Separator />
         <section className="flex flex-col gap-2.5 px-4.5 py-3.5">
-          <h3 className="text-xs font-semibold tracking-wider text-faint uppercase">
+          <h3 className="text-sm font-medium text-muted-foreground">
             Live events
           </h3>
           <EventFeed events={eventRows} />
