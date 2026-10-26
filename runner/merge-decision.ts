@@ -31,7 +31,8 @@ import { harnessDrivers, jobTracked, postMerged } from "./ops";
 // A settled decision is read again when the head, the report or the autonomy changes, or after
 // RECHECK_MS; a pending one, and a merge under auto, every pass. The audit log gets a row only
 // when the decision changes. Under auto a merge decision merges at once, on facts read in the
-// same pass and with the head pinned; a refusal hands over and is not retried for that head.
+// same pass and with the head pinned; a refusal hands over and is not retried for that head. The
+// intent to merge is stored before the merge call, so a crash right after it is recorded later.
 
 export const RECHECK_MS = 15 * 60_000;
 
@@ -72,7 +73,7 @@ async function prFacts(prUrl: string, repo: RepoName, headSha: string, baseRef: 
     github.checkState(repo, headSha),
     github.bugbotFindings(prUrl),
   ]);
-  return { headSha, mergeable, behindBy, files, checks: state.checks, bugbot: { finished: state.bugbotFinished, findings } };
+  return { headSha, mergeable, behindBy, files, checks: state.checks, bugbot: { review: state.bugbot, findings } };
 }
 
 type Evaluated = { decision: Decision; headSha: string | null; headSeenAt: number | null } | "unchanged";
@@ -166,33 +167,53 @@ function mergeSnapshot(decision: MergeDecision, sha: string, method: MergeMethod
     .join(" · ");
 }
 
+const notMerged = sql`not (coalesce(${jobs.merge_decision}, '{}'::jsonb) ? 'merged')`;
+
+/** Records the merge and starts the watch once; null when an earlier pass already recorded it. */
 async function recordMerge(job: Job, decision: MergeDecision, pull: MergeCandidate, method: MergeMethod, sha: string, now: number) {
   const at = new Date(now);
   const next: MergeDecision = {
     ...decision,
+    merging: undefined,
     merged: { sha, method, at: at.toISOString(), base: pull.baseRef, title: pull.title, commits: pull.commits },
     watch: { state: "watching", until: new Date(now + config.factory.postMergeWatchMinutes * 60_000).toISOString(), failed: [], revertPr: null, reason: null },
   };
-  await db.transaction(async (tx) => {
-    await tx.update(jobs).set({ merge_decision: next }).where(eq(jobs.id, job.id));
+  const recorded = await db.transaction(async (tx) => {
+    const updated = await tx.update(jobs).set({ merge_decision: next }).where(and(eq(jobs.id, job.id), notMerged)).returning({ id: jobs.id });
+    if (updated.length === 0) return false;
     await auditFactory(tx, job, at, "merge_succeeded", pull.headSha, mergeSnapshot(decision, sha, method, job), "ok");
+    return true;
   });
+  if (!recorded) return null;
   await postMerged(job.key, job.pr_url!, job.session_id ?? runnerEventId("merged", job.external_id));
   return next;
 }
 
+/** Stores the intent to merge this head; null when the job left the report the decision was made for. */
+async function markMerging(job: Job, decision: MergeDecision, method: MergeMethod, now: number): Promise<MergeDecision | null> {
+  const next: MergeDecision = { ...decision, merging: { headSha: decision.headSha!, method, at: new Date(now).toISOString() } };
+  const updated = await db
+    .update(jobs)
+    .set({ merge_decision: next })
+    .where(and(eq(jobs.id, job.id), eq(jobs.stage, "pr"), sql`${jobs.stage_event_id} is not distinct from ${job.stage_event_id}`, notMerged))
+    .returning({ id: jobs.id });
+  return updated.length === 0 ? null : next;
+}
+
 async function block(job: Job, decision: MergeDecision, detail: string) {
-  const next: MergeDecision = { ...decision, outcome: "handover", reasons: [blockedReason(detail)], blocked: detail };
+  const next: MergeDecision = { ...decision, merging: undefined, outcome: "handover", reasons: [blockedReason(detail)], blocked: detail };
   return (await store(job, decision, next)) === "gone" ? null : next;
 }
 
 /** Merges the PR the decision is about; null when the head moved or the PR left pr, so the next pass decides again. */
-async function mergeNow(job: Job, decision: MergeDecision, now: number): Promise<MergeDecision | null> {
+async function mergeNow(job: Job, evaluated: MergeDecision, now: number): Promise<MergeDecision | null> {
   const url = job.pr_url!;
   const pull = await github.mergeCandidate(url);
-  if (pull.state !== "open" || pull.headSha !== decision.headSha) return null;
+  if (pull.state !== "open" || pull.headSha !== evaluated.headSha) return null;
   const { method, canPush } = await github.repoMerging(job.repo as RepoName);
-  if (!canPush) return block(job, decision, "it has no write access to the repo's contents.");
+  if (!canPush) return block(job, evaluated, "it has no write access to the repo's contents.");
+  const decision = await markMerging(job, evaluated, method, now);
+  if (!decision) return null;
   const result = await github.mergePull(url, pull.headSha, { method, title: `${pull.title} (#${pull.number})`, message: commitMessage(job) });
   switch (result.kind) {
     case "merged":
@@ -214,19 +235,67 @@ async function mergeNow(job: Job, decision: MergeDecision, now: number): Promise
   }
 }
 
+/**
+ * Records the merges GitHub made but the factory never wrote down, such as after a crash right
+ * after the merge call; checkPullRequests may already have moved the job to merged. Only a merge
+ * of the intended head by an App counts; anything else drops the intent.
+ */
+async function recoverMerges(machineId: string, only: string[] | undefined, now: number, changed: string[], errors: { key: string; error: string }[]) {
+  const rows = parseJobs(
+    await db
+      .select()
+      .from(jobs)
+      .where(
+        and(
+          eq(jobs.machine_id, machineId),
+          inArray(jobs.stage, ["pr", "merged"]),
+          isNotNull(jobs.pr_url),
+          sql`${jobs.merge_decision} ? 'merging'`,
+          notMerged,
+          only ? inArray(jobs.key, only) : undefined,
+        ),
+      ),
+  );
+  for (const job of rows) {
+    try {
+      const decision = storedDecision(job);
+      const intent = decision?.merging;
+      if (!decision || !intent) continue;
+      const pull = await github.mergeCandidate(job.pr_url!);
+      // Still open: the main pass merges it or decides again.
+      if (pull.state === "open") continue;
+      if (pull.state === "merged" && pull.headSha === intent.headSha && pull.mergeCommitSha && pull.mergedByBot) {
+        const recorded = await recordMerge(job, decision, pull, intent.method, pull.mergeCommitSha, now);
+        if (recorded) {
+          changed.push(`${job.key}:merged`);
+          await syncComments(job, recorded);
+        }
+        continue;
+      }
+      await db
+        .update(jobs)
+        .set({ merge_decision: sql`${jobs.merge_decision} - 'merging'` })
+        .where(and(eq(jobs.id, job.id), notMerged));
+    } catch (error) {
+      errors.push({ key: job.key, error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+}
+
 export async function decideMerges({ now = Date.now(), only }: { now?: number; only?: string[] } = {}) {
   const machine = await thisMachine();
+  const changed: string[] = [];
+  const errors: { key: string; error: string }[] = [];
+  await recoverMerges(machine.id, only, now, changed, errors);
   const rows = parseJobs(
     await db
       .select()
       .from(jobs)
       .where(and(eq(jobs.machine_id, machine.id), eq(jobs.stage, "pr"), isNotNull(jobs.pr_url), only ? inArray(jobs.key, only) : undefined)),
   );
-  if (rows.length === 0) return [];
+  if (rows.length === 0) return errors.length > 0 ? { changed, errors } : changed;
   const policies = await readRepoSettings(db);
   const drivers = harnessDrivers();
-  const changed: string[] = [];
-  const errors: { key: string; error: string }[] = [];
   for (const job of rows) {
     try {
       const policy = resolvePolicy(policies, job.repo);

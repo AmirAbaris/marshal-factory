@@ -75,6 +75,8 @@ export const mergeDecisionSchema = z.object({
   stageEventId: z.string().nullable(),
   /** Why GitHub refused the factory's merge of this head; it is not tried again until the head moves. */
   blocked: z.string().optional(),
+  /** Written right before the factory asks GitHub to merge, so a crash after the merge is recorded on a later pass. */
+  merging: z.object({ headSha: z.string(), method: z.enum(MERGE_METHODS), at: z.string() }).optional(),
   merged: factoryMergeSchema.optional(),
   watch: watchSchema.optional(),
   /** Fingerprints of the decision comments last posted on the PR and in the source. */
@@ -84,6 +86,8 @@ export type MergeDecision = z.infer<typeof mergeDecisionSchema>;
 
 export type CheckState = "success" | "pending" | "failure";
 export type BugbotFinding = { severity: "high" | "medium" | "low"; resolved: boolean };
+/** Bugbot's run on the head: still running (or not started), reviewed, or ended without a review. */
+export type BugbotReview = { state: "pending" } | { state: "reviewed" } | { state: "failed"; conclusion: string };
 export type ChangedFile = { path: string; previousPath?: string; additions: number; deletions: number; patch?: string };
 
 /** What GitHub says about the PR head. */
@@ -93,7 +97,7 @@ export type PrFacts = {
   behindBy: number;
   /** Every check run and commit status on the head, Bugbot's aside; pending also when none reported yet. */
   checks: CheckState;
-  bugbot: { finished: boolean; findings: readonly BugbotFinding[] };
+  bugbot: { review: BugbotReview; findings: readonly BugbotFinding[] };
   files: readonly ChangedFile[];
 };
 
@@ -171,6 +175,7 @@ function hardLimits(input: DecisionInput, pr: PrFacts) {
   if (pr.checks === "failure") reasons.push("A check failed on the latest commit.");
   if (pr.mergeable === "conflicting") reasons.push("The pull request conflicts with its base branch.");
   if (pr.behindBy > 0) reasons.push(`The branch is ${pr.behindBy} commit${pr.behindBy === 1 ? "" : "s"} behind its base.`);
+  if (pr.bugbot.review.state === "failed") reasons.push(`Bugbot didn't complete its review (${pr.bugbot.review.conclusion}).`);
   const open = pr.bugbot.findings.filter((f) => !f.resolved && f.severity !== "low");
   if (open.length > 0) reasons.push(`Bugbot has ${open.length} unresolved medium or high finding${open.length === 1 ? "" : "s"}.`);
   const touched = pr.files.flatMap((f) => [f.path, ...(f.previousPath ? [f.previousPath] : [])]);
@@ -194,7 +199,7 @@ function agentReasons({ tracked, assessment }: DecisionInput) {
 function waitingOn(pr: PrFacts) {
   const waiting: string[] = [];
   if (pr.checks === "pending") waiting.push("checks");
-  if (!pr.bugbot.finished) waiting.push("Bugbot");
+  if (pr.bugbot.review.state === "pending") waiting.push("Bugbot");
   if (pr.mergeable === "unknown") waiting.push("GitHub's mergeability check");
   return waiting;
 }

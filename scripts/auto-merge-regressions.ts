@@ -17,7 +17,8 @@ const { DECISION_MARKER, prCommentBody, sourceCommentBody } = await import("../l
 const { writeRepoAutonomy } = await import("../lib/settings");
 const { decideMerges, RECHECK_MS } = await import("../runner/merge-decision");
 const { revertDeps, watchMerges } = await import("../runner/post-merge");
-const { config, ingestClient } = await import("../runner/ops");
+const { runnerEventId } = await import("../lib/stages");
+const { config, ingestClient, postMerged } = await import("../runner/ops");
 const { serve } = await import("./serve");
 
 const TOKEN = "ghs_regressionSecretToken0123456789";
@@ -68,6 +69,7 @@ type Pull = {
   merged: string | null;
   merge: (pull: Pull) => { status: number; body: unknown };
   branch?: string;
+  mergedBy?: { login: string; type: string };
 };
 const pulls = new Map<string, Pull>();
 const pullKey = (repo: string, n: number) => `${repo}#${n}`;
@@ -93,6 +95,7 @@ const pullJson = (p: Pull, sha: string) => ({
   title: p.title,
   commits: 1,
   merge_commit_sha: p.merged,
+  merged_by: p.merged ? (p.mergedBy ?? { login: "marshal-factory[bot]", type: "Bot" }) : null,
   html_url: `https://github.com/${p.repo}/pull/${p.number}`,
 });
 const merged = (sha: string) => (p: Pull) => (Object.assign(p, { state: "closed", merged: sha }), { status: 200, body: { sha } });
@@ -387,6 +390,27 @@ try {
   gitCalls.length = 0;
   assert.deepEqual(await watchMerges({ only: [STALE, MC, GOOD], now: at(12) }), [], "an ended watch is not watched again");
   assert.equal(gitCalls.length, 0);
+
+  // GitHub merges, then the factory loses the answer; checkPullRequests moves the job to merged
+  // first. The intent stored before the call still records the merge and starts the watch.
+  const lost = (sha: string, mergedBy?: Pull["mergedBy"]) => (p: Pull) => (Object.assign(p, { state: "closed", merged: sha, mergedBy }), { status: 500, body: { message: "Server Error" } });
+  const CRASH = await job("CRASH", AUTO, 8, { merge: lost("m8") });
+  const HUMAN = await job("HUMAN", AUTO, 9, { merge: lost("m9", { login: "someone", type: "User" }) });
+  const crashed = await decideMerges({ only: [CRASH, HUMAN], now: at(40) });
+  assert.ok(!Array.isArray(crashed) && crashed.errors.length === 2, JSON.stringify(crashed));
+  assert.deepEqual((await decision(CRASH)).merging, { headSha: "h8", method: "squash", at: new Date(at(40)).toISOString() }, "the intent is stored before the call");
+  for (const r of [await row(CRASH), await row(HUMAN)]) await postMerged(r.key, r.pr_url!, r.session_id ?? runnerEventId("merged", r.external_id));
+  assert.equal((await row(CRASH)).stage, "merged");
+  assert.deepEqual(await decideMerges({ only: [CRASH, HUMAN], now: at(41) }), [`${CRASH}:merged`], "the lost merge is recorded");
+  const recovered = await decision(CRASH);
+  assert.deepEqual([recovered.merged?.sha, recovered.watch?.state, recovered.merging], ["m8", "watching", undefined]);
+  const human = await decision(HUMAN);
+  assert.deepEqual([human.merged, human.watch, human.merging], [undefined, undefined, undefined], "someone else's merge is not the factory's");
+  assert.deepEqual(await decideMerges({ only: [CRASH, HUMAN], now: at(42) }), [], "recorded once");
+  assert.equal((await auditsOf(CRASH)).filter((a) => a.action === "merge_succeeded").length, 1);
+  assert.match(comments.get(pullKey(AUTO, 8))!.at(-1)!.body, /Merged by the factory/);
+  checksOf.set("m8", { runs: [checkRun("ci", "success")], statuses: [] });
+  assert.deepEqual(await watchMerges({ only: [CRASH], now: at(43) }), [`${CRASH}:green`], "and watched at stage merged");
 
   // The token never reached a log line or an error.
   assert.ok(!logged.some((l) => l.includes(TOKEN)), "no token in the logs");
