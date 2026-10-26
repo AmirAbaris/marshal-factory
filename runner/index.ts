@@ -16,9 +16,9 @@ const { db } = await import("../db/client");
 const { intents, jobs } = await import("../db/schema");
 const ops = await import("./ops");
 const { createBeat, inventoryCollectors, systemCollectors, thisMachine } = await import("./heartbeat");
-const { closeBroadcast, deliveryFor, leaseIntent, receiptIntent, recordReceipt } = await import("./intents");
+const { closeBroadcast, deliveryFor, expirePairings, INTENT_ATTEMPTS, leaseIntent, loggable, receiptIntent, recordReceipt } = await import("./intents");
 const { launchQueued } = await import("./launch");
-const { tickSandboxes } = await import("./lifecycle");
+const { openT3, tickSandboxes } = await import("./lifecycle");
 const { recheckScheduler } = await import("./recheck");
 const { everyAtMost, serialQueue } = await import("./queue");
 const { isolated, reconcile } = await import("./reconcile");
@@ -63,6 +63,8 @@ async function handle(intent: IntentRow) {
       return { merged: await ops.checkPullRequests(), synced: await ops.writeBack() };
     case "recheck_conflicts":
       return { recheck: recheck.request() };
+    case "open_t3":
+      return openT3(intent.job_id!);
     default: {
       const unhandled: never = intent.kind;
       throw new Error(`no handler for intent ${String(unhandled)}`);
@@ -78,7 +80,6 @@ const recheck = recheckScheduler({
   now: Date.now,
 });
 
-const MAX_ATTEMPTS = 50;
 const inProgress = new Set<string>();
 type OpenIntent = { intent: IntentRow; owner: string | null };
 
@@ -103,14 +104,14 @@ async function runIntent(intent: IntentRow) {
   const latencyMs = Date.now() - intent.created_at.getTime();
   const result = await handle(intent).catch((error: unknown) => ({ error: String(error) }));
   // A failed intent stays open and the timer retries it, so a Linear or T3 hiccup cannot eat a
-  // stop. After MAX_ATTEMPTS it is closed with the error kept in result.
+  // stop. After its kind's INTENT_ATTEMPTS it is closed with the error kept in result.
   const failed = "error" in result;
   const attempts = intent.attempts + 1;
   await db
     .update(intents)
     .set({
       attempts,
-      handled_at: failed && attempts < MAX_ATTEMPTS ? null : new Date(),
+      handled_at: failed && attempts < INTENT_ATTEMPTS[intent.kind] ? null : new Date(),
       // 30 s, 1 min, 2 min, ... then every 30 min: about a day of retries before it gives up.
       retry_at: failed ? new Date(Date.now() + Math.min(30_000 * 2 ** (attempts - 1), 1_800_000)) : null,
       result: JSON.stringify(result).slice(0, 2000),
@@ -119,7 +120,7 @@ async function runIntent(intent: IntentRow) {
       lease_until: null,
     })
     .where(and(eq(intents.id, intent.id), eq(intents.leased_by, machine.id)));
-  return { id: intent.id, job: intent.job_id, latencyMs, attempts, ...result };
+  return { id: intent.id, job: intent.job_id, latencyMs, attempts, ...loggable(intent.kind, result) };
 }
 
 /**
@@ -164,6 +165,7 @@ async function tick() {
     watched: await isolated(ops.watchdog),
     // After the stops and the PR check, so a finished job gives its slot back before this tick's launches.
     sandboxes: await isolated(tickSandboxes),
+    pairingsExpired: await isolated(expirePairings),
     synced: await isolated(async () => ops.writeBack()),
   };
 }

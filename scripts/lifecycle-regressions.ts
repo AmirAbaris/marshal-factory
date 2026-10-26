@@ -68,7 +68,7 @@ const row = async (k: string) => (await db.select().from(jobs).where(eq(jobs.key
 const hourAgo = new Date(Date.now() - 3_600_000);
 
 async function sandboxFor(k: string, machine = TEST_MACHINE_ID) {
-  return (await fakeModal.create({ name: `job-${k}-a1`, tags: { job: k, attempt: "1", label, machine }, imageId: "im-test", secrets: {}, env: {}, limits })) as FakeSandbox;
+  return (await fakeModal.create({ name: `job-${k}-a1`, tags: { job: k, attempt: "1", label, machine }, imageId: "im-test", secrets: {}, env: {}, encryptedPorts: [], limits })) as FakeSandbox;
 }
 
 async function insert(name: string, over: Partial<typeof jobs.$inferInsert>) {
@@ -136,6 +136,8 @@ try {
   const w = (needle: string) => argvW.findIndex((a) => a.includes(needle));
   assert.ok(w("codex login status") >= 0 && w("codex login status") < w("t3 serve") && w("rm -rf /root/.t3/userdata/server-runtime.json") < w("t3 serve"), argvW.join(" | "));
   assert.ok(w("t3 serve") < w("t3 thread send thread-H"), "serve before the message");
+  assert.deepEqual(sbW.spec!.encryptedPorts, [3773], "a woken sandbox declares T3's port as an encrypted tunnel");
+  assert.match(argvW[w("t3 serve")]!, /serve --host 0\.0\.0\.0 --port 3773 /, "and T3 listens where the tunnel reaches it");
   assert.match(sbW.execs[w("t3 thread send")]!.input, /conflicts with main/);
 
   // Token refresh: every 40 minutes per running sandbox; one this runner has no record of goes at once.

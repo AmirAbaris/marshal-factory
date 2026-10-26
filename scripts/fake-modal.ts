@@ -70,6 +70,10 @@ export class FakeSandbox implements SandboxHandle {
     fake.ops.push(`${this.sandboxId}: snapshot ${imageId}`);
     return { imageId };
   }
+  async tunnels() {
+    this.alive();
+    return Object.fromEntries((this.spec?.encryptedPorts ?? []).map((port) => [port, { url: `https://${this.sandboxId}-${port}.fake.modal.host` }]));
+  }
 }
 
 export const sandboxes = new Map<string, FakeSandbox>();
@@ -78,7 +82,7 @@ const unknown = (sandboxId: string): SandboxHandle => {
   const missing = async (): Promise<never> => {
     throw new NotFoundError(`Sandbox ${sandboxId} not found`);
   };
-  return { sandboxId, exec: missing, filesystem: { readText: missing, writeText: missing }, terminate: missing, snapshotFilesystem: missing };
+  return { sandboxId, exec: missing, filesystem: { readText: missing, writeText: missing }, terminate: missing, snapshotFilesystem: missing, tunnels: missing };
 };
 
 export const fakeModal: ModalApi = {

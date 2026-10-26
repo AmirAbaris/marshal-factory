@@ -1,7 +1,8 @@
-import { and, eq, isNull, lt, or, sql } from "drizzle-orm";
+import { and, eq, isNull, like, lt, or, sql } from "drizzle-orm";
 import { db } from "../db/client";
 import { intentReceipts, intents, type IntentKind } from "../db/schema";
 import { ONLINE_WINDOW_MS } from "../lib/machine";
+import { PAIRING_TTL_MINUTES, type PairingResult } from "../lib/t3-pairing";
 
 // Which machine acts on an intent. A job belongs to the machine in jobs.machine_id: only that
 // machine can reach its T3 thread, its worktree and its transcripts.
@@ -15,7 +16,43 @@ export const INTENT_ROUTES = {
   answer: "owner",
   merged: "owner",
   recheck_conflicts: "broadcast",
+  open_t3: "owner",
 } as const satisfies Record<IntentKind, "any" | "owner" | "broadcast">;
+
+/**
+ * How often a failing intent is tried before it is closed with its error. A pairing link is asked
+ * for by someone watching the panel, so it fails at once rather than retrying for a day.
+ */
+export const INTENT_ATTEMPTS = {
+  claim: 50,
+  stop: 50,
+  answer: 50,
+  merged: 50,
+  recheck_conflicts: 50,
+  open_t3: 1,
+} as const satisfies Record<IntentKind, number>;
+
+/** An intent's result as the runner logs it: a pairing link only ever goes to the intent row. */
+export function loggable(kind: IntentKind, result: object) {
+  if (kind !== "open_t3" || !("pairUrl" in result)) return result;
+  return { pairing: "minted", expiresAt: (result as Extract<PairingResult, { pairUrl: string }>).expiresAt };
+}
+
+/** Clears pairing links the panel never took once their token has expired. */
+export async function expirePairings() {
+  const cleared = await db
+    .update(intents)
+    .set({ result: JSON.stringify({ cleared: "expired" } satisfies PairingResult) })
+    .where(
+      and(
+        eq(intents.kind, "open_t3"),
+        like(intents.result, '%"pairUrl"%'),
+        lt(intents.handled_at, sql`now() - make_interval(mins => ${PAIRING_TTL_MINUTES})`),
+      ),
+    )
+    .returning({ id: intents.id });
+  return cleared.length;
+}
 
 export type Delivery = "lease" | "receipt" | "skip";
 
