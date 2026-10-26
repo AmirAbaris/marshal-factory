@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { localHost } from "../lib/host";
 import { subagentTranscripts, sumUsage, transcriptPathFor } from "../lib/transcript";
 
 const line = (id: string, input: number, output: number) =>
@@ -30,7 +31,7 @@ try {
   writeFileSync(join(subs, "agent-a3.jsonl"), line("y", 1, 1));
   writeFileSync(join(subs, "agent-a3.meta.json"), '{"toolUse');
   assert.deepEqual(
-    subagentTranscripts(main, "s1").sort((a, b) => a.agentId.localeCompare(b.agentId)),
+    (await subagentTranscripts(main, "s1", localHost)).sort((a, b) => a.agentId.localeCompare(b.agentId)),
     [
       { agentId: "a1", toolUseId: "toolu_1", usage: { input: 100, output: 50, cacheRead: 10, cacheWrite: 1, model: "claude-opus-5-5" } },
       { agentId: "a3", toolUseId: undefined, usage: { input: 1, output: 1, cacheRead: 10, cacheWrite: 1, model: "claude-opus-5-5" } },

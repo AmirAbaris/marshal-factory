@@ -1,6 +1,8 @@
 import "./test-guard";
 import assert from "node:assert/strict";
 import { eq } from "drizzle-orm";
+import type { ExecOptions } from "../lib/exec";
+import type { JobHost } from "../lib/host";
 
 const { db } = await import("../db/client");
 const { jobs } = await import("../db/schema");
@@ -11,13 +13,14 @@ const { createLinearAdapter } = await import("../lib/sources/linear");
 const { factorySchema, TEST_MACHINE_ID } = await import("../lib/config");
 const { canReclaim, canReclaimSql, stopDeliverable, stopDeliverableSql } = await import("../runner/binding");
 const { and, sql } = await import("drizzle-orm");
-const { launchEntries, maybeStarted, MaybeStartedError, parseThreadId } = await import("../runner/launch");
-const { runWithInput } = await import("../lib/exec");
+const { launchEntries, maybeStarted, MaybeStartedError, parseThreadId, startThread } = await import("../runner/launch");
+const { hosts, localHost } = await import("../lib/host");
 const { everyAtMost, serialQueue } = await import("../runner/queue");
 const { recheckScheduler } = await import("../runner/recheck");
 
 const slot = { id: TEST_MACHINE_ID, repos: ["ski043/factory-demo"], maxInFlight: 2 };
 const sent: { threadId: string; message: string }[] = [];
+const realThreads = { ...threads };
 threads.state = async () => "running";
 threads.send = async (threadId, message) => void sent.push({ threadId, message });
 
@@ -152,6 +155,69 @@ try {
   assert.deepEqual(linearDown, { unknown: "Linear is down" });
   assert.deepEqual(stops, [], "a failed Linear fetch stops nothing");
 
+  // Every per-job T3 call goes through the job's host, so a fake host sees exactly what T3 would.
+  const calls: { command: string; args: string[]; options?: ExecOptions }[] = [];
+  let shown: Record<string, unknown> = { archived: false, worktreePath: "/sandbox/wt", activeRunId: null };
+  const fake: JobHost = {
+    t3: "/sandbox/t3",
+    run: async (command, args, options) => {
+      calls.push({ command, args, options });
+      if (args[1] === "start") return { stdout: '{"threadId":"mcp:fake"}', stderr: "" };
+      if (args[1] === "show" && args[2] === "mcp:gone") throw Object.assign(new Error("exit 1"), { code: 1, stdout: "", stderr: "Thread mcp:gone is no longer available" });
+      if (args[1] === "show") return { stdout: JSON.stringify({ thread: shown }), stderr: "" };
+      return { stdout: "", stderr: "" };
+    },
+    readFile: async () => null,
+    exists: async (path) => path === "/sandbox/wt",
+    list: async () => [],
+    mtimeMs: async () => 0,
+    remove: async () => {},
+  };
+  const harness = { provider: "codex", model: "gpt-5.5" };
+  assert.equal(await startThread(fake, "/sandbox/repo", "factory/FAC-1", "FAC-1 Title", "Work FAC-1", harness), "mcp:fake");
+  assert.deepEqual(
+    calls,
+    [
+      {
+        command: "/sandbox/t3",
+        args: ["thread", "start", "/sandbox/repo", "-", "--worktree", "origin/main", "--branch", "factory/FAC-1", "--title", "FAC-1 Title", "--provider", "codex", "--model", "gpt-5.5", "--json"],
+        options: { input: "Work FAC-1", timeoutMs: 60_000, maxBuffer: 16 * 1024 * 1024 },
+      },
+    ],
+    "the launch runs t3 thread start on the job's host, with the message on stdin and the harness as flags",
+  );
+  calls.length = 0;
+  assert.equal(await realThreads.state("mcp:fake", fake), "stopped", "an idle thread whose worktree the host has is stopped");
+  assert.deepEqual(calls, [{ command: "/sandbox/t3", args: ["thread", "show", "mcp:fake", "--json"], options: { timeoutMs: 20_000 } }]);
+  shown = { ...shown, activeRunId: "run-1" };
+  assert.equal(await realThreads.state("mcp:fake", fake), "running");
+  shown = { ...shown, worktreePath: "/elsewhere" };
+  assert.equal(await realThreads.state("mcp:fake", fake), "gone", "a worktree missing on the job's host means gone");
+  assert.equal(await realThreads.state("mcp:gone", fake), "gone", "T3 saying the thread is gone, through the host's error, means gone");
+  calls.length = 0;
+  assert.equal(await realThreads.state("pending:1", fake), "running", "a pending launch asks no host");
+  assert.equal(calls.length, 0);
+  await assert.rejects(realThreads.state("mcp:real", localHost), /t3 thread show was called during a regression run/, "the local host still refuses T3 in a regression");
+  await assert.rejects(startThread(localHost, "/repo", "factory/X", "X", "m", harness), /t3 thread start was called during a regression run/);
+  await assert.rejects(realThreads.send("mcp:real", "m", localHost), /t3 thread send was called during a regression run/);
+
+  // The job's host comes from the resolver: a stop is shown and sent on the host it names.
+  shown = { archived: false, worktreePath: "/sandbox/wt", activeRunId: "run-1" };
+  calls.length = 0;
+  Object.assign(threads, realThreads);
+  const resolve = hosts.forJob;
+  hosts.forJob = (job) => (job.key === id ? fake : localHost);
+  try {
+    await db.update(jobs).set({ ...stop, t3_thread_id: "mcp:fake", stop_sent_to: null, machine_id: TEST_MACHINE_ID }).where(eq(jobs.id, jid));
+    assert.deepEqual(await deliverStops(jid), [id]);
+  } finally {
+    hosts.forJob = resolve;
+    threads.state = async () => "running";
+    threads.send = async (threadId, message) => void sent.push({ threadId, message });
+  }
+  assert.deepEqual(calls.map((c) => c.args.slice(0, 3)), [["thread", "show", "mcp:fake"], ["thread", "send", "mcp:fake"]]);
+  assert.match(calls[1]!.options!.input!, /^Stop working on /, "the stop message goes to the fake host's stdin");
+
   // One failed start does not stop the batch; a clear failure frees its marker, a timeout keeps it.
   const markers = new Map<string, string>();
   const released: string[] = [];
@@ -235,6 +301,8 @@ try {
   assert.equal(throwingChecks, 2, "and that next recheck runs");
 
   // Child processes always settle, and output is parsed after awaiting it.
+  const runWithInput = async (command: string, args: string[], input: string, timeoutMs: number) =>
+    (await localHost.run(command, args, { input, timeoutMs })).stdout;
   assert.equal(await runWithInput("cat", [], "hello", 5_000), "hello", "stdin reaches the command");
   await assert.rejects(runWithInput("/nonexistent/t3", [], "x", 5_000), "a missing binary rejects");
   await assert.rejects(runWithInput("sh", ["-c", "exit 3"], "x", 5_000), "a failed exit rejects");

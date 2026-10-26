@@ -1,6 +1,3 @@
-import { execFile } from "node:child_process";
-import { existsSync, statSync } from "node:fs";
-import { promisify } from "node:util";
 import { and, asc, eq, gt, inArray, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "../db/client";
@@ -13,7 +10,7 @@ import type { Job, JobDraft, JobId, JobSource, SourceAdapter } from "../lib/sour
 import type { IngestResult } from "../lib/ingest";
 import { canTransition, runnerEventId } from "../lib/stages";
 import { branchSpend } from "../lib/spend";
-import { readTranscript, subagentTranscripts, sumUsage, transcriptPathFor } from "../lib/transcript";
+import { subagentTranscripts, sumUsage, transcriptPathFor } from "../lib/transcript";
 import { checkoutRepo, cleanupRepo, cleanupSubagentWorktrees } from "../lib/worktrees";
 import { github } from "../lib/github/pulls";
 import { claimConflict, conflictMessage, unclaimedRunsWithPr } from "../lib/conflicts";
@@ -23,7 +20,7 @@ import { isTracked } from "../lib/harness";
 import { readHarnesses } from "../lib/t3-state";
 import { readSettings, resolveHarness, type HarnessChoice } from "../lib/settings";
 import { forbidInTest } from "../lib/test-mode";
-import { runWithInput } from "../lib/exec";
+import { hosts, type JobHost } from "../lib/host";
 import { bindingOf, canReclaimSql, isStopped, PENDING, stopDeliverableSql } from "./binding";
 import { thisMachine } from "./heartbeat";
 import { claimReplies, qaBlock, resumeMessage } from "../lib/resume";
@@ -41,10 +38,6 @@ const mine = async () => eq(jobs.machine_id, (await thisMachine()).id);
 /** Stages where a thread is working; waiting, pr, merged and failed free the slot. */
 export const IN_FLIGHT: Stage[] = ["queued", "triage", "investigating", "implementing", "verifying"];
 const STOPPABLE = STAGES.filter((stage) => canTransition(stage, "failed", "stop"));
-
-const run = promisify(execFile);
-// The LaunchAgent sets T3CODE_CLI_PATH; otherwise t3 must be on PATH.
-const T3 = process.env.T3CODE_CLI_PATH ?? "t3";
 
 /**
  * Follows every factory PR: a merged one moves its job to merged, and one that conflicts with
@@ -102,7 +95,8 @@ async function postMerged(jobKey: string, prUrl: string, sessionId: string) {
 
 async function sendBackForConflict(job: Job, head: string) {
   // Ask T3 first: a CLI error then fails this PR's check before anything is claimed.
-  const thread = await threads.state(job.t3_thread_id);
+  const host = hosts.forJob(job);
+  const thread = await threads.state(job.t3_thread_id, host);
   if (!(await claimConflict(db, job.id, head))) return false;
   const release = () => db.update(jobs).set({ conflict_head: job.conflict_head }).where(eq(jobs.id, job.id));
 
@@ -122,7 +116,7 @@ async function sendBackForConflict(job: Job, head: string) {
       });
       return true;
     }
-    await threads.send(job.t3_thread_id!, conflictMessage(job.key, job.pr_url!));
+    await threads.send(job.t3_thread_id!, conflictMessage(job.key, job.pr_url!), host);
   } catch (error) {
     await release();
     throw error;
@@ -154,14 +148,13 @@ async function postEvent(event: Record<string, unknown>) {
 }
 
 /** Gone means T3 no longer has the thread, it is archived, or its worktree left the disk. */
-async function showThread(threadId: string | null): Promise<ThreadState> {
-  forbidInTest("t3 thread show");
+async function showThread(threadId: string | null, host: JobHost): Promise<ThreadState> {
   if (!threadId) return "gone";
   // A launch in progress; the runner records the real id or clears the marker.
   if (bindingOf(threadId) === "pending") return "running";
   let stdout: string;
   try {
-    ({ stdout } = await run(T3, ["thread", "show", threadId, "--json"], { timeout: 20_000 }));
+    ({ stdout } = await host.run(host.t3, ["thread", "show", threadId, "--json"], { timeoutMs: 20_000 }));
   } catch (error) {
     // Only T3 saying the thread is gone counts as gone; a timeout or crash must not start a second thread.
     const output = String((error as { stdout?: string }).stdout ?? "") + String((error as { stderr?: string }).stderr ?? "");
@@ -177,19 +170,18 @@ async function showThread(threadId: string | null): Promise<ThreadState> {
       }),
     })
     .parse(JSON.parse(stdout));
-  if (thread.archived || (thread.worktreePath !== null && !existsSync(thread.worktreePath))) return "gone";
+  if (thread.archived || (thread.worktreePath !== null && !(await host.exists(thread.worktreePath)))) return "gone";
   return thread.activeRunId ? "running" : "stopped";
 }
 
 export const threads = {
   state: showThread,
-  async send(threadId: string, message: string) {
-    forbidInTest("t3 thread send");
-    await runWithInput(T3, ["thread", "send", threadId, "-"], message, 30_000);
+  async send(threadId: string, message: string, host: JobHost) {
+    await host.run(host.t3, ["thread", "send", threadId, "-"], { input: message, timeoutMs: 30_000, maxBuffer: 16 * 1024 * 1024 });
   },
 };
 
-const threadAlive = async (threadId: string | null) => (await threads.state(threadId)) !== "gone";
+const threadAlive = async (threadId: string | null, host: JobHost) => (await threads.state(threadId, host)) !== "gone";
 
 /**
  * Hands answers to waiting questions back to the run that asked. The reply ids are claimed in
@@ -224,7 +216,8 @@ export async function resumeAnswered() {
     }
 
     const replyIds = plan.replies.map((r) => r.id);
-    const alive = await threadAlive(job.t3_thread_id);
+    const host = hosts.forJob(job);
+    const alive = await threadAlive(job.t3_thread_id, host);
     // A dead thread is unlinked in the same update that claims the replies, so the relaunch
     // cannot be lost to a later failure in this pass.
     const relaunch = alive ? undefined : qaBlock(plan.question, plan.answer);
@@ -232,7 +225,7 @@ export async function resumeAnswered() {
 
     if (alive) {
       try {
-        await threads.send(job.t3_thread_id!, await withLocalImages(job.source, job.key, resumeMessage(source.describe(job), plan.question, plan.answer)));
+        await threads.send(job.t3_thread_id!, await withLocalImages(job.source, job.key, resumeMessage(source.describe(job), plan.question, plan.answer)), host);
       } catch (error) {
         await db
           .update(jobs)
@@ -283,13 +276,14 @@ export async function watchdog() {
   }
   for (const { job, lastEventAt } of working) {
     const now = new Date();
+    const host = hosts.forJob(job);
     const action = watch(
       {
         stage: job.stage,
         lastEventAt: lastEventAt ?? job.updated_at,
         nudgedAt: job.nudged_at,
         nudgedStage: job.nudged_stage,
-        thread: await threads.state(job.t3_thread_id),
+        thread: await threads.state(job.t3_thread_id, host),
         tracked: isTracked(drivers.get(job.provider ?? config.factory.provider) ?? job.provider ?? config.factory.provider),
         now,
       },
@@ -314,7 +308,7 @@ export async function watchdog() {
         .returning({ key: jobs.key });
       if (claimed.length === 0) continue;
       try {
-        await threads.send(job.t3_thread_id!, nudgeMessage(job.key, job.stage, action.idleMinutes));
+        await threads.send(job.t3_thread_id!, nudgeMessage(job.key, job.stage, action.idleMinutes), host);
       } catch (error) {
         await db
           .update(jobs)
@@ -366,11 +360,13 @@ export async function reconcileUsage() {
     .where(and(isNotNull(runs.job_key), gt(runs.last_event_at, new Date(Date.now() - 7 * 86_400_000))));
   const fixed: string[] = [];
   for (const run of recent) {
+    const host = hosts.forJob({ key: run.job_key! });
     const path = transcriptPathFor(run);
-    if (!path || !existsSync(path)) continue;
-    const usage = sumUsage(readTranscript(path));
+    const transcript = path ? await host.readFile(path) : null;
+    if (!path || transcript === null) continue;
+    const usage = sumUsage(transcript);
     if (usage.model === "unknown") continue;
-    const subagents = subagentTranscripts(path, run.session_id);
+    const subagents = await subagentTranscripts(path, run.session_id, host);
     const rows = await db.select().from(agents).where(eq(agents.session_id, run.session_id));
     const lags = (u: Usage, row: { input_tokens: number; output_tokens: number; cache_read_tokens: number; cache_write_tokens: number } | undefined) =>
       !row ||
@@ -387,7 +383,7 @@ export async function reconcileUsage() {
       eventId: `reconcile:${run.session_id}:${fingerprint}`,
       sessionId: run.session_id,
       // The transcript's own last write, so the watchdog never mistakes a reconcile for activity.
-      at: Math.min(Math.floor(statSync(path).mtimeMs), run.last_event_at.getTime()),
+      at: Math.min(Math.floor(await host.mtimeMs(path)), run.last_event_at.getTime()),
       kind: "usage",
       usage,
       agents: subagents,
@@ -830,11 +826,13 @@ export async function deliverStops(id?: JobId) {
       .where(and(eq(jobs.id, job.id), eq(jobs.t3_thread_id, threadId), sql`${jobs.stop_sent_to} is distinct from ${threadId}`))
       .returning({ key: jobs.key });
     if (!claimed) continue;
+    const host = hosts.forJob(job);
     try {
-      if ((await threads.state(threadId)) !== "gone") {
+      if ((await threads.state(threadId, host)) !== "gone") {
         await threads.send(
           threadId,
           `Stop working on ${job.key}. ${job.stage === "failed" ? job.stage_summary : "The factory stopped this run."} Do not push, do not open or update a PR. End the turn now.`,
+          host,
         );
       }
     } catch (error) {

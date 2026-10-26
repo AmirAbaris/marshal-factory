@@ -7,6 +7,7 @@ import { promisify } from "node:util";
 import { CONFIG_PATH } from "../lib/config";
 import { stageReportSchema, type FactoryEvent, type Usage } from "../lib/events";
 import { jobKeyFromBranch, REPORT_STAGE_TOOL } from "../lib/factory";
+import { localHost } from "../lib/host";
 import { rememberSessionBranch, sessionBranch, writeSpend } from "../lib/spend-cache";
 import { mainTranscript, readTranscript, subagentTranscripts, sumUsage } from "../lib/transcript";
 
@@ -150,7 +151,7 @@ async function usageSnapshot(
   const main = mainTranscript(input.transcript_path, base.sessionId);
   const usage = await sumTranscriptUsage(main, false);
   if (usage.model === "unknown") return undefined;
-  const agents = main ? subagentTranscripts(main, base.sessionId) : [];
+  const agents = main ? await subagentTranscripts(main, base.sessionId, localHost) : [];
   return { ...base, kind: "usage", usage, agents };
 }
 
