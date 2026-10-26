@@ -33,6 +33,35 @@ export const DEFAULT_POLICY: RepoPolicy = { autonomy: "off", protectedPaths: DEF
 export const MERGE_OUTCOMES = ["merge", "handover", "pending"] as const;
 export type MergeOutcome = (typeof MERGE_OUTCOMES)[number];
 
+export const MERGE_METHODS = ["squash", "merge", "rebase"] as const;
+export type MergeMethod = (typeof MERGE_METHODS)[number];
+
+export const WATCH_STATES = ["watching", "green", "expired", "reverted", "revert_failed"] as const;
+export type WatchState = (typeof WATCH_STATES)[number];
+
+/** What the factory merged; the post-merge watch reads the base branch at this commit. */
+export const factoryMergeSchema = z.object({
+  sha: z.string(),
+  method: z.enum(MERGE_METHODS),
+  at: z.string(),
+  base: z.string(),
+  title: z.string(),
+  /** The PR's commit count; a rebase merge put that many commits on the base. */
+  commits: z.number().int().positive(),
+});
+export type FactoryMerge = z.infer<typeof factoryMergeSchema>;
+
+export const watchSchema = z.object({
+  state: z.enum(WATCH_STATES),
+  until: z.string(),
+  /** The checks that failed on the base branch. */
+  failed: z.array(z.string()),
+  revertPr: z.string().nullable(),
+  /** Why the revert failed. */
+  reason: z.string().nullable(),
+});
+export type MergeWatch = z.infer<typeof watchSchema>;
+
 export const mergeDecisionSchema = z.object({
   outcome: z.enum(MERGE_OUTCOMES),
   reasons: z.array(z.string()),
@@ -44,6 +73,12 @@ export const mergeDecisionSchema = z.object({
   headSeenAt: z.string().nullable(),
   /** The stage event the decision read the assessment from. */
   stageEventId: z.string().nullable(),
+  /** Why GitHub refused the factory's merge of this head; it is not tried again until the head moves. */
+  blocked: z.string().optional(),
+  merged: factoryMergeSchema.optional(),
+  watch: watchSchema.optional(),
+  /** Fingerprints of the decision comments last posted on the PR and in the source. */
+  comments: z.object({ pr: z.string().optional(), source: z.string().optional() }).optional(),
 });
 export type MergeDecision = z.infer<typeof mergeDecisionSchema>;
 
@@ -178,5 +213,8 @@ export function decideMerge(input: DecisionInput): Decision {
     if (input.now - input.headSeenAt < timeout) return { outcome: "pending", reasons: [`Waiting for ${waiting.join(", ")}.`] };
     return { outcome: "handover", reasons: [`${waiting.join(", ")} didn't finish within ${minutes(timeout)} minutes.`.replace(/^./, (c) => c.toUpperCase())] };
   }
-  return { outcome: "merge", reasons: input.policy.autonomy === "auto" ? ["Auto-merge isn't switched on yet, so this runs as a trial."] : [] };
+  return { outcome: "merge", reasons: [] };
 }
+
+/** The reason a decision hands over when GitHub refuses the factory's merge. */
+export const blockedReason = (detail: string) => `The factory's GitHub App can't merge in this repo: ${detail}`;

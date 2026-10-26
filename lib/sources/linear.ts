@@ -325,6 +325,10 @@ export function createLinearAdapter(load: () => LinearDeps | Promise<LinearDeps>
       return { stop: true, reopen: state.type === "started" };
     },
 
+    async note(job, key, body) {
+      await postComment(await deps(), job, commentId(job.writeback.issueId, "note", key), body);
+    },
+
     async labels(job) {
       const { client } = await deps();
       return (await client.labelsOf(job.writeback.issueId)).map((l) => l.name);

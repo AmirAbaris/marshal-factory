@@ -30,7 +30,7 @@ const manifest = {
   redirect_url: `${base}/callback`,
   setup_url: `${base}/installed`,
   public: false,
-  default_permissions: { metadata: "read", contents: "write", pull_requests: "write", checks: "write", issues: "write" },
+  default_permissions: { metadata: "read", contents: "write", pull_requests: "write", checks: "write", issues: "write", statuses: "read" },
   default_events: ["pull_request", "push", "issues"],
 };
 

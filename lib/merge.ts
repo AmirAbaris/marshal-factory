@@ -123,6 +123,8 @@ export async function mergeJob(deps: MergeDeps, jobId: JobId, expectedHeadSha: s
       return failed("head_moved", merged.message || "The pull request head moved.");
     case "not_mergeable":
       return failed("not_mergeable", merged.message || "GitHub says the pull request is not mergeable.");
+    case "forbidden":
+      return failed("refused", `The factory's GitHub App can't merge in this repo: ${merged.message}`);
     default: {
       const unhandled: never = merged;
       throw new Error(`unknown merge result ${JSON.stringify(unhandled)}`);

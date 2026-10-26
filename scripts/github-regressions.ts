@@ -214,7 +214,7 @@ async function setupScriptEndToEnd(api: string) {
       [manifest.name, manifest.public, manifest.hook_attributes, manifest.redirect_url, manifest.setup_url, manifest.default_events],
       ["marshal-factory-ski043", false, { url: "https://ingest.invalid/webhooks/github", active: true }, `${base}/callback`, `${base}/installed`, ["pull_request", "push", "issues"]],
     );
-    assert.deepEqual(manifest.default_permissions, { metadata: "read", contents: "write", pull_requests: "write", checks: "write", issues: "write" });
+    assert.deepEqual(manifest.default_permissions, { metadata: "read", contents: "write", pull_requests: "write", checks: "write", issues: "write", statuses: "read" });
 
     assert.equal((await fetch(`${base}/callback?code=good-code&state=wrong`)).status, 400, "a wrong state is refused");
     assert.throws(() => statSync(path), "and stores nothing");
