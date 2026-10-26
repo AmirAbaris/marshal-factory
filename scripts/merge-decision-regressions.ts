@@ -90,7 +90,7 @@ const handsOver = (over: Partial<DecisionInput>, pattern: RegExp, why: string) =
 };
 
 assert.deepEqual(decideMerge(input()), { outcome: "merge", reasons: [] }, "trial: everything holds, so it would merge");
-assert.deepEqual(decideMerge(input({ policy: { ...DEFAULT_POLICY, autonomy: "auto" } })), { outcome: "merge", reasons: ["Auto-merge isn't switched on yet, so this runs as a trial."] });
+assert.deepEqual(decideMerge(input({ policy: { ...DEFAULT_POLICY, autonomy: "auto" } })), { outcome: "merge", reasons: [] }, "auto merges with no caveat");
 assert.deepEqual(decideMerge(input({ policy: DEFAULT_POLICY, pr: null, tracked: false, attempt: 3 })), { outcome: "handover", reasons: [] }, "off evaluates nothing");
 assert.throws(() => decideMerge(input({ pr: null })), /needs the PR's facts/);
 handsOver({ tracked: false, assessment: null }, /^This harness doesn't report a merge assessment\.$/, "an untracked harness");
@@ -245,6 +245,11 @@ try {
   github.bugbotFindings = async () => (calls.push("bugbot"), []);
   const labels = new Map<string, string[]>();
   SOURCES.linear.labels = async (job) => (calls.push(`labels ${job.key}`), labels.get(job.key) ?? ["factory"]);
+  const commented: string[] = [];
+  github.upsertComment = async (url) => (commented.push(`pr ${url}`), "created");
+  SOURCES.linear.note = async (job) => void commented.push(`note ${job.key}`);
+  // auto-merge-regressions covers the merge itself; here the head always moves away first.
+  github.mergeCandidate = async () => ({ state: "open", headSha: "moved", baseRef: "main", title: "t", number: 1, commits: 1, mergeCommitSha: null });
 
   const at = (minutes: number) => NOW + minutes * 60_000;
   const prEvent = (k: string) => `merge-regress-pr-${k}`;
@@ -261,8 +266,8 @@ try {
   assert.deepEqual(Array.isArray(first) ? [...first].sort() : first, [`${GOOD}:merge`, `${ASLEEP}:merge`, `${LABELED}:handover`, `${OFF}:handover`, `${CODEX}:handover`].sort());
   const good = (await row(GOOD)).merge_decision!;
   assert.deepEqual(
-    { ...good, evaluatedAt: undefined },
-    { outcome: "merge", reasons: [], autonomy: "trial", headSha: "h1", headSeenAt: new Date(at(0)).toISOString(), stageEventId: prEvent("GOOD"), evaluatedAt: undefined },
+    { ...good, evaluatedAt: undefined, comments: undefined },
+    { comments: undefined, outcome: "merge", reasons: [], autonomy: "trial", headSha: "h1", headSeenAt: new Date(at(0)).toISOString(), stageEventId: prEvent("GOOD"), evaluatedAt: undefined },
   );
   assert.deepEqual((await row(ASLEEP)).sandbox_snapshot, "im-snap-merge", "a hibernated job is decided on GitHub alone and stays asleep");
   assert.deepEqual((await row(LABELED)).merge_decision!.reasons, ['The issue has the "review" label.']);
@@ -305,7 +310,7 @@ try {
   assert.equal((await row(LABELED)).merge_decision!.autonomy, "auto");
   await db.update(jobs).set({ stage_event_id: "merge-regress-new-report" }).where(eq(jobs.key, GOOD));
   assert.deepEqual(await decideMerges({ only: [GOOD], now: t1 + 62 * 60_000 }), [`${GOOD}:merge`]);
-  assert.deepEqual((await row(GOOD)).merge_decision!.reasons, ["Auto-merge isn't switched on yet, so this runs as a trial."]);
+  assert.deepEqual((await row(GOOD)).merge_decision!.reasons, []);
 
   // A job that left pr meanwhile keeps no decision written for the old report.
   github.pullDetail = async (url) => {
