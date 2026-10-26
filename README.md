@@ -198,6 +198,8 @@ New jobs go to the first repo in `factory.repos`. For now, a single runner works
 - In Linear, add the `factory` label to an issue in Todo.
 - In the panel, click **New job**, then write a title, a description, and optionally paste or drop images. The panel files the issue in Linear for you.
 
+To run one issue on another harness or place than Settings, add a child of the **Harness** or **Runs on** label group; `bun scripts/sync-linear-labels.ts` creates the groups ([Per-ticket overrides](docs/operations.md#per-ticket-overrides)).
+
 Within seconds the issue moves to In Progress, a comment says the factory took it, and a card appears on the board. Write the issue the way you would for a colleague who can't ask questions: what's wrong or what you want, and how you'll know it's done. Images on the issue are downloaded and given to the thread.
 
 **Watch it.** Cards move through Queued, Triage, Investigating, Implementing, Verifying and PR. Open a card to see the stage history, the agents and subagents, the models, and the spend. **Other activity** lists Claude Code sessions that report no factory stage, such as work you start by hand in a target repo. **Machines** shows each runner's Mac, its load, and its T3 projects.
