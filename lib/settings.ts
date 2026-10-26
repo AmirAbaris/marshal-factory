@@ -2,13 +2,15 @@ import { eq } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import { z } from "zod";
 import * as schema from "@/db/schema";
-import { settings, type SettingsRow } from "@/db/schema";
+import { repoSettings, settings, type RepoSettingsRow, type SettingsRow } from "@/db/schema";
 import { isOwner, type SessionUser } from "@/lib/auth/owner";
 import { DEFAULT_EXECUTION, executionSchema, type Execution } from "@/lib/execution";
 import type { Harness } from "@/lib/harness";
+import { autonomySchema, DEFAULT_POLICY, type RepoPolicy } from "@/lib/merge-decision";
 
 // The panel's factory settings: which T3 provider instance and model new threads start on, and
 // where. The runner reads them on every launch pass and falls back to its config when none are saved.
+// Per repo, how far the factory may merge on its own; see lib/merge-decision.ts.
 
 export const SETTINGS_ID = "factory";
 
@@ -57,6 +59,52 @@ export type SettingsDeps = {
 };
 
 export type SettingsOutcome = { ok: true } | { ok: false; status: 400 | 403 | 502; message: string };
+
+const REPO_NAME = /^[\w.-]+\/[\w.-]+$/;
+
+export const repoAutonomyInputSchema = z.object({
+  repo: z.string().regex(REPO_NAME, "Name the repo as owner/name."),
+  autonomy: autonomySchema,
+});
+export type RepoAutonomyInput = z.input<typeof repoAutonomyInputSchema>;
+
+export const readRepoSettings = (database: Db): Promise<RepoSettingsRow[]> => database.select().from(repoSettings);
+
+/** The repo's merge policy: its saved row over the defaults. */
+export function resolvePolicy(rows: readonly RepoSettingsRow[], repo: string): RepoPolicy {
+  const row = rows.find((r) => r.repo === repo);
+  if (!row) return DEFAULT_POLICY;
+  return {
+    autonomy: autonomySchema.catch("off").parse(row.autonomy),
+    protectedPaths: row.protected_paths ?? DEFAULT_POLICY.protectedPaths,
+    maxChangedLines: row.max_changed_lines ?? DEFAULT_POLICY.maxChangedLines,
+  };
+}
+
+export async function writeRepoAutonomy(database: Db, { repo, autonomy }: z.output<typeof repoAutonomyInputSchema>, by: string, at: Date) {
+  await database
+    .insert(repoSettings)
+    .values({ repo, autonomy, updated_at: at, updated_by: by })
+    .onConflictDoUpdate({ target: repoSettings.repo, set: { autonomy, updated_at: at, updated_by: by } });
+}
+
+export type RepoAutonomyDeps = {
+  user: () => Promise<SessionUser | null | undefined>;
+  save: (input: z.output<typeof repoAutonomyInputSchema>, by: string) => Promise<void>;
+};
+
+export async function saveRepoAutonomy(deps: RepoAutonomyDeps, input: unknown): Promise<SettingsOutcome> {
+  const user = await deps.user();
+  if (!user || !isOwner(user)) return { ok: false, status: 403, message: "Only the factory owner can change settings." };
+  const parsed = repoAutonomyInputSchema.safeParse(input);
+  if (!parsed.success) return { ok: false, status: 400, message: parsed.error.issues[0]?.message ?? "The setting is not valid." };
+  try {
+    await deps.save(parsed.data, user.email);
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, status: 502, message: `Could not save the setting: ${error instanceof Error ? error.message : String(error)}` };
+  }
+}
 
 export async function saveSettings(deps: SettingsDeps, input: unknown): Promise<SettingsOutcome> {
   const user = await deps.user();

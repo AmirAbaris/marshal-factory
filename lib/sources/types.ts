@@ -62,6 +62,8 @@ export interface SourceAdapter<S extends JobSource> {
   stopWanted(jobs: readonly Job<S>[]): Promise<{ job: Job<S>; reason: StopReason }[]>;
   /** Re-reads the source before a stop intent is acted on, so an unrelated change does not stop a run. */
   confirmStop(externalId: string, detail: string): Promise<StopCheck>;
+  /** The job's labels as the source shows them now. */
+  labels(job: Job<S>): Promise<string[]>;
   /** Returns a stopped job to the source's not-started state, so adding the label again retries it. */
   reopen(job: Job<S>): Promise<void>;
   /** The noun phrase naming the job in messages to the thread, such as "Linear issue FAC-7". */

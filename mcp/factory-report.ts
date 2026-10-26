@@ -13,7 +13,8 @@ server.registerTool(
     title: "Report factory stage",
     description:
       "Report that this factory run entered a stage. Call it at every stage transition. " +
-      "Stage pr needs prUrl; stage waiting needs a concrete question; stage failed puts the reason in summary.",
+      "Stage pr needs prUrl and should carry your merge assessment; stage waiting needs a concrete question; " +
+      "stage failed puts the reason in summary.",
     inputSchema: stageReportShape,
   },
   async (input) => {
