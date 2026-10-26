@@ -2,7 +2,8 @@ import type { JobRow } from "../db/schema";
 import type { Stage } from "./events";
 import { attemptBranch } from "./factory";
 
-export const RUNNER_CAUSES = ["resume", "conflict", "merged", "watchdog", "budget", "stop", "closed", "reclaim"] as const;
+// inferred: the runner reads a harness that never reports stages (its PR on GitHub, its settled thread).
+export const RUNNER_CAUSES = ["resume", "conflict", "merged", "watchdog", "budget", "stop", "closed", "reclaim", "inferred"] as const;
 export type RunnerCause = (typeof RUNNER_CAUSES)[number];
 export type Cause = "report" | RunnerCause;
 
@@ -14,7 +15,7 @@ export function causeOf(eventId: string): Cause {
 }
 
 const REPORTED = ["triage", "investigating", "implementing", "verifying", "pr", "waiting", "failed"] as const;
-const FROM_WORKING = { report: REPORTED, watchdog: ["failed"], budget: ["failed"], stop: ["failed"], merged: ["merged"] } as const;
+const FROM_WORKING = { report: REPORTED, watchdog: ["failed"], budget: ["failed"], stop: ["failed"], merged: ["merged"], inferred: ["pr", "waiting"] } as const;
 
 export const STAGE_TRANSITIONS: { readonly [From in Stage]: { readonly [C in Cause]?: readonly Stage[] } } = {
   queued: FROM_WORKING,

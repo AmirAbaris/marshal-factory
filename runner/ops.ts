@@ -1,6 +1,6 @@
 import { and, asc, eq, gt, inArray, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
 import { db } from "../db/client";
-import { agents, jobs, runs, type RunRow } from "../db/schema";
+import { agents, jobs, runs, type JobRow, type RunRow } from "../db/schema";
 import { STAGES, type Stage, type Usage } from "../lib/events";
 import { jobId, parseJob, parseJobs, sourceFor } from "../lib/sources";
 import { parseJobId, SOURCE_SHAPES } from "../lib/sources/shapes";
@@ -83,7 +83,7 @@ export async function checkPullRequests() {
 }
 
 /** A merge goes in as a stage event, so the run, the job, the timeline and the write-back all follow it. */
-async function postMerged(jobKey: string, prUrl: string, sessionId: string) {
+export async function postMerged(jobKey: string, prUrl: string, sessionId: string) {
   await postEvent({
     eventId: runnerEventId("merged", prUrl, sessionId),
     sessionId,
@@ -139,16 +139,23 @@ async function sendBackForConflict(job: Job, head: string) {
   return true;
 }
 
-async function postEvent(event: Record<string, unknown>) {
-  forbidInTest("the deployed ingest function");
-  const res = await fetch(config.ingestUrl, {
-    method: "POST",
-    headers: { authorization: `Bearer ${config.secret}`, "content-type": "application/json" },
-    body: JSON.stringify(event),
-    signal: AbortSignal.timeout(15_000),
-  });
-  if (!res.ok) throw new Error(`ingest answered ${res.status}: ${await res.text()}`);
-  const { refused } = (await res.json()) as Pick<IngestResult, "refused">;
+/** Where the runner's own events go; regressions swap `post` for the ingest projection itself. */
+export const ingestClient = {
+  async post(event: Record<string, unknown>): Promise<Pick<IngestResult, "refused">> {
+    forbidInTest("the deployed ingest function");
+    const res = await fetch(config.ingestUrl, {
+      method: "POST",
+      headers: { authorization: `Bearer ${config.secret}`, "content-type": "application/json" },
+      body: JSON.stringify(event),
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!res.ok) throw new Error(`ingest answered ${res.status}: ${await res.text()}`);
+    return (await res.json()) as Pick<IngestResult, "refused">;
+  },
+};
+
+export async function postEvent(event: Record<string, unknown>) {
+  const { refused } = await ingestClient.post(event);
   for (const refusal of refused) console.log(JSON.stringify({ at: new Date().toISOString(), event: "stage refused", ...refusal }));
 }
 
@@ -244,13 +251,7 @@ export async function watchdog() {
     .from(jobs)
     .where(and(await mine(), inArray(jobs.stage, IN_FLIGHT), or(isNotNull(jobs.t3_thread_id), isNotNull(jobs.session_id))));
   const actions: string[] = [];
-  // Tracking depends on the driver, not the instance id: a renamed Claude Code instance still reports.
-  let drivers = new Map<string, string>();
-  try {
-    drivers = new Map(readHarnesses().map((h) => [h.id, h.driver]));
-  } catch {
-    // Unknown instances fall back to their id, which equals the driver for T3's default instances.
-  }
+  const drivers = harnessDrivers();
   for (const { job, lastEventAt } of working) {
     // Only pr and waiting jobs hibernate; looking must never wake one.
     if (isHibernated(job)) continue;
@@ -263,7 +264,7 @@ export async function watchdog() {
         nudgedAt: job.nudged_at,
         nudgedStage: job.nudged_stage,
         thread: await threads.state(job.t3_thread_id, host),
-        tracked: isTracked(drivers.get(job.provider ?? config.factory.provider) ?? job.provider ?? config.factory.provider),
+        tracked: jobTracked(job, drivers),
         now,
       },
       config.factory,
@@ -298,33 +299,50 @@ export async function watchdog() {
       actions.push(`${job.key}:nudged`);
       continue;
     }
-    // Fail only the stage this pass looked at: a report that landed since then wins.
-    const eventId = runnerEventId("watchdog", job.external_id, job.attempt, job.stage_event_id ?? job.stage);
-    const summary = `Watchdog stopped this run: ${action.reason}.`;
-    const failed = await db
-      .update(jobs)
-      .set({ stage: "failed", stage_at: now, stage_summary: summary, question: null, stage_event_id: eventId, updated_at: now })
-      .where(
-        and(
-          eq(jobs.id, job.id),
-          eq(jobs.stage, job.stage),
-          sql`${jobs.stage_event_id} is not distinct from ${job.stage_event_id}`,
-        ),
-      )
-      .returning({ key: jobs.key });
-    if (failed.length === 0) continue;
-    await postEvent({
-      eventId,
-      sessionId: job.session_id ?? runnerEventId("watchdog", job.external_id),
-      at: now.getTime(),
-      kind: "stage",
-      stage: "failed",
-      summary,
-      jobKey: job.key,
-    });
-    actions.push(`${job.key}:failed`);
+    if (await watchdogFail(job, action.reason, now)) actions.push(`${job.key}:failed`);
   }
   return actions;
+}
+
+/** Each harness instance's driver. Tracking depends on the driver, not the instance id: a renamed Claude Code instance still reports. */
+export function harnessDrivers() {
+  try {
+    return new Map(readHarnesses().map((h) => [h.id, h.driver]));
+  } catch {
+    // Unknown instances fall back to their id, which equals the driver for T3's default instances.
+    return new Map<string, string>();
+  }
+}
+
+export const jobTracked = (job: Pick<JobRow, "provider">, drivers: ReadonlyMap<string, string>) =>
+  isTracked(drivers.get(job.provider ?? config.factory.provider) ?? job.provider ?? config.factory.provider);
+
+/** Fails the stage this pass looked at, so a report that landed since then wins; false when one did. */
+export async function watchdogFail(job: Pick<JobRow, "id" | "key" | "external_id" | "attempt" | "stage" | "stage_event_id" | "session_id">, reason: string, now = new Date()) {
+  const eventId = runnerEventId("watchdog", job.external_id, job.attempt, job.stage_event_id ?? job.stage);
+  const summary = `Watchdog stopped this run: ${reason}.`;
+  const failed = await db
+    .update(jobs)
+    .set({ stage: "failed", stage_at: now, stage_summary: summary, question: null, stage_event_id: eventId, updated_at: now })
+    .where(
+      and(
+        eq(jobs.id, job.id),
+        eq(jobs.stage, job.stage),
+        sql`${jobs.stage_event_id} is not distinct from ${job.stage_event_id}`,
+      ),
+    )
+    .returning({ key: jobs.key });
+  if (failed.length === 0) return false;
+  await postEvent({
+    eventId,
+    sessionId: job.session_id ?? runnerEventId("watchdog", job.external_id),
+    at: now.getTime(),
+    kind: "stage",
+    stage: "failed",
+    summary,
+    jobKey: job.key,
+  });
+  return true;
 }
 
 /**
