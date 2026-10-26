@@ -71,7 +71,19 @@ export function SandboxBadge({ state }: { state: SandboxState }) {
 
 function MergeLine({ decision }: { decision: MergeDecision | null }) {
   const line = decisionLine(decision);
-  return <p className={cn("line-clamp-2 text-xs", line.tone)}>{line.text}</p>;
+  return (
+    <p className={cn("line-clamp-2 text-xs", line.tone)}>
+      {line.text}
+      {line.link && (
+        <>
+          {" · "}
+          <a href={line.link.href} target="_blank" rel="noreferrer" className="relative underline underline-offset-2">
+            {line.link.label}
+          </a>
+        </>
+      )}
+    </p>
+  );
 }
 
 const prLabel = (url: string) => {
@@ -118,7 +130,7 @@ export function StageCard({
         </span>
       </div>
       <div className="line-clamp-2 font-medium leading-snug">{card.title}</div>
-      {card.stage === "pr" && card.sourceLink && <MergeLine decision={card.mergeDecision} />}
+      {((card.stage === "pr" && card.sourceLink) || card.mergeDecision?.merged) && <MergeLine decision={card.mergeDecision} />}
       {card.nudgedAt && (
         <p className="text-xs text-warning">
           Stuck · nudged <Time date={card.nudgedAt} />
