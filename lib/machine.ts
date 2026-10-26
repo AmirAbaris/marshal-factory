@@ -31,6 +31,15 @@ export const projectsSchema = z.discriminatedUnion("source", [
 ]);
 export type Projects = z.infer<typeof projectsSchema>;
 
+/** Whether a runner could launch jobs on Modal; booleans and a count, never the credentials. */
+export const sandboxReadinessSchema = z.object({
+  modal: z.boolean(),
+  claude: z.boolean(),
+  codexSlots: z.number().int().nonnegative(),
+  image: z.boolean(),
+});
+export type SandboxReadiness = z.infer<typeof sandboxReadinessSchema>;
+
 export const inventorySchema = z.object({
   runnerSha: known(z.string()),
   t3: known(
@@ -46,6 +55,8 @@ export const inventorySchema = z.object({
   repos: z.array(z.object({ path: z.string(), origin: known(z.string()) })),
   /** Optional so an inventory stored before harnesses were reported still parses. */
   harnesses: known(z.array(harnessSchema)).optional(),
+  /** Optional for the same reason. */
+  sandbox: known(sandboxReadinessSchema).optional(),
 });
 export type Inventory = z.infer<typeof inventorySchema>;
 
@@ -89,6 +100,16 @@ export function reportedHarnesses(machines: readonly { last_seen_at: Date; inven
     }
   }
   return [...best.values()].map((b) => b.harness).sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/** The most ready sandbox report among online machines; null when none reports one. */
+export function reportedSandbox(machines: readonly { last_seen_at: Date; inventory: unknown }[], now: number): SandboxReadiness | null {
+  const reports = machines.flatMap((m) => {
+    const sandbox = parseInventory(m.inventory)?.sandbox;
+    return isOnline(m.last_seen_at, now) && sandbox && sandbox !== UNKNOWN ? [sandbox] : [];
+  });
+  const score = (r: SandboxReadiness) => Number(r.modal) + Number(r.codexSlots > 0) + Number(r.image) + Number(r.claude) / 2;
+  return reports.sort((a, b) => score(b) - score(a))[0] ?? null;
 }
 
 /**

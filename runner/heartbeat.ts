@@ -8,6 +8,7 @@ import { db } from "../db/client";
 import { machines } from "../db/schema";
 import { loadConfig } from "../lib/config";
 import { UNKNOWN, type Heartbeat, type Inventory } from "../lib/machine";
+import { sandboxReadiness } from "../lib/sandbox";
 import { connectStatus, readHarnesses, readProjects, readT3Runtime } from "../lib/t3-state";
 import { message, withTimeout } from "./queue";
 
@@ -100,19 +101,21 @@ export function inventoryCollectors(): InventoryCollectors {
         })),
       ),
     harnesses: async () => readHarnesses(),
+    sandbox: async () => sandboxReadiness(factory.sandbox),
   };
 }
 
 export async function collectInventory(collectors: InventoryCollectors): Promise<Inventory> {
-  const [runnerSha, t3, connect, projects, repos, harnesses] = await Promise.all([
+  const [runnerSha, t3, connect, projects, repos, harnesses, sandbox] = await Promise.all([
     settle(collectors.runnerSha),
     settle(collectors.t3),
     settle(collectors.connect),
     collectors.projects().catch((): Inventory["projects"] => ({ source: UNKNOWN })),
     collectors.repos().catch((): Inventory["repos"] => []),
     settle(collectors.harnesses),
+    settle(collectors.sandbox),
   ]);
-  return { runnerSha, t3, connect, projects, repos, harnesses };
+  return { runnerSha, t3, connect, projects, repos, harnesses, sandbox };
 }
 
 export async function writeHeartbeat(machine: Machine, heartbeat: Heartbeat, now: Date) {

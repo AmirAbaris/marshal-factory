@@ -10,8 +10,9 @@ import { Field, FieldDescription, FieldGroup, FieldLabel } from "@/components/ui
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
 import type { MachineRow, SettingsRow } from "@/db/schema";
+import { DEFAULT_EXECUTION, EXECUTIONS, type Execution } from "@/lib/execution";
 import { DEFAULT_MODEL, DEFAULT_PROVIDER, harnessLabel, isTracked, type Harness } from "@/lib/harness";
-import { reportedHarnesses } from "@/lib/machine";
+import { reportedHarnesses, reportedSandbox, type SandboxReadiness } from "@/lib/machine";
 import { useFeed, type Feed } from "./sealed";
 import { PanelHeader } from "./panel-header";
 import { useAfterHydration, useNow } from "./time";
@@ -45,6 +46,31 @@ function UntrackedWarning({ name }: { name: string }) {
   );
 }
 
+const EXECUTION_LABELS: Record<Execution, string> = { local: "This Mac", modal: "Modal" };
+
+function sandboxGaps(readiness: SandboxReadiness | null) {
+  if (!readiness) return ["no online runner reports its Modal setup yet"];
+  return [
+    ...(readiness.modal ? [] : ["log in to Modal on the runner"]),
+    ...(readiness.codexSlots > 0 ? [] : ["add a Codex login slot"]),
+    ...(readiness.image ? [] : ["build the sandbox image with bun scripts/sandbox-image.ts"]),
+  ];
+}
+
+function SandboxNote({ readiness }: { readiness: SandboxReadiness | null }) {
+  const gaps = sandboxGaps(readiness);
+  if (gaps.length === 0 && readiness?.claude) return null;
+  return (
+    <div role="note" className="flex gap-2.5 rounded-lg border border-warning/40 bg-warning/10 p-3 text-sm">
+      <TriangleAlertIcon className="mt-0.5 size-4 shrink-0 text-warning" />
+      <p>
+        {gaps.length > 0 && <>Modal is not ready: {gaps.join(", ")}. Jobs stay queued until it is. </>}
+        {readiness && !readiness.claude && <>The runner has no Claude token, so Claude Code jobs run on Codex in Modal.</>}
+      </p>
+    </div>
+  );
+}
+
 function Current({ saved, harnesses }: { saved: SettingsRow | null; harnesses: readonly Harness[] }) {
   const provider = saved?.provider ?? DEFAULT_PROVIDER;
   const model = saved?.model ?? DEFAULT_MODEL;
@@ -53,7 +79,8 @@ function Current({ saved, harnesses }: { saved: SettingsRow | null; harnesses: r
     <div className="flex flex-col gap-1 text-sm">
       <div>
         New threads start on <span className="font-medium">{current.harness}</span> with{" "}
-        <span className="font-medium">{current.model}</span>
+        <span className="font-medium">{current.model}</span>, on{" "}
+        <span className="font-medium">{EXECUTION_LABELS[saved?.execution ?? DEFAULT_EXECUTION]}</span>
         <span className="font-mono text-xs text-muted-foreground">
           {" "}
           ({provider} · {model})
@@ -81,16 +108,18 @@ export function SettingsForm({ machines, saved }: { machines: Feed<MachineRow>; 
   const now = useNow(CLOCK_TICK_MS);
   const reported = reportedHarnesses(rows, now ?? 0);
   const harnesses = reported?.filter((h) => h.enabled) ?? [];
+  const readiness = reportedSandbox(rows, now ?? 0);
 
   const [provider, setProvider] = useState(saved?.provider ?? DEFAULT_PROVIDER);
   const [model, setModel] = useState(saved?.model ?? DEFAULT_MODEL);
+  const [execution, setExecution] = useState<Execution>(saved?.execution ?? DEFAULT_EXECUTION);
   const [failure, setFailure] = useState<string | null>(null);
   const [savedNow, setSavedNow] = useState(false);
   const [pending, startTransition] = useTransition();
 
   const harness = harnesses.find((h) => h.id === provider);
   const modelKnown = harness?.models.some((m) => m.slug === model) ?? false;
-  const unchanged = saved !== null && saved.provider === provider && saved.model === model;
+  const unchanged = saved !== null && saved.provider === provider && saved.model === model && saved.execution === execution;
   const chosen = describe(harnesses, provider, model);
 
   const pickHarness = (id: string) => {
@@ -103,7 +132,7 @@ export function SettingsForm({ machines, saved }: { machines: Feed<MachineRow>; 
   const submit = () => {
     setFailure(null);
     startTransition(async () => {
-      const outcome = await saveSettings({ provider, model });
+      const outcome = await saveSettings({ provider, model, execution });
       if (!outcome.ok) {
         setFailure(outcome.message);
         return;
@@ -174,6 +203,29 @@ export function SettingsForm({ machines, saved }: { machines: Feed<MachineRow>; 
                   </Select>
                 </Field>
                 {harness && !chosen.tracked && <UntrackedWarning name={chosen.harness} />}
+                <Field>
+                  <FieldLabel htmlFor="settings-execution">Run jobs on</FieldLabel>
+                  <Select
+                    value={execution}
+                    onValueChange={(value) => {
+                      setExecution(value as Execution);
+                      setSavedNow(false);
+                    }}
+                  >
+                    <SelectTrigger id="settings-execution" className="w-full">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {EXECUTIONS.map((e) => (
+                        <SelectItem key={e} value={e}>
+                          {EXECUTION_LABELS[e]}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <FieldDescription>Modal runs each job in its own sandbox; this Mac runs it in the runner&apos;s T3.</FieldDescription>
+                </Field>
+                {execution === "modal" && <SandboxNote readiness={readiness} />}
               </FieldGroup>
             )}
             {failure && (
