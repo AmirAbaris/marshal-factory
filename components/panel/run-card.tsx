@@ -13,7 +13,7 @@ import { Time } from "./time";
 
 const cardClass = (selected: boolean) =>
   cn(
-    "relative flex flex-col gap-1.5 rounded-lg border bg-card p-3 text-left text-sm transition-colors hover:border-input",
+    "relative flex flex-col gap-1 rounded-lg border bg-card p-2.5 text-left text-sm transition-colors hover:border-input",
     selected && "border-primary ring-1 ring-primary",
   );
 
