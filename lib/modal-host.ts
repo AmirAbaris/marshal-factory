@@ -69,8 +69,13 @@ export const modal: { api: ModalApi } = { api: realModal };
 /** Modal names allow [A-Za-z0-9-._] and at most 63 characters. */
 export const sandboxName = (key: string, attempt: number) => `job-${key}-a${attempt}`.replace(/[^A-Za-z0-9._-]/g, "-").slice(0, 63);
 
+/** gRPC's NOT_FOUND, which an exec into a sandbox that shut down, or never existed, gets raw from the SDK. */
+const GRPC_NOT_FOUND = 5;
+
 const isGone = (error: unknown) =>
-  error instanceof NotFoundError || (error instanceof ConflictError && /already finished/.test(error.message));
+  error instanceof NotFoundError ||
+  (error instanceof ConflictError && /already finished/.test(error.message)) ||
+  (error instanceof Error && error.name === "ClientError" && (error as { code?: unknown }).code === GRPC_NOT_FOUND);
 
 const gone = (sandboxId: string, error: unknown) =>
   isGone(error) ? new HostGoneError(`sandbox ${sandboxId} is gone: ${(error as Error).message}`) : error;

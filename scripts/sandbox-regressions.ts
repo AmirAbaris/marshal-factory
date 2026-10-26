@@ -146,6 +146,18 @@ const finished = new FakeSandbox("sb-finished");
 finished.terminated = true;
 sandboxes.set(finished.sandboxId, finished);
 await assert.rejects(modalHost(finished.sandboxId).run("echo", []), HostGoneError, "so is one that already finished");
+const shutDown = new FakeSandbox("sb-shut-down");
+shutDown.exec = async () => {
+  throw Object.assign(new Error("TaskExecStart NOT_FOUND: Modal Sandbox with container ID ta-1 not found."), { name: "ClientError", code: 5 });
+};
+sandboxes.set(shutDown.sandboxId, shutDown);
+await assert.rejects(modalHost(shutDown.sandboxId).run("echo", []), HostGoneError, "and one whose exec gets gRPC's NOT_FOUND");
+const flaky = new FakeSandbox("sb-flaky");
+flaky.exec = async () => {
+  throw Object.assign(new Error("UNAVAILABLE"), { name: "ClientError", code: 14 });
+};
+sandboxes.set(flaky.sandboxId, flaky);
+await assert.rejects(modalHost(flaky.sandboxId).run("echo", []), (error: unknown) => !(error instanceof HostGoneError), "an unavailable Modal is not gone");
 assert.equal(await threads.state("thread-1", modalHost(finished.sandboxId)), "gone");
 
 assert.equal(hosts.forJob({ key: "K", sandbox_id: null }), localHost, "a job without a sandbox runs here");
