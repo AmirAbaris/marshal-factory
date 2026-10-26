@@ -191,6 +191,15 @@ try {
   assert.deepEqual(usableSlots(limits).includes(slotA), false, "a marked slot is skipped");
   assert.deepEqual(sandboxReadiness({ codexSlots: [slotA, slotB, slotC] }, process.env, readSlotHealth(healthPath)).codexSlots, 2);
   assert.deepEqual(sandboxReadiness({ codexSlots: [slotA, slotB, slotC] }, process.env, readSlotHealth(healthPath)).codexSlotsUnusable, 1, "the inventory counts it");
+  const image = { imageId: "im-secretish", t3Version: "0.1.3", factoryCommit: "abc1234", builtAt: "2026-10-26T10:00:00.000Z" };
+  const reported = sandboxReadiness({ codexSlots: [], t3Version: "0.1.4", maxParallel: 3 }, process.env, [], image);
+  assert.deepEqual(
+    [reported.image, reported.imageInfo, reported.pinnedT3Version, reported.maxParallel],
+    [true, { t3Version: "0.1.3", factoryCommit: "abc1234", builtAt: image.builtAt }, "0.1.4", 3],
+    "the inventory reports the image's version, build time and commit, the pinned T3 and the cap",
+  );
+  assert.ok(!JSON.stringify(reported).includes("im-secretish"), "but not the image id");
+  assert.deepEqual([sandboxReadiness({ codexSlots: [] }, process.env, [], null).image, sandboxReadiness({ codexSlots: [] }, process.env, [], null).imageInfo], [false, null]);
   const later = new Date(Date.now() + 60_000);
   utimesSync(join(slotA, "auth.json"), later, later);
   assert.ok(usableSlots(limits).includes(slotA), "a fresh login makes the slot usable again");

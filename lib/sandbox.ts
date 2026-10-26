@@ -80,9 +80,10 @@ export const slotUnusable = (health: SlotHealth, slot: string, authMtimeMs: numb
 
 /** Booleans and counts only: whether this runner could launch on Modal, never the credentials themselves. */
 export function sandboxReadiness(
-  limits: Pick<SandboxLimits, "codexSlots">,
+  limits: Pick<SandboxLimits, "codexSlots"> & Partial<Pick<SandboxLimits, "t3Version" | "maxParallel">>,
   env: NodeJS.ProcessEnv = process.env,
   health = readSlotHealth(),
+  image = readSandboxImage(),
 ): SandboxReadiness {
   const loggedIn = limits.codexSlots.filter((slot) => existsSync(slotAuthPath(slot)));
   const unusable = loggedIn.filter((slot) => slotUnusable(health, slot, slotAuthMtime(slot))).length;
@@ -91,6 +92,10 @@ export function sandboxReadiness(
     claude: Boolean(env.CLAUDE_CODE_OAUTH_TOKEN),
     codexSlots: loggedIn.length - unusable,
     codexSlotsUnusable: unusable,
-    image: existsSync(SANDBOX_IMAGE_PATH),
+    image: image !== null,
+    // The image id stays on the runner; its version, build time and commit say nothing secret.
+    imageInfo: image && { t3Version: image.t3Version, builtAt: image.builtAt, factoryCommit: image.factoryCommit },
+    ...(limits.t3Version && { pinnedT3Version: limits.t3Version }),
+    ...(limits.maxParallel && { maxParallel: limits.maxParallel }),
   };
 }

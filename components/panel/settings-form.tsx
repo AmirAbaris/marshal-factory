@@ -1,8 +1,8 @@
 "use client";
 
-import { TriangleAlertIcon } from "lucide-react";
+import { CheckIcon, TriangleAlertIcon, XIcon } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useState, useTransition } from "react";
+import { useState, useTransition, type ReactNode } from "react";
 import { saveSettings } from "@/app/actions/settings";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
@@ -48,25 +48,120 @@ function UntrackedWarning({ name }: { name: string }) {
 
 const EXECUTION_LABELS: Record<Execution, string> = { local: "This Mac", modal: "Modal" };
 
-function sandboxGaps(readiness: SandboxReadiness | null) {
-  if (!readiness) return ["no online runner reports its Modal setup yet"];
+type Check = { tone: "ok" | "warn" | "missing"; label: ReactNode; howTo?: ReactNode };
+
+const Cmd = ({ children }: { children: string }) => <code className="rounded bg-muted px-1 py-0.5 font-mono text-xs">{children}</code>;
+
+const CHECK_ICON: Record<Check["tone"], ReactNode> = {
+  ok: <CheckIcon className="mt-0.5 size-4 shrink-0 text-success" />,
+  warn: <TriangleAlertIcon className="mt-0.5 size-4 shrink-0 text-warning" />,
+  missing: <XIcon className="mt-0.5 size-4 shrink-0 text-destructive" />,
+};
+
+function sandboxChecks(readiness: SandboxReadiness): Check[] {
+  const { imageInfo, pinnedT3Version } = readiness;
+  const outdated = imageInfo && pinnedT3Version && imageInfo.t3Version !== pinnedT3Version;
+  const buildImage = (
+    <>
+      Run <Cmd>bun scripts/sandbox-image.ts</Cmd> on the runner Mac.
+    </>
+  );
+  const unusable = readiness.codexSlotsUnusable ?? 0;
   return [
-    ...(readiness.modal ? [] : ["log in to Modal on the runner"]),
-    ...(readiness.codexSlots > 0 ? [] : ["add a Codex login slot"]),
-    ...(readiness.image ? [] : ["build the sandbox image with bun scripts/sandbox-image.ts"]),
+    readiness.modal
+      ? { tone: "ok", label: "Modal token present" }
+      : {
+          tone: "missing",
+          label: "No Modal token on the runner",
+          howTo: (
+            <>
+              Run <Cmd>uv tool install modal</Cmd> and then <Cmd>modal token new</Cmd> on the runner Mac.
+            </>
+          ),
+        },
+    !readiness.image
+      ? { tone: "missing", label: "No sandbox image built", howTo: buildImage }
+      : outdated
+        ? {
+            tone: "missing",
+            label: `The sandbox image has T3 ${imageInfo.t3Version}, but the runner pins ${pinnedT3Version}`,
+            howTo: buildImage,
+          }
+        : {
+            tone: "ok",
+            label: imageInfo ? (
+              <>
+                Sandbox image built <When date={new Date(imageInfo.builtAt)} />
+                <span className="text-muted-foreground">
+                  {" "}
+                  · T3 {imageInfo.t3Version} · factory <span className="font-mono text-xs">{imageInfo.factoryCommit.slice(0, 7)}</span>
+                </span>
+              </>
+            ) : (
+              "Sandbox image built"
+            ),
+          },
+    readiness.claude
+      ? { tone: "ok", label: "Claude token present" }
+      : {
+          tone: "warn",
+          label: "No Claude token: Claude Code jobs will run on Codex",
+          howTo: (
+            <>
+              Run <Cmd>claude setup-token</Cmd>, add the token as <Cmd>CLAUDE_CODE_OAUTH_TOKEN</Cmd> to the runner checkout&apos;s{" "}
+              <Cmd>.env.local</Cmd> and restart the runner.
+            </>
+          ),
+        },
+    {
+      tone: readiness.codexSlots === 0 ? "missing" : unusable > 0 ? "warn" : "ok",
+      label: `Codex logins: ${readiness.codexSlots} usable${unusable > 0 ? `, ${unusable} unusable` : ""}`,
+      howTo:
+        readiness.codexSlots === 0 || unusable > 0 ? (
+          <>
+            {unusable > 0 && "Log in again in an unusable slot to clear it. "}
+            Run <Cmd>{`mkdir -p ~/.codex-factory-${readiness.codexSlots + unusable + 1} && CODEX_HOME=~/.codex-factory-${readiness.codexSlots + unusable + 1} codex login --device-auth`}</Cmd>{" "}
+            to add a login, and list its folder in <Cmd>factory.sandbox.codexSlots</Cmd> in the runner&apos;s config.json.
+          </>
+        ) : undefined,
+    },
   ];
 }
 
-function SandboxNote({ readiness }: { readiness: SandboxReadiness | null }) {
-  const gaps = sandboxGaps(readiness);
-  if (gaps.length === 0 && readiness?.claude) return null;
+/** What the runner reports about its Modal setup: booleans, counts and the image's version, never a credential. */
+function SandboxReadinessList({ readiness }: { readiness: SandboxReadiness | null }) {
+  if (!readiness) {
+    return (
+      <div role="note" className="flex gap-2.5 rounded-lg border border-warning/40 bg-warning/10 p-3 text-sm">
+        <TriangleAlertIcon className="mt-0.5 size-4 shrink-0 text-warning" />
+        <p>No online runner reports its Modal setup yet. Jobs stay queued until one is ready.</p>
+      </div>
+    );
+  }
+  const checks = sandboxChecks(readiness);
+  const blocked = checks.some((c) => c.tone === "missing");
   return (
-    <div role="note" className="flex gap-2.5 rounded-lg border border-warning/40 bg-warning/10 p-3 text-sm">
-      <TriangleAlertIcon className="mt-0.5 size-4 shrink-0 text-warning" />
-      <p>
-        {gaps.length > 0 && <>Modal is not ready: {gaps.join(", ")}. Jobs stay queued until it is. </>}
-        {readiness && !readiness.claude && <>The runner has no Claude token, so Claude Code jobs run on Codex in Modal.</>}
+    <div className="flex flex-col gap-3 rounded-lg border p-3 text-sm">
+      <p className={blocked ? "text-warning" : "text-muted-foreground"}>
+        {blocked ? "Modal is not ready yet. Jobs stay queued until it is." : "Modal is ready on the runner."}
       </p>
+      <ul className="flex flex-col gap-2.5">
+        {checks.map((check, i) => (
+          <li key={i} className="flex gap-2.5">
+            {CHECK_ICON[check.tone]}
+            <div className="flex min-w-0 flex-col gap-0.5">
+              <span>{check.label}</span>
+              {check.howTo && <span className="text-muted-foreground">{check.howTo}</span>}
+            </div>
+          </li>
+        ))}
+      </ul>
+      {readiness.maxParallel !== undefined && (
+        <p className="text-muted-foreground">
+          The runner runs at most {readiness.maxParallel} sandboxes at once (<Cmd>factory.sandbox.maxParallel</Cmd>), and every
+          job also counts against <Cmd>factory.maxInFlight</Cmd>. Both are set in the runner&apos;s config.json.
+        </p>
+      )}
     </div>
   );
 }
@@ -225,7 +320,7 @@ export function SettingsForm({ machines, saved }: { machines: Feed<MachineRow>; 
                   </Select>
                   <FieldDescription>Modal runs each job in its own sandbox; this Mac runs it in the runner&apos;s T3.</FieldDescription>
                 </Field>
-                {execution === "modal" && <SandboxNote readiness={readiness} />}
+                {execution === "modal" && <SandboxReadinessList readiness={readiness} />}
               </FieldGroup>
             )}
             {failure && (

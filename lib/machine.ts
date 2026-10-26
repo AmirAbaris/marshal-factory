@@ -40,6 +40,11 @@ export const sandboxReadinessSchema = z.object({
   /** Slots whose login failed in a sandbox and has not changed since; optional for older inventories. */
   codexSlotsUnusable: z.number().int().nonnegative().optional(),
   image: z.boolean(),
+  /** What the built image holds; the rest are optional for older inventories too. */
+  imageInfo: z.object({ t3Version: z.string(), builtAt: z.string(), factoryCommit: z.string() }).nullable().optional(),
+  /** The T3 version the runner's config pins; an image with another one launches nothing. */
+  pinnedT3Version: z.string().optional(),
+  maxParallel: z.number().int().positive().optional(),
 });
 export type SandboxReadiness = z.infer<typeof sandboxReadinessSchema>;
 
