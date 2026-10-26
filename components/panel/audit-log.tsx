@@ -10,6 +10,7 @@ const ACTION: Record<AuditRow["action"], { label: string; tone: string }> = {
   merge_requested: { label: "Merge requested", tone: "text-foreground" },
   merge_succeeded: { label: "Merged", tone: "text-success" },
   merge_failed: { label: "Merge failed", tone: "text-destructive" },
+  sandbox_login_failed: { label: "Sandbox login failed", tone: "text-destructive" },
 };
 
 const RESULT: Record<NonNullable<AuditRow["result"]>, string> = {
@@ -28,14 +29,14 @@ export function AuditLog({ feed, path }: { feed: Feed<AuditRow>; path: string })
     <>
       <Separator />
       <section className="flex flex-col gap-2.5 px-4.5 py-3.5">
-        <h3 className="text-sm font-medium text-muted-foreground">Merges</h3>
+        <h3 className="text-sm font-medium text-muted-foreground">Audit log</h3>
         <ol className="flex flex-col gap-2">
           {rows.map((row) => (
             <li key={row.id} className="flex flex-col gap-0.5 text-sm">
               <div className="flex flex-wrap items-baseline gap-x-2">
                 <span className={cn("font-medium", ACTION[row.action].tone)}>{ACTION[row.action].label}</span>
                 {row.result && row.result !== "ok" && <span className="text-muted-foreground">{RESULT[row.result]}</span>}
-                <span className="font-mono text-xs text-faint">{row.head_sha.slice(0, 7)}</span>
+                {row.head_sha && <span className="font-mono text-xs text-faint">{row.head_sha.slice(0, 7)}</span>}
                 <span className="ml-auto text-xs text-faint">
                   <Time date={row.at} />
                 </span>
