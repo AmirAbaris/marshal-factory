@@ -58,6 +58,8 @@ export const factorySchema = z
     budgetUsd: z.number().positive().default(5),
     /** Days a failed job keeps its worktree for a human to look at before cleanup removes it. */
     cleanupGraceDays: z.number().nonnegative().default(3),
+    /** How long the runner watches the base branch's checks after it merged a PR, reverting when they fail. */
+    postMergeWatchMinutes: z.number().positive().default(60),
     /** Hours a Claude Code subagent worktree must sit untouched before cleanup considers it. */
     subagentIdleHours: z.number().nonnegative().default(6),
     /** Target repos the factory works in; the installer adds each one. */

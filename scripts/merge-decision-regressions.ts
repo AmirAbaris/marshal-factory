@@ -66,7 +66,7 @@ const facts = (over: Partial<PrFacts> = {}): PrFacts => ({
   mergeable: "mergeable",
   behindBy: 0,
   checks: "success",
-  bugbot: { finished: true, findings: [] },
+  bugbot: { review: { state: "reviewed" }, findings: [] },
   files: [{ path: "src/list.tsx", additions: 10, deletions: 2 }],
   ...over,
 });
@@ -90,7 +90,7 @@ const handsOver = (over: Partial<DecisionInput>, pattern: RegExp, why: string) =
 };
 
 assert.deepEqual(decideMerge(input()), { outcome: "merge", reasons: [] }, "trial: everything holds, so it would merge");
-assert.deepEqual(decideMerge(input({ policy: { ...DEFAULT_POLICY, autonomy: "auto" } })), { outcome: "merge", reasons: ["Auto-merge isn't switched on yet, so this runs as a trial."] });
+assert.deepEqual(decideMerge(input({ policy: { ...DEFAULT_POLICY, autonomy: "auto" } })), { outcome: "merge", reasons: [] }, "auto merges with no caveat");
 assert.deepEqual(decideMerge(input({ policy: DEFAULT_POLICY, pr: null, tracked: false, attempt: 3 })), { outcome: "handover", reasons: [] }, "off evaluates nothing");
 assert.throws(() => decideMerge(input({ pr: null })), /needs the PR's facts/);
 handsOver({ tracked: false, assessment: null }, /^This harness doesn't report a merge assessment\.$/, "an untracked harness");
@@ -103,8 +103,8 @@ handsOver({ spendUsd: 5 }, /over its budget/, "over budget");
 handsOver({ pr: facts({ checks: "failure" }) }, /check failed/, "a failed check");
 handsOver({ pr: facts({ mergeable: "conflicting" }) }, /conflicts/, "a conflict");
 handsOver({ pr: facts({ behindBy: 2 }) }, /2 commits behind/, "behind its base");
-handsOver({ pr: facts({ bugbot: { finished: true, findings: [{ severity: "medium", resolved: false }] } }) }, /1 unresolved medium or high finding/, "an open Bugbot finding");
-assert.equal(decideMerge(input({ pr: facts({ bugbot: { finished: true, findings: [{ severity: "high", resolved: true }, { severity: "low", resolved: false }] } }) })).outcome, "merge", "resolved and low findings pass");
+handsOver({ pr: facts({ bugbot: { review: { state: "reviewed" }, findings: [{ severity: "medium", resolved: false }] } }) }, /1 unresolved medium or high finding/, "an open Bugbot finding");
+assert.equal(decideMerge(input({ pr: facts({ bugbot: { review: { state: "reviewed" }, findings: [{ severity: "high", resolved: true }, { severity: "low", resolved: false }] } }) })).outcome, "merge", "resolved and low findings pass");
 handsOver({ pr: facts({ files: [{ path: "drizzle/0001.sql", additions: 1, deletions: 0 }] }) }, /protected paths: drizzle\/0001\.sql/, "a migration");
 handsOver({ pr: facts({ files: [{ path: "lib/session.ts", previousPath: "lib/auth/session.ts", additions: 1, deletions: 1 }] }) }, /lib\/auth\/session\.ts/, "a rename out of a protected path");
 handsOver({ pr: facts({ files: manifest(`-    "next": "^15.0.0",\n+    "next": "^16.0.0",`) }) }, /major version of next/, "a major dependency bump");
@@ -114,7 +114,7 @@ const ownPolicy = { policy: { autonomy: "trial" as const, protectedPaths: ["src/
 handsOver(ownPolicy, /protected paths: src\/list\.tsx/, "the repo's own globs apply");
 handsOver(ownPolicy, /over the limit of 5/, "and its own size limit");
 
-const pending = decideMerge(input({ pr: facts({ checks: "pending", bugbot: { finished: false, findings: [] } }) }));
+const pending = decideMerge(input({ pr: facts({ checks: "pending", bugbot: { review: { state: "pending" }, findings: [] } }) }));
 assert.deepEqual(pending, { outcome: "pending", reasons: ["Waiting for checks, Bugbot."] }, "running checks are pending, not a handover");
 assert.equal(decideMerge(input({ pr: facts({ mergeable: "unknown" }) })).outcome, "pending", "so is GitHub computing mergeability");
 handsOver({ pr: facts({ checks: "pending" }), headSeenAt: NOW - 61 * 60_000 }, /^Checks didn't finish within 60 minutes\.$/, "pending past the timeout");
@@ -123,14 +123,21 @@ handsOver({ pr: facts({ checks: "pending" }), attempt: 2 }, /attempt 2/, "a hard
 // --- GitHub parsing
 const run = (name: string, status: string, conclusion: string | null) => ({ name, status, conclusion });
 const none = { state: "pending", total_count: 0 };
-assert.deepEqual(checkStateOf([], none), { checks: "pending", bugbotFinished: false }, "nothing reported yet is pending");
-assert.deepEqual(checkStateOf([run("ci", "completed", "success"), run("Cursor Bugbot", "completed", "neutral")], none), { checks: "success", bugbotFinished: true });
+const PENDING = { state: "pending" } as const;
+assert.deepEqual(checkStateOf([], none), { checks: "pending", bugbot: PENDING }, "nothing reported yet is pending");
+assert.deepEqual(checkStateOf([run("ci", "completed", "success"), run("Cursor Bugbot", "completed", "neutral")], none), { checks: "success", bugbot: { state: "reviewed" } }, "neutral: reviewed, findings posted");
+assert.deepEqual(checkStateOf([run("Cursor Bugbot", "completed", "success")], none).bugbot, { state: "reviewed" }, "success: reviewed, nothing found");
+for (const conclusion of ["failure", "timed_out", "cancelled", "action_required", "stale", "skipped"]) {
+  assert.deepEqual(checkStateOf([run("Cursor Bugbot", "completed", conclusion)], none).bugbot, { state: "failed", conclusion }, `Bugbot ${conclusion} is no review`);
+}
+handsOver({ pr: facts({ bugbot: { review: { state: "failed", conclusion: "timed_out" }, findings: [] } }) }, /^Bugbot didn't complete its review \(timed_out\)\.$/, "a crashed Bugbot with no threads");
+assert.equal(checkStateOf([run("ci", "completed", "success")], { state: "success", total_count: 1 }, false).checks, "pending", "an incomplete listing is never green");
 assert.equal(checkStateOf([run("ci", "completed", "success"), run("Cursor Bugbot", "completed", "failure")], none).checks, "success", "Bugbot's own conclusion is not a check");
 assert.equal(checkStateOf([run("ci", "in_progress", null)], none).checks, "pending");
 assert.equal(checkStateOf([run("ci", "completed", "success"), run("lint", "completed", "timed_out")], none).checks, "failure");
 assert.equal(checkStateOf([run("ci", "completed", "skipped")], { state: "failure", total_count: 1 }).checks, "failure", "a failed commit status counts");
 assert.equal(checkStateOf([], { state: "success", total_count: 2 }).checks, "success", "statuses alone are enough");
-assert.deepEqual(checkStateOf([run("Cursor Bugbot", "in_progress", null)], { state: "success", total_count: 1 }), { checks: "success", bugbotFinished: false });
+assert.deepEqual(checkStateOf([run("Cursor Bugbot", "in_progress", null)], { state: "success", total_count: 1 }), { checks: "success", bugbot: PENDING });
 
 const thread = (login: string | null, body: string, isResolved = false) => ({ isResolved, comments: { nodes: [{ author: login ? { login } : null, body }] } });
 const graph = (nodes: unknown[]) => ({ data: { repository: { pullRequest: { reviewThreads: { nodes } } } } });
@@ -163,6 +170,17 @@ const stub = await serve(0, async (request) => {
   if (url.pathname === "/repos/o/r/compare/main...h9") return Response.json({ behind_by: 4 });
   if (url.pathname === "/repos/o/r/commits/h9/check-runs") return Response.json({ total_count: 1, check_runs: [run("ci", "completed", "success")] });
   if (url.pathname === "/repos/o/r/commits/h9/status") return Response.json({ state: "pending", total_count: 0 });
+  // 101 check runs: a failure on page two, or a page two GitHub never returns.
+  const page = Number(url.searchParams.get("page"));
+  const greens = Array.from({ length: 100 }, (_, i) => run(`ci-${i}`, "completed", "success"));
+  if (url.pathname === "/repos/o/r/commits/h10/check-runs") return Response.json({ total_count: 101, check_runs: page === 1 ? greens : [run("e2e", "completed", "failure")] });
+  if (url.pathname === "/repos/o/r/commits/h11/check-runs") return Response.json({ total_count: 101, check_runs: page === 1 ? greens : [] });
+  if (url.pathname === "/repos/o/r/commits/h12/check-runs") return Response.json({ total_count: 0, check_runs: [] });
+  if (/^\/repos\/o\/r\/commits\/h1[01]\/status$/.test(url.pathname)) return Response.json({ state: "success", total_count: 0, statuses: [] });
+  if (url.pathname === "/repos/o/r/commits/h12/status") {
+    const statuses = Array.from({ length: 100 }, (_, i) => ({ context: `s-${i}`, state: "success" }));
+    return Response.json({ state: "failure", total_count: 101, statuses: page === 1 ? statuses : [{ context: "ci/late", state: "failure" }] });
+  }
   if (url.pathname === "/graphql") {
     const body = (await request.json()) as { variables: { number: number } };
     if (body.variables.number === 10) return Response.json({ errors: [{ message: "Something went wrong" }] });
@@ -177,7 +195,10 @@ try {
   const files = await client.pullFiles("https://github.com/o/r/pull/9");
   assert.equal(files.length, 103, "files page until a short page");
   assert.deepEqual(files[0], { path: "f0.ts", previousPath: undefined, additions: 1, deletions: 2, patch: undefined });
-  assert.deepEqual(await client.checkState("o/r", "h9"), { checks: "success", bugbotFinished: false });
+  assert.deepEqual(await client.checkState("o/r", "h9"), { checks: "success", bugbot: PENDING });
+  assert.equal((await client.checkState("o/r", "h10")).checks, "failure", "a failed run past the first page counts");
+  assert.equal((await client.checkState("o/r", "h11")).checks, "pending", "runs GitHub listed but never returned are not green");
+  assert.deepEqual(await client.commitChecks("o/r", "h12"), { checks: "failure", failed: ["ci/late"] }, "statuses page too");
   assert.deepEqual(await client.bugbotFindings("https://github.com/o/r/pull/9"), [{ severity: "high", resolved: false }]);
   await assert.rejects(client.bugbotFindings("https://github.com/o/r/pull/10"), /GitHub GraphQL: Something went wrong/, "a GraphQL error is an error, not zero findings");
 } finally {
@@ -241,10 +262,15 @@ try {
   github.behindBy = async () => (calls.push("behind"), 0);
   github.pullFiles = async () => (calls.push("files"), [{ path: "src/list.tsx", additions: 5, deletions: 1 }]);
   let checks: "success" | "pending" = "success";
-  github.checkState = async () => (calls.push("checks"), { checks, bugbotFinished: true });
+  github.checkState = async () => (calls.push("checks"), { checks, bugbot: { state: "reviewed" as const } });
   github.bugbotFindings = async () => (calls.push("bugbot"), []);
   const labels = new Map<string, string[]>();
   SOURCES.linear.labels = async (job) => (calls.push(`labels ${job.key}`), labels.get(job.key) ?? ["factory"]);
+  const commented: string[] = [];
+  github.upsertComment = async (url) => (commented.push(`pr ${url}`), "created");
+  SOURCES.linear.note = async (job) => void commented.push(`note ${job.key}`);
+  // auto-merge-regressions covers the merge itself; here the head always moves away first.
+  github.mergeCandidate = async () => ({ state: "open", headSha: "moved", baseRef: "main", title: "t", number: 1, commits: 1, mergeCommitSha: null, mergedByBot: false });
 
   const at = (minutes: number) => NOW + minutes * 60_000;
   const prEvent = (k: string) => `merge-regress-pr-${k}`;
@@ -261,8 +287,8 @@ try {
   assert.deepEqual(Array.isArray(first) ? [...first].sort() : first, [`${GOOD}:merge`, `${ASLEEP}:merge`, `${LABELED}:handover`, `${OFF}:handover`, `${CODEX}:handover`].sort());
   const good = (await row(GOOD)).merge_decision!;
   assert.deepEqual(
-    { ...good, evaluatedAt: undefined },
-    { outcome: "merge", reasons: [], autonomy: "trial", headSha: "h1", headSeenAt: new Date(at(0)).toISOString(), stageEventId: prEvent("GOOD"), evaluatedAt: undefined },
+    { ...good, evaluatedAt: undefined, comments: undefined },
+    { comments: undefined, outcome: "merge", reasons: [], autonomy: "trial", headSha: "h1", headSeenAt: new Date(at(0)).toISOString(), stageEventId: prEvent("GOOD"), evaluatedAt: undefined },
   );
   assert.deepEqual((await row(ASLEEP)).sandbox_snapshot, "im-snap-merge", "a hibernated job is decided on GitHub alone and stays asleep");
   assert.deepEqual((await row(LABELED)).merge_decision!.reasons, ['The issue has the "review" label.']);
@@ -305,7 +331,7 @@ try {
   assert.equal((await row(LABELED)).merge_decision!.autonomy, "auto");
   await db.update(jobs).set({ stage_event_id: "merge-regress-new-report" }).where(eq(jobs.key, GOOD));
   assert.deepEqual(await decideMerges({ only: [GOOD], now: t1 + 62 * 60_000 }), [`${GOOD}:merge`]);
-  assert.deepEqual((await row(GOOD)).merge_decision!.reasons, ["Auto-merge isn't switched on yet, so this runs as a trial."]);
+  assert.deepEqual((await row(GOOD)).merge_decision!.reasons, []);
 
   // A job that left pr meanwhile keeps no decision written for the old report.
   github.pullDetail = async (url) => {

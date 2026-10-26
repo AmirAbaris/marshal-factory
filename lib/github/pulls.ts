@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { BugbotFinding, ChangedFile, CheckState } from "../merge-decision";
+import type { BugbotFinding, BugbotReview, ChangedFile, CheckState, MergeMethod } from "../merge-decision";
 import { GITHUB_API, GitHubError, githubRequest, installationTokens, type RepoName, type TokenSource } from "./app";
 
 export type PullState = "open" | "closed" | "merged";
@@ -10,7 +10,23 @@ export type BranchPull = { url: string; state: "open" | "merged" };
 export type MergeResult =
   | { kind: "merged"; sha: string }
   | { kind: "not_mergeable"; message: string }
-  | { kind: "head_moved"; message: string };
+  | { kind: "head_moved"; message: string }
+  | { kind: "forbidden"; message: string };
+export type MergeOptions = { method?: MergeMethod; title?: string; message?: string };
+/** What the factory's merge needs to know about the PR right before it merges. */
+export type MergeCandidate = {
+  state: PullState;
+  headSha: string;
+  baseRef: string;
+  title: string;
+  number: number;
+  commits: number;
+  mergeCommitSha: string | null;
+  /** A GitHub App merged it; the factory's own merges are its App's. */
+  mergedByBot: boolean;
+};
+export type RepoMerging = { method: MergeMethod; canPush: boolean };
+export type CommentWrite = "created" | "updated" | "unchanged";
 
 const PULL_URL = /^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)(?:[/?#].*)?$/;
 
@@ -52,23 +68,55 @@ const checkRunSchema = z.object({
   app: z.object({ slug: z.string() }).nullable().optional(),
 });
 type CheckRun = z.infer<typeof checkRunSchema>;
+const checkRunsSchema = z.object({ total_count: z.number(), check_runs: z.array(checkRunSchema) });
 const combinedStatusSchema = z.object({ state: z.string(), total_count: z.number() });
 
 const PASSING = new Set(["success", "neutral", "skipped"]);
+/** Bugbot concludes neutral when it reviewed and posted findings, success when it found none. */
+const BUGBOT_REVIEWED = new Set(["success", "neutral"]);
 const isBugbot = (run: CheckRun) => /bugbot/i.test(run.name);
+
+function bugbotReviewOf(runs: readonly CheckRun[]): BugbotReview {
+  const bugbot = runs.filter(isBugbot);
+  if (bugbot.length === 0 || bugbot.some((run) => run.status !== "completed")) return { state: "pending" };
+  const failed = bugbot.find((run) => !BUGBOT_REVIEWED.has(run.conclusion ?? ""));
+  return failed ? { state: "failed", conclusion: failed.conclusion ?? "no conclusion" } : { state: "reviewed" };
+}
 
 /**
  * Every check run and commit status on a commit, Bugbot's run aside. A commit nothing reported on
- * yet is pending: CI may not have started.
+ * yet is pending: CI may not have started. So is one GitHub listed more checks for than it returned.
  */
-export function checkStateOf(runs: readonly CheckRun[], status: z.infer<typeof combinedStatusSchema>): { checks: CheckState; bugbotFinished: boolean } {
+export function checkStateOf(
+  runs: readonly CheckRun[],
+  status: z.infer<typeof combinedStatusSchema>,
+  complete = true,
+): { checks: CheckState; bugbot: BugbotReview } {
   const others = runs.filter((run) => !isBugbot(run));
   const states: CheckState[] = others.map((run) =>
     run.status !== "completed" ? "pending" : PASSING.has(run.conclusion ?? "") ? "success" : "failure",
   );
   if (status.total_count > 0) states.push(status.state === "success" ? "success" : status.state === "pending" ? "pending" : "failure");
+  if (!complete) states.push("pending");
   const checks: CheckState = states.includes("failure") ? "failure" : states.length === 0 || states.includes("pending") ? "pending" : "success";
-  return { checks, bugbotFinished: runs.some((run) => isBugbot(run) && run.status === "completed") };
+  return { checks, bugbot: bugbotReviewOf(runs) };
+}
+
+const statusesSchema = combinedStatusSchema.extend({ statuses: z.array(z.object({ context: z.string(), state: z.string() })).default([]) });
+
+/** The names of the failed check runs and commit statuses on a commit, Bugbot's run aside. */
+export function failedChecksOf(runs: readonly CheckRun[], status: z.infer<typeof statusesSchema>): string[] {
+  const failedRuns = runs.filter((run) => !isBugbot(run) && run.status === "completed" && !PASSING.has(run.conclusion ?? "")).map((run) => run.name);
+  const statuses = status.statuses.filter((s) => s.state === "failure" || s.state === "error").map((s) => s.context);
+  return [...new Set([...failedRuns, ...statuses])];
+}
+
+const MERGE_METHOD_FLAGS = { squash: "allow_squash_merge", merge: "allow_merge_commit", rebase: "allow_rebase_merge" } as const;
+
+/** Squash when the repo allows it, else the first method it allows; a repo that hides its flags gets squash. */
+export function mergeMethodOf(repo: Partial<Record<(typeof MERGE_METHOD_FLAGS)[MergeMethod], boolean>>): MergeMethod {
+  const allowed = (Object.keys(MERGE_METHOD_FLAGS) as MergeMethod[]).filter((m) => repo[MERGE_METHOD_FLAGS[m]] !== false);
+  return allowed[0] ?? "squash";
 }
 
 const SEVERITY = /\*\*(High|Medium|Low) Severity\*\*/;
@@ -110,6 +158,7 @@ const THREADS_QUERY = `query($owner: String!, $name: String!, $number: Int!) {
 }`;
 
 const FILE_PAGES = 30;
+const CHECK_PAGES = 10;
 
 export function pullsClient({ api, tokens }: { api: string; tokens: TokenSource }) {
   // A cached token GitHub stops accepting (revoked, or the installation changed) is dropped and
@@ -123,6 +172,35 @@ export function pullsClient({ api, tokens }: { api: string; tokens: TokenSource 
       tokens.evict(repo, token);
       return githubRequest(api, await tokens.get(repo), method, path, options);
     }
+  }
+
+  /** Pages a commit list until it holds `total_count` items; `complete` is false when it never got there. */
+  async function pages<T>(repo: RepoName, path: string, parse: (json: unknown) => { total: number; items: T[] }) {
+    const items: T[] = [];
+    let total = 0;
+    for (let page = 1; page <= CHECK_PAGES; page++) {
+      const batch = parse((await request(repo, "GET", `${path}?per_page=100&page=${page}`)).json);
+      total = batch.total;
+      items.push(...batch.items);
+      if (items.length >= total || batch.items.length === 0) break;
+    }
+    return { items, complete: items.length >= total };
+  }
+
+  /** Every check run and commit status on a commit, all pages. */
+  async function commitReport(repo: RepoName, sha: string) {
+    let combined: z.infer<typeof statusesSchema> = { state: "pending", total_count: 0, statuses: [] };
+    const [runs, statuses] = await Promise.all([
+      pages(repo, `/repos/${repo}/commits/${sha}/check-runs`, (json) => {
+        const { total_count, check_runs } = checkRunsSchema.parse(json);
+        return { total: total_count, items: check_runs };
+      }),
+      pages(repo, `/repos/${repo}/commits/${sha}/status`, (json) => {
+        combined = statusesSchema.parse(json);
+        return { total: combined.total_count, items: combined.statuses };
+      }),
+    ]);
+    return { runs: runs.items, status: { ...combined, statuses: statuses.items }, complete: runs.complete && statuses.complete };
   }
 
   return {
@@ -189,11 +267,8 @@ export function pullsClient({ api, tokens }: { api: string; tokens: TokenSource 
     },
 
     async checkState(repo: RepoName, sha: string) {
-      const [runs, status] = await Promise.all([
-        request(repo, "GET", `/repos/${repo}/commits/${sha}/check-runs?per_page=100`),
-        request(repo, "GET", `/repos/${repo}/commits/${sha}/status`),
-      ]);
-      return checkStateOf(z.object({ check_runs: z.array(checkRunSchema) }).parse(runs.json).check_runs, combinedStatusSchema.parse(status.json));
+      const { runs, status, complete } = await commitReport(repo, sha);
+      return checkStateOf(runs, status, complete);
     },
 
     async bugbotFindings(url: string): Promise<BugbotFinding[]> {
@@ -205,15 +280,90 @@ export function pullsClient({ api, tokens }: { api: string; tokens: TokenSource 
       return bugbotFindingsOf(json);
     },
 
-    async mergePull(url: string, headSha: string): Promise<MergeResult> {
+    /** `sha` pins the head, so a push since the decision makes GitHub refuse the merge. */
+    async mergePull(url: string, headSha: string, { method = "squash", title, message }: MergeOptions = {}): Promise<MergeResult> {
       const { repo, number } = parsePullUrl(url);
       const { status, json } = await request(repo, "PUT", `/repos/${repo}/pulls/${number}/merge`, {
-        body: { merge_method: "squash", sha: headSha },
-        allow: [405, 409],
+        body: { merge_method: method, sha: headSha, ...(title && { commit_title: title }), ...(message && { commit_message: message }) },
+        allow: [403, 404, 405, 409],
       });
+      if (status === 403 || status === 404) return { kind: "forbidden", message: messageOf(json) || `GitHub answered ${status}` };
       if (status === 405) return { kind: "not_mergeable", message: messageOf(json) };
       if (status === 409) return { kind: "head_moved", message: messageOf(json) };
       return { kind: "merged", sha: z.object({ sha: z.string() }).parse(json).sha };
+    },
+
+    async mergeCandidate(url: string): Promise<MergeCandidate> {
+      const { repo, number } = parsePullUrl(url);
+      const { json } = await request(repo, "GET", `/repos/${repo}/pulls/${number}`);
+      const pull = pullSchema
+        .extend({
+          base: z.object({ ref: z.string() }),
+          title: z.string(),
+          commits: z.number().int(),
+          merge_commit_sha: z.string().nullable(),
+          merged_by: z.object({ login: z.string(), type: z.string() }).nullable().optional(),
+        })
+        .parse(json);
+      return {
+        state: stateOf(pull),
+        headSha: pull.head.sha,
+        baseRef: pull.base.ref,
+        title: pull.title,
+        number,
+        commits: Math.max(1, pull.commits),
+        mergeCommitSha: pull.merge_commit_sha,
+        mergedByBot: pull.merged_by?.type === "Bot",
+      };
+    },
+
+    /** The merge method to use, and whether the token may push at all, a cheap probe before a merge. */
+    async repoMerging(repo: RepoName): Promise<RepoMerging> {
+      const { json } = await request(repo, "GET", `/repos/${repo}`);
+      const flags = z
+        .object({
+          allow_squash_merge: z.boolean().optional(),
+          allow_merge_commit: z.boolean().optional(),
+          allow_rebase_merge: z.boolean().optional(),
+          permissions: z.object({ push: z.boolean().optional() }).optional(),
+        })
+        .parse(json);
+      return { method: mergeMethodOf(flags), canPush: flags.permissions?.push !== false };
+    },
+
+    /** The commit's checks with the names of those that failed, Bugbot's run aside. */
+    async commitChecks(repo: RepoName, sha: string): Promise<{ checks: CheckState; failed: string[] }> {
+      const { runs, status, complete } = await commitReport(repo, sha);
+      return { checks: checkStateOf(runs, status, complete).checks, failed: failedChecksOf(runs, status) };
+    },
+
+    /** Creates or edits the one comment on the PR that carries `marker`, so a decision is never posted twice. */
+    async upsertComment(url: string, marker: string, body: string): Promise<CommentWrite> {
+      const { repo, number } = parsePullUrl(url);
+      const commentSchema = z.array(z.object({ id: z.number(), body: z.string().nullable().optional() }));
+      for (let page = 1; page <= FILE_PAGES; page++) {
+        const { json } = await request(repo, "GET", `/repos/${repo}/issues/${number}/comments?per_page=100&page=${page}`);
+        const batch = commentSchema.parse(json);
+        const ours = batch.find((c) => c.body?.includes(marker));
+        if (ours) {
+          if (ours.body === body) return "unchanged";
+          await request(repo, "PATCH", `/repos/${repo}/issues/comments/${ours.id}`, { body: { body } });
+          return "updated";
+        }
+        if (batch.length < 100) break;
+      }
+      await request(repo, "POST", `/repos/${repo}/issues/${number}/comments`, { body: { body } });
+      return "created";
+    },
+
+    /** Opens a PR, or returns the open one GitHub already has for the branch. */
+    async createPull(repo: RepoName, pull: { title: string; head: string; base: string; body: string }): Promise<{ url: string }> {
+      const { status, json } = await request(repo, "POST", `/repos/${repo}/pulls`, { body: pull, allow: [422] });
+      if (status !== 422) return { url: z.object({ html_url: z.string() }).parse(json).html_url };
+      const query = new URLSearchParams({ head: `${repo.split("/")[0]}:${pull.head}`, state: "open" });
+      const existing = z.array(z.object({ html_url: z.string() })).parse((await request(repo, "GET", `/repos/${repo}/pulls?${query}`)).json)[0];
+      if (!existing) throw new GitHubError(`GitHub POST /repos/${repo}/pulls answered 422: ${messageOf(json)}`, 422);
+      return { url: existing.html_url };
     },
   };
 }

@@ -33,6 +33,35 @@ export const DEFAULT_POLICY: RepoPolicy = { autonomy: "off", protectedPaths: DEF
 export const MERGE_OUTCOMES = ["merge", "handover", "pending"] as const;
 export type MergeOutcome = (typeof MERGE_OUTCOMES)[number];
 
+export const MERGE_METHODS = ["squash", "merge", "rebase"] as const;
+export type MergeMethod = (typeof MERGE_METHODS)[number];
+
+export const WATCH_STATES = ["watching", "green", "expired", "reverted", "revert_failed"] as const;
+export type WatchState = (typeof WATCH_STATES)[number];
+
+/** What the factory merged; the post-merge watch reads the base branch at this commit. */
+export const factoryMergeSchema = z.object({
+  sha: z.string(),
+  method: z.enum(MERGE_METHODS),
+  at: z.string(),
+  base: z.string(),
+  title: z.string(),
+  /** The PR's commit count; a rebase merge put that many commits on the base. */
+  commits: z.number().int().positive(),
+});
+export type FactoryMerge = z.infer<typeof factoryMergeSchema>;
+
+export const watchSchema = z.object({
+  state: z.enum(WATCH_STATES),
+  until: z.string(),
+  /** The checks that failed on the base branch. */
+  failed: z.array(z.string()),
+  revertPr: z.string().nullable(),
+  /** Why the revert failed. */
+  reason: z.string().nullable(),
+});
+export type MergeWatch = z.infer<typeof watchSchema>;
+
 export const mergeDecisionSchema = z.object({
   outcome: z.enum(MERGE_OUTCOMES),
   reasons: z.array(z.string()),
@@ -44,11 +73,21 @@ export const mergeDecisionSchema = z.object({
   headSeenAt: z.string().nullable(),
   /** The stage event the decision read the assessment from. */
   stageEventId: z.string().nullable(),
+  /** Why GitHub refused the factory's merge of this head; it is not tried again until the head moves. */
+  blocked: z.string().optional(),
+  /** Written right before the factory asks GitHub to merge, so a crash after the merge is recorded on a later pass. */
+  merging: z.object({ headSha: z.string(), method: z.enum(MERGE_METHODS), at: z.string() }).optional(),
+  merged: factoryMergeSchema.optional(),
+  watch: watchSchema.optional(),
+  /** Fingerprints of the decision comments last posted on the PR and in the source. */
+  comments: z.object({ pr: z.string().optional(), source: z.string().optional() }).optional(),
 });
 export type MergeDecision = z.infer<typeof mergeDecisionSchema>;
 
 export type CheckState = "success" | "pending" | "failure";
 export type BugbotFinding = { severity: "high" | "medium" | "low"; resolved: boolean };
+/** Bugbot's run on the head: still running (or not started), reviewed, or ended without a review. */
+export type BugbotReview = { state: "pending" } | { state: "reviewed" } | { state: "failed"; conclusion: string };
 export type ChangedFile = { path: string; previousPath?: string; additions: number; deletions: number; patch?: string };
 
 /** What GitHub says about the PR head. */
@@ -58,7 +97,7 @@ export type PrFacts = {
   behindBy: number;
   /** Every check run and commit status on the head, Bugbot's aside; pending also when none reported yet. */
   checks: CheckState;
-  bugbot: { finished: boolean; findings: readonly BugbotFinding[] };
+  bugbot: { review: BugbotReview; findings: readonly BugbotFinding[] };
   files: readonly ChangedFile[];
 };
 
@@ -136,6 +175,7 @@ function hardLimits(input: DecisionInput, pr: PrFacts) {
   if (pr.checks === "failure") reasons.push("A check failed on the latest commit.");
   if (pr.mergeable === "conflicting") reasons.push("The pull request conflicts with its base branch.");
   if (pr.behindBy > 0) reasons.push(`The branch is ${pr.behindBy} commit${pr.behindBy === 1 ? "" : "s"} behind its base.`);
+  if (pr.bugbot.review.state === "failed") reasons.push(`Bugbot didn't complete its review (${pr.bugbot.review.conclusion}).`);
   const open = pr.bugbot.findings.filter((f) => !f.resolved && f.severity !== "low");
   if (open.length > 0) reasons.push(`Bugbot has ${open.length} unresolved medium or high finding${open.length === 1 ? "" : "s"}.`);
   const touched = pr.files.flatMap((f) => [f.path, ...(f.previousPath ? [f.previousPath] : [])]);
@@ -159,7 +199,7 @@ function agentReasons({ tracked, assessment }: DecisionInput) {
 function waitingOn(pr: PrFacts) {
   const waiting: string[] = [];
   if (pr.checks === "pending") waiting.push("checks");
-  if (!pr.bugbot.finished) waiting.push("Bugbot");
+  if (pr.bugbot.review.state === "pending") waiting.push("Bugbot");
   if (pr.mergeable === "unknown") waiting.push("GitHub's mergeability check");
   return waiting;
 }
@@ -178,5 +218,8 @@ export function decideMerge(input: DecisionInput): Decision {
     if (input.now - input.headSeenAt < timeout) return { outcome: "pending", reasons: [`Waiting for ${waiting.join(", ")}.`] };
     return { outcome: "handover", reasons: [`${waiting.join(", ")} didn't finish within ${minutes(timeout)} minutes.`.replace(/^./, (c) => c.toUpperCase())] };
   }
-  return { outcome: "merge", reasons: input.policy.autonomy === "auto" ? ["Auto-merge isn't switched on yet, so this runs as a trial."] : [] };
+  return { outcome: "merge", reasons: [] };
 }
+
+/** The reason a decision hands over when GitHub refuses the factory's merge. */
+export const blockedReason = (detail: string) => `The factory's GitHub App can't merge in this repo: ${detail}`;

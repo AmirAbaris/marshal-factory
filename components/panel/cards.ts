@@ -32,9 +32,15 @@ export type BoardCard = {
   untracked: { provider: string; model: string | null } | null;
   /** Set when the job runs in a Modal sandbox. */
   sandbox: SandboxState | null;
-  /** The runner's merge decision while the job is in pr. */
+  /** The runner's merge decision while the job is in pr, or once the factory merged it. */
   mergeDecision: MergeDecision | null;
 };
+
+/** The decision a job shows: while in pr, and after a merge the factory made, for its watch on main. */
+export function shownDecision(job: Pick<JobRow, "stage" | "merge_decision">): MergeDecision | null {
+  const decision = mergeDecisionSchema.safeParse(job.merge_decision).data ?? null;
+  return job.stage === "pr" || (job.stage === "merged" && decision?.merged) ? decision : null;
+}
 
 const stagedAt = (run: RunRow) => run.stage_at?.getTime() ?? 0;
 
@@ -76,7 +82,7 @@ export function boardCards(
           ? { provider: job.provider, model: job.model }
           : null,
       sandbox: sandboxState(job),
-      mergeDecision: job.stage === "pr" ? (mergeDecisionSchema.safeParse(job.merge_decision).data ?? null) : null,
+      mergeDecision: shownDecision(job),
     };
   });
 
