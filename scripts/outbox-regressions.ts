@@ -21,11 +21,11 @@ const { ingest } = await import("../lib/ingest");
 const { REPORT_STAGE_TOOL } = await import("../lib/factory");
 const { appendEvent, flushOutbox, localFs, outboxDir, rejectedDir } = await import("../lib/outbox");
 const { mcpIdentity, mcpPosts } = await import("../lib/report-identity");
-const { modal } = await import("../lib/modal-host");
+const { modal, modalHost } = await import("../lib/modal-host");
 const { boardCards, harnessLine } = await import("../components/panel/cards");
 const { config } = await import("../runner/ops");
 const { hibernateIdle, teardownFinished, wakeJob } = await import("../runner/lifecycle");
-const { outboxClient, SANDBOX_STATE_DIR } = await import("../runner/outbox");
+const { flushSandboxOutbox, outboxClient, SANDBOX_STATE_DIR } = await import("../runner/outbox");
 const { sandboxRuntime } = await import("../runner/sandbox");
 
 modal.api = fakeModal;
@@ -133,6 +133,16 @@ try {
     assert.equal(readdirSync(rejectedDir(unit)).length, 1, "the refused one waits in outbox-rejected");
     const empty = await flushOutbox(localFs, unit, send, { budgetMs: 0 });
     assert.deepEqual([empty.delivered, empty.left], [0, 0]);
+
+    // A refused event that cannot be set aside stays queued; the events after it still go.
+    const jammed = join(dir, "jammed");
+    for (const id of ["bad", "j2", "j3"]) appendEvent(jammed, stageEvent("X-1", id));
+    const noRejectedDir = { ...localFs, writeFile: async (path: string, text: string) => (path.startsWith(rejectedDir(jammed)) ? Promise.reject(new Error("no such directory")) : localFs.writeFile(path, text)) };
+    const sendJammed = async (batch: FactoryEvent[]) =>
+      batch.some((e) => e.eventId === "bad") ? { kind: "rejected" as const, reason: "ingest answered 400" } : { kind: "delivered" as const, spend: {} };
+    const past = await flushOutbox(noRejectedDir, jammed, sendJammed, { budgetMs: 5_000 });
+    assert.deepEqual([past.delivered, past.rejected, past.stuck, past.left, past.error], [2, [], ["bad"], 1, undefined], "the flush goes on past an event it cannot set aside");
+    assert.deepEqual(pending(jammed).map((n) => (JSON.parse(readFileSync(join(outboxDir(jammed), n), "utf8")) as FactoryEvent).eventId), ["bad"], "which stays queued for the next flush");
 
     const capped = join(dir, "capped");
     const warnings: string[] = [];
@@ -301,6 +311,26 @@ try {
   assert.deepEqual(await eventIds([`abc${stamp}end`]), [`abc${stamp}end`], "delivered before teardown");
   const endOps = fake.ops.filter((o) => o.startsWith(`${sbEnd.sandboxId}:`));
   assert.ok(endOps.findIndex((o) => o.includes(`rm -rf ${sandboxOutbox}/`)) < endOps.findIndex((o) => o.includes("terminated")), endOps.join(" | "));
+
+  // A sandbox's refused event goes to outbox-rejected, a directory Modal's writeText does not create, and the rest are delivered.
+  const REFUSED = await insert("REFUSED", {});
+  const sbRefused = await sandboxFor(REFUSED);
+  await db.update(jobs).set({ stage: "failed", sandbox_id: sbRefused.sandboxId }).where(eq(jobs.key, REFUSED));
+  queue(sbRefused, stageEvent(REFUSED, `abc${stamp}refused`, { stage: "pr", summary: "PR is up.", prUrl: `${prUrl}5`, at: Date.now() - 60_000 }), 1);
+  queue(sbRefused, { eventId: `abc${stamp}after`, sessionId: `mcp:factory/${REFUSED}`, at: Date.now(), kind: "session_end", reason: "other" }, 2);
+  const realSend = outboxClient.send;
+  outboxClient.send = async (batch) =>
+    batch.some((e) => e.eventId === `abc${stamp}refused`) ? { kind: "rejected", reason: "ingest answered 400" } : { kind: "delivered", spend: (await ingest(db, batch)).spend };
+  fake.parentsRequired = true;
+  try {
+    const refusedFlush = await flushSandboxOutbox(REFUSED, modalHost(sbRefused.sandboxId));
+    assert.deepEqual([refusedFlush?.delivered, refusedFlush?.rejected, refusedFlush?.stuck], [1, [`abc${stamp}refused`], []], JSON.stringify(refusedFlush));
+  } finally {
+    fake.parentsRequired = false;
+    outboxClient.send = realSend;
+  }
+  assert.deepEqual(await eventIds([`abc${stamp}after`]), [`abc${stamp}after`], "the event after the refused one is delivered");
+  assert.ok([...sbRefused.files.keys()].some((f) => f.startsWith(`${SANDBOX_STATE_DIR}/outbox-rejected/`)), "and the refused one waits in the sandbox's outbox-rejected");
 
   console.log("outbox regressions passed");
 } catch (error) {

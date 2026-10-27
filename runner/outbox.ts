@@ -23,12 +23,18 @@ export const outboxClient: { send: Send } = {
   },
 };
 
-const summary = (result: FlushResult) => ({ delivered: result.delivered, left: result.left, rejected: result.rejected, ...(result.error && { error: result.error }) });
+const summary = (result: FlushResult) => ({
+  delivered: result.delivered,
+  left: result.left,
+  rejected: result.rejected,
+  ...(result.stuck.length > 0 && { stuck: result.stuck }),
+  ...(result.error && { error: result.error }),
+});
 
 async function flush(fs: OutboxFs, state: string, budgetMs: number, detail: Record<string, unknown>) {
   try {
     const result = await flushOutbox(fs, state, outboxClient.send, { budgetMs });
-    if (result.delivered > 0 || result.rejected.length > 0 || result.error) sandboxRuntime.log("outbox:flushed", { ...detail, ...summary(result) });
+    if (result.delivered > 0 || result.rejected.length > 0 || result.stuck.length > 0 || result.error) sandboxRuntime.log("outbox:flushed", { ...detail, ...summary(result) });
     if (result.left > HIGH_WATER) sandboxRuntime.log("outbox:backlog", { ...detail, left: result.left });
     return result;
   } catch (error) {

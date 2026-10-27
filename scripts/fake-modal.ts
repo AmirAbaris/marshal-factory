@@ -16,11 +16,14 @@ export const fake = {
   snapshots: [] as { sandboxId: string; imageId: string; ttlMs?: number | null }[],
   /** Everything that happened to any sandbox, in order: execs, snapshots, terminations. */
   ops: [] as string[],
+  /** Like Modal, writeText then refuses a path whose directory no `mkdir -p` made and no file is in. */
+  parentsRequired: false,
 };
 
 export class FakeSandbox implements SandboxHandle {
   execs: Exec[] = [];
   files = new Map<string, string>();
+  dirs = new Set<string>();
   terminated = false;
   constructor(
     readonly sandboxId: string,
@@ -35,6 +38,9 @@ export class FakeSandbox implements SandboxHandle {
     },
     writeText: async (data: string, path: string) => {
       this.alive();
+      const parent = path.slice(0, path.lastIndexOf("/"));
+      const made = [...this.dirs].some((d) => d === parent || d.startsWith(`${parent}/`)) || [...this.files.keys()].some((f) => f.startsWith(`${parent}/`));
+      if (fake.parentsRequired && !made) throw new SandboxFilesystemNotFoundError(`${parent} not found`);
       this.files.set(path, data);
     },
   };
@@ -45,6 +51,7 @@ export class FakeSandbox implements SandboxHandle {
     this.alive();
     const exec: Exec = { argv, params, input: "", closed: false };
     this.execs.push(exec);
+    if (argv[0] === "mkdir" && argv[1] === "-p") for (const d of argv.slice(2)) this.dirs.add(d);
     fake.ops.push(`${this.sandboxId}: ${argv.join(" ")}`);
     const reply = Promise.resolve(fake.answer(this, argv));
     const never = new Promise<never>(() => {});
