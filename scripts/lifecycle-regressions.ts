@@ -14,7 +14,7 @@ const { SOURCES } = await import("../lib/sources");
 const { TEST_MACHINE_ID } = await import("../lib/config");
 const { ensureAwake, HostAsleepError, hosts } = await import("../lib/host");
 const { modal } = await import("../lib/modal-host");
-const { CODEX_AUTH, GITHUB_TOKEN_PATH, readSlotHealth, sandboxReadiness } = await import("../lib/sandbox");
+const { CODEX_AUTH, GITHUB_TOKEN_PATH, pinnedVersions, readSlotHealth, sandboxReadiness } = await import("../lib/sandbox");
 const { github } = await import("../lib/github/pulls");
 const { canReclaim, canReclaimSql } = await import("../runner/binding");
 const { checkPullRequests, config, deliverStops, reconcileUsage, resumeAnswered, sandboxesInFlight, threads, toLaunch, watchdog } = await import("../runner/ops");
@@ -39,7 +39,7 @@ const events: { event: string; detail: Record<string, unknown> }[] = [];
 let minted = 0;
 let claudeToken: string | undefined;
 Object.assign(sandboxRuntime, {
-  image: () => ({ imageId: "im-test", t3Version: limits.t3Version, factoryCommit: "abc", builtAt: "now" }),
+  image: () => ({ imageId: "im-test", t3Version: limits.t3Version, versions: pinnedVersions(limits), factoryCommit: "abc", builtAt: "now" }),
   claudeToken: () => claudeToken,
   githubToken: async () => `ghs_fake_${++minted}`,
   slots: () => [slotA, slotB, slotC],
@@ -194,13 +194,17 @@ try {
   assert.deepEqual(usableSlots(limits).includes(slotA), false, "a marked slot is skipped");
   assert.deepEqual(sandboxReadiness({ codexSlots: [slotA, slotB, slotC] }, process.env, readSlotHealth(healthPath)).codexSlots, 2);
   assert.deepEqual(sandboxReadiness({ codexSlots: [slotA, slotB, slotC] }, process.env, readSlotHealth(healthPath)).codexSlotsUnusable, 1, "the inventory counts it");
-  const image = { imageId: "im-secretish", t3Version: "0.1.3", factoryCommit: "abc1234", builtAt: "2026-10-26T10:00:00.000Z" };
-  const reported = sandboxReadiness({ codexSlots: [], t3Version: "0.1.4", maxParallel: 3 }, process.env, [], image);
+  const versions = { t3: "0.1.3", claudeCode: "2.1.310", codex: "0.164.0", pstack: "0.9.69@614d2f9791dd" };
+  const image = { imageId: "im-secretish", t3Version: "0.1.3", versions, factoryCommit: "abc1234", builtAt: "2026-10-26T10:00:00.000Z" };
+  const pins = { t3Version: "0.1.4", claudeCodeVersion: "2.1.311", codexVersion: "0.164.0", pstack: { repo: "o/r", commit: "a".repeat(40), version: "0.9.70" } };
+  const reported = sandboxReadiness({ codexSlots: [], ...pins, maxParallel: 3 }, process.env, [], image);
   assert.deepEqual(
-    [reported.image, reported.imageInfo, reported.pinnedT3Version, reported.maxParallel],
-    [true, { t3Version: "0.1.3", factoryCommit: "abc1234", builtAt: image.builtAt }, "0.1.4", 3],
-    "the inventory reports the image's version, build time and commit, the pinned T3 and the cap",
+    [reported.image, reported.imageInfo, reported.pinnedT3Version, reported.pinnedVersions, reported.maxParallel],
+    [true, { t3Version: "0.1.3", factoryCommit: "abc1234", builtAt: image.builtAt, versions }, "0.1.4", { t3: "0.1.4", claudeCode: "2.1.311", codex: "0.164.0", pstack: "0.9.70@aaaaaaaaaaaa" }, 3],
+    "the inventory reports the image's versions, build time and commit, every pin and the cap",
   );
+  const beforePins = { ...image, versions: undefined };
+  assert.deepEqual(sandboxReadiness({ codexSlots: [] }, process.env, [], beforePins).imageInfo?.versions, { t3: "0.1.3" }, "an image from before the other pins reports only T3");
   assert.ok(!JSON.stringify(reported).includes("im-secretish"), "but not the image id");
   assert.deepEqual([sandboxReadiness({ codexSlots: [] }, process.env, [], null).image, sandboxReadiness({ codexSlots: [] }, process.env, [], null).imageInfo], [false, null]);
   const later = new Date(Date.now() + 60_000);

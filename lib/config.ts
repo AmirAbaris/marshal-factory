@@ -21,7 +21,18 @@ const home = (path: string) => path.replace(/^~(?=\/|$)/, homedir());
 export const sandboxSchema = z
   .object({
     appName: z.string().default("marshal-factory"),
+    /** What the sandbox image installs; a runner launches nothing from an image built with other versions. */
     t3Version: z.string().default("0.1.3-nightly.20261023.3566"),
+    claudeCodeVersion: z.string().default("2.1.310"),
+    codexVersion: z.string().default("0.164.0"),
+    /** The PStack marketplace repo at a commit; version is the plugin version that commit declares. */
+    pstack: z
+      .object({
+        repo: z.string().default("michael-denyer/pstack-claude"),
+        commit: z.string().regex(/^[0-9a-f]{40}$/).default("614d2f9791ddf73e0654c9be5a42c5a48d8f5ba0"),
+        version: z.string().default("0.9.69"),
+      })
+      .prefault({}),
     /** Cores and MiB a sandbox reserves, and the most it may burst to. */
     cpu: z.number().positive().default(1),
     cpuLimit: z.number().positive().default(2),

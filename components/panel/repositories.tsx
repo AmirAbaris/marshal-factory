@@ -19,7 +19,7 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "@/components/ui/tooltip";
 import type { MachineRow, RepoSettingsRow } from "@/db/schema";
 import { EXECUTIONS, type Execution } from "@/lib/execution";
 import type { Harness } from "@/lib/harness";
-import { imageOutdated, parseInventory, reportedHarnesses, reportedSandbox, UNKNOWN } from "@/lib/machine";
+import { parseInventory, rebuildText, reportedDrift, reportedHarnesses, reportedSandbox, UNKNOWN } from "@/lib/machine";
 import { AUTONOMY_LABELS, AUTONOMY_LEVELS, DEFAULT_POLICY, type Autonomy } from "@/lib/merge-decision";
 import { displayName } from "@/lib/repo-name";
 import type { RepoStats } from "@/lib/repositories";
@@ -50,17 +50,18 @@ const itemHref = (repo: string) => `/repositories?${new URLSearchParams({ repo }
 const githubUrl = (repo: string) => `https://github.com/${repo}`;
 
 /** Where a repo's jobs can launch: Modal clones it from GitHub, a local launch needs a runner's checkout. */
-export type Places = { modal: boolean; machines: string[] };
+export type Places = { modal: boolean; machines: string[]; rebuild?: string };
 
 function placesOf(rows: readonly MachineRow[], now: number, repo: string): Places {
   const sandbox = reportedSandbox(rows, now);
-  const modal = Boolean(sandbox && sandbox.modal && sandbox.image && !imageOutdated(sandbox) && sandbox.codexSlots > 0);
+  const drift = sandbox ? reportedDrift(sandbox) : [];
+  const modal = Boolean(sandbox && sandbox.modal && sandbox.image && drift.length === 0 && sandbox.codexSlots > 0);
   const machines = rows.filter((m) => parseInventory(m.inventory)?.repos.some((r) => r.origin !== UNKNOWN && r.origin === repo)).map((m) => m.name);
-  return { modal, machines };
+  return { modal, machines, ...(drift.length > 0 && { rebuild: rebuildText(drift) }) };
 }
 
-function placesLine({ modal, machines }: Places) {
-  const parts = [modal && "Modal sandbox image ready", machines.length > 0 && `Local checkout on ${machines.join(", ")}`].filter(Boolean);
+function placesLine({ modal, machines, rebuild }: Places) {
+  const parts = [modal && "Modal sandbox image ready", rebuild, machines.length > 0 && `Local checkout on ${machines.join(", ")}`].filter(Boolean);
   return parts.length > 0 ? parts.join(" · ") : "Neither a Modal image nor a local checkout";
 }
 

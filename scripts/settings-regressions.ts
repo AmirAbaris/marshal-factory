@@ -10,7 +10,7 @@ process.env.FACTORY_OWNER_EMAILS = OWNER;
 const { db } = await import("../db/client");
 const { jobs, settings } = await import("../db/schema");
 const { DEFAULT_MODEL, DEFAULT_PROVIDER } = await import("../lib/harness");
-const { imageOutdated, reportedHarnesses, reportedSandbox } = await import("../lib/machine");
+const { imageOutdated, rebuildText, reportedDrift, reportedHarnesses, reportedSandbox } = await import("../lib/machine");
 const { readSettings, saveSettings, SETTINGS_ID, writeSettings } = await import("../lib/settings");
 const { readHarnesses } = await import("../lib/t3-state");
 const { claimLaunch, effectiveHarness, releaseLaunch } = await import("../runner/ops");
@@ -103,8 +103,29 @@ const sandbox = (t3Version: string, claude: boolean) => ({
 });
 const outdatedImage = sandbox("0.1.3", true);
 const currentImage = sandbox("0.1.4", false);
-assert.equal(imageOutdated(outdatedImage), true);
+assert.equal(imageOutdated(outdatedImage), true, "an older runner that reports only T3 is compared on T3");
 assert.equal(imageOutdated(currentImage), false);
+const pinned = { t3: "0.1.4", claudeCode: "2.1.310", codex: "0.164.0", pstack: "0.9.69@614d2f9791dd" };
+const pinnedRunner = (versions: Record<string, string> | undefined) => ({
+  ...sandbox("0.1.4", true),
+  imageInfo: { t3Version: "0.1.4", builtAt: "2026-10-27T10:00:00.000Z", factoryCommit: "abc1234", versions },
+  pinnedVersions: pinned,
+});
+assert.deepEqual(reportedDrift(pinnedRunner(pinned)), [], "an image with every pin is current");
+for (const component of ["claudeCode", "codex", "pstack"] as const) {
+  const drift = reportedDrift(pinnedRunner({ ...pinned, [component]: "old" }));
+  assert.deepEqual(drift, [{ component, built: "old", pinned: pinned[component] }], `${component} alone makes the image outdated`);
+}
+assert.equal(
+  rebuildText(reportedDrift(pinnedRunner({ ...pinned, claudeCode: "2.1.309" }))),
+  "Rebuild the sandbox image: Claude Code 2.1.309 → 2.1.310",
+  "the panel names the outdated component",
+);
+assert.equal(
+  rebuildText(reportedDrift(pinnedRunner(undefined))),
+  "Rebuild the sandbox image: Claude Code missing → 2.1.310, Codex missing → 0.164.0, PStack missing → 0.9.69@614d2f9791dd",
+  "an image built before the other pins lists every one it lacks",
+);
 assert.deepEqual(
   reportedSandbox(
     [outdatedImage, currentImage].map((s) => ({ last_seen_at: online, inventory: { ...inventory(undefined), sandbox: s } })),

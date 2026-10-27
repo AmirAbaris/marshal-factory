@@ -31,6 +31,41 @@ export const projectsSchema = z.discriminatedUnion("source", [
 ]);
 export type Projects = z.infer<typeof projectsSchema>;
 
+/** What a sandbox image holds that the config pins; any difference means rebuilding it. */
+export const IMAGE_COMPONENTS = ["t3", "claudeCode", "codex", "pstack"] as const;
+export type ImageComponent = (typeof IMAGE_COMPONENTS)[number];
+export const imageVersionsSchema = z.object({ t3: z.string(), claudeCode: z.string(), codex: z.string(), pstack: z.string() }).partial();
+export type ImageVersions = z.infer<typeof imageVersionsSchema>;
+
+export function componentName(component: ImageComponent) {
+  switch (component) {
+    case "t3":
+      return "T3";
+    case "claudeCode":
+      return "Claude Code";
+    case "codex":
+      return "Codex";
+    case "pstack":
+      return "PStack";
+    default: {
+      const unknown: never = component;
+      throw new Error(`unknown image component ${String(unknown)}`);
+    }
+  }
+}
+
+export type ImageDrift = { component: ImageComponent; built: string | undefined; pinned: string };
+
+/** Each pinned component the image holds another version of, or none at all. */
+export const imageDrift = (built: ImageVersions, pinned: ImageVersions): ImageDrift[] =>
+  IMAGE_COMPONENTS.flatMap((component) => {
+    const want = pinned[component];
+    return want !== undefined && built[component] !== want ? [{ component, built: built[component], pinned: want }] : [];
+  });
+
+export const rebuildText = (drift: readonly ImageDrift[]) =>
+  `Rebuild the sandbox image: ${drift.map((d) => `${componentName(d.component)} ${d.built ?? "missing"} → ${d.pinned}`).join(", ")}`;
+
 /** Whether a runner could launch jobs on Modal; booleans and a count, never the credentials. */
 export const sandboxReadinessSchema = z.object({
   modal: z.boolean(),
@@ -41,9 +76,14 @@ export const sandboxReadinessSchema = z.object({
   codexSlotsUnusable: z.number().int().nonnegative().optional(),
   image: z.boolean(),
   /** What the built image holds; the rest are optional for older inventories too. */
-  imageInfo: z.object({ t3Version: z.string(), builtAt: z.string(), factoryCommit: z.string() }).nullable().optional(),
+  imageInfo: z
+    .object({ t3Version: z.string(), builtAt: z.string(), factoryCommit: z.string(), versions: imageVersionsSchema.optional() })
+    .nullable()
+    .optional(),
   /** The T3 version the runner's config pins; an image with another one launches nothing. */
   pinnedT3Version: z.string().optional(),
+  /** Every component version the runner pins; older runners report only pinnedT3Version. */
+  pinnedVersions: imageVersionsSchema.optional(),
   maxParallel: z.number().int().positive().optional(),
 });
 export type SandboxReadiness = z.infer<typeof sandboxReadinessSchema>;
@@ -110,9 +150,11 @@ export function reportedHarnesses(machines: readonly { last_seen_at: Date; inven
   return [...best.values()].map((b) => b.harness).sort((a, b) => a.name.localeCompare(b.name));
 }
 
-/** The image's T3 differs from the one the runner pins, so it launches nothing. */
-export const imageOutdated = ({ imageInfo, pinnedT3Version }: SandboxReadiness) =>
-  Boolean(imageInfo && pinnedT3Version && imageInfo.t3Version !== pinnedT3Version);
+/** The pinned components the reported image differs on; an image with any launches nothing. */
+export const reportedDrift = ({ imageInfo, pinnedT3Version, pinnedVersions }: SandboxReadiness) =>
+  imageInfo ? imageDrift({ t3: imageInfo.t3Version, ...imageInfo.versions }, { ...(pinnedT3Version && { t3: pinnedT3Version }), ...pinnedVersions }) : [];
+
+export const imageOutdated = (readiness: SandboxReadiness) => reportedDrift(readiness).length > 0;
 
 /** The most ready sandbox report among online machines; null when none reports one. */
 export function reportedSandbox(machines: readonly { last_seen_at: Date; inventory: unknown }[], now: number): SandboxReadiness | null {
