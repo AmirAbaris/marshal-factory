@@ -1,14 +1,19 @@
 "use client";
 
+import { InboxIcon } from "lucide-react";
+import Link from "next/link";
 import { useMemo } from "react";
+import { Button } from "@/components/ui/button";
 import type { AgentRow, AuditRow, EventRow, JobRow, MachineRow, RunRow } from "@/db/schema";
 import { Board } from "./board";
 import { boardCards } from "./cards";
 import { sandboxState } from "@/lib/execution";
 import { attemptBranch } from "@/lib/factory";
+import { inboxItems } from "@/lib/inbox";
 import { reportedHarnesses } from "@/lib/machine";
 import { cn } from "@/lib/utils";
 import { groupBy, spendOf } from "./format";
+import { Inbox } from "./inbox";
 import { JobList } from "./job-list";
 import { NewJobButton } from "./new-job-button";
 import { OtherActivity } from "./other-activity";
@@ -28,7 +33,7 @@ export type DetailProps = {
   audit: { feed: Feed<AuditRow>; path: string } | undefined;
 };
 
-export type PanelView = "board" | "list" | "activity";
+export type PanelView = "inbox" | "board" | "list" | "activity";
 
 const LIST_KEYS: readonly KeyHint[] = [
   { keys: ["J", "K"], label: "move" },
@@ -38,12 +43,32 @@ const LIST_KEYS: readonly KeyHint[] = [
 
 function viewMeta(view: PanelView) {
   switch (view) {
+    case "inbox":
+      return { title: "Inbox", job: false };
     case "board":
       return { title: "Board", job: true };
     case "list":
       return { title: "List", job: true };
     case "activity":
       return { title: "Other activity", job: false };
+    default: {
+      const never: never = view;
+      throw new Error(`unknown view ${String(never)}`);
+    }
+  }
+}
+
+const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+
+function footerSummary(view: PanelView, counts: { jobs: number; sessions: number; inbox: number }) {
+  switch (view) {
+    case "inbox":
+      return counts.inbox === 0 ? "Nothing waiting" : `${plural(counts.inbox, "item", "items")} waiting on you`;
+    case "board":
+    case "list":
+      return plural(counts.jobs, "job", "jobs");
+    case "activity":
+      return plural(counts.sessions, "session", "sessions");
     default: {
       const never: never = view;
       throw new Error(`unknown view ${String(never)}`);
@@ -58,8 +83,11 @@ export function LivePanel({
   agents,
   machines,
   detail,
+  inboxKey,
 }: {
   view: PanelView;
+  /** The inbox item open on the right, by job key. */
+  inboxKey: string | undefined;
   jobs: Feed<JobRow>;
   runs: Feed<RunRow>;
   agents: Feed<AgentRow>;
@@ -96,10 +124,14 @@ export function LivePanel({
     ? jobRows.find((j) => j.key === selectedRun.job_key)
     : undefined;
 
+  const inboxCount = useMemo(() => inboxItems(jobRows).length, [jobRows]);
+
   const meta = viewMeta(view);
   const active = runRows.filter((r) => r.status === "active").length;
   const content = (() => {
     switch (view) {
+      case "inbox":
+        return <Inbox jobs={jobRows} cards={cards} selected={inboxKey} />;
       case "board":
         return <Board cards={cards} agentsBySession={agentsBySession} selected={detail?.sessionId} machines={machineById} />;
       case "list":
@@ -117,8 +149,20 @@ export function LivePanel({
     <>
       <PanelHeader
         title={meta.title}
-        view={view === "activity" ? undefined : view}
-        actions={meta.job ? <NewJobButton harnesses={enabledHarnesses} /> : undefined}
+        view={view === "board" || view === "list" ? view : undefined}
+        actions={
+          meta.job ? (
+            <>
+              {inboxCount > 0 && (
+                <Button render={<Link href="/inbox" />} variant="ghost" size="sm" className="text-muted-foreground">
+                  <InboxIcon data-icon="inline-start" />
+                  {inboxCount} {inboxCount === 1 ? "needs" : "need"} you
+                </Button>
+              )}
+              <NewJobButton harnesses={enabledHarnesses} />
+            </>
+          ) : undefined
+        }
       />
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         <StatsStrip runs={runRows} agentsBySession={agentsBySession} startOfToday={startOfToday} />
@@ -155,8 +199,8 @@ export function LivePanel({
       <PanelFooter
         status={status}
         note={[`${active} active`, sandboxNote].filter(Boolean).join(" · ")}
-        summary={meta.job ? `${cards.length} ${cards.length === 1 ? "job" : "jobs"}` : `${unstaged.length} ${unstaged.length === 1 ? "session" : "sessions"}`}
-        keys={view === "list" ? LIST_KEYS : undefined}
+        summary={footerSummary(view, { jobs: cards.length, sessions: unstaged.length, inbox: inboxCount })}
+        keys={view === "list" || view === "inbox" ? LIST_KEYS : undefined}
       />
     </>
   );

@@ -1,6 +1,6 @@
 "use client";
 
-import { ActivityIcon, KanbanIcon, ListIcon, type LucideIcon, PanelLeftIcon, ServerIcon, SettingsIcon } from "lucide-react";
+import { ActivityIcon, InboxIcon, KanbanIcon, ListIcon, type LucideIcon, PanelLeftIcon, ServerIcon, SettingsIcon } from "lucide-react";
 import { LayoutGroup, MotionConfig, motion } from "motion/react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
@@ -15,11 +15,12 @@ import { cn } from "@/lib/utils";
 /** The layout reads this cookie, so a reload keeps the rail collapsed. */
 export const COLLAPSED_COOKIE = "sidebar_state";
 
-type NavItem = { href: "/" | "/list" | "/activity" | "/machines" | "/settings"; label: string; icon: LucideIcon };
+type NavItem = { href: "/inbox" | "/" | "/list" | "/activity" | "/machines" | "/settings"; label: string; icon: LucideIcon };
 
-/** The job views come first; an inbox of jobs that need the owner slots in at the top of that group. */
+/** The job views come first, led by the inbox of jobs that need the owner. */
 const NAV: readonly (readonly NavItem[])[] = [
   [
+    { href: "/inbox", label: "Inbox", icon: InboxIcon },
     { href: "/", label: "Board", icon: KanbanIcon },
     { href: "/list", label: "List", icon: ListIcon },
   ],
@@ -59,7 +60,17 @@ function RailTip({ collapsed, label, children }: { collapsed: boolean; label: Re
   );
 }
 
-function Nav({ collapsed, onNavigate, onToggle }: { collapsed: boolean; onNavigate?: () => void; onToggle?: () => void }) {
+function Nav({
+  collapsed,
+  inboxCount,
+  onNavigate,
+  onToggle,
+}: {
+  collapsed: boolean;
+  inboxCount: ReactNode;
+  onNavigate?: () => void;
+  onToggle?: () => void;
+}) {
   const pathname = usePathname();
   const fade = cn("transition-opacity duration-150", collapsed && "pointer-events-none opacity-0");
   return (
@@ -68,7 +79,7 @@ function Nav({ collapsed, onNavigate, onToggle }: { collapsed: boolean; onNaviga
         <span className="flex size-5 shrink-0 items-center justify-center rounded-[5px] bg-primary text-[11px] font-semibold text-primary-foreground">M</span>
         <span className={cn("min-w-0 truncate font-medium", fade)}>Marshal Factory</span>
       </div>
-      <nav aria-label="Panel" className="flex min-h-0 flex-1 flex-col gap-4 overflow-x-hidden overflow-y-auto px-1.5 py-2">
+      <nav aria-label="Panel" data-collapsed={collapsed || undefined} className="flex min-h-0 flex-1 flex-col gap-4 overflow-x-hidden overflow-y-auto px-1.5 py-2">
         {NAV.map((group) => (
           <div key={group[0]!.href} className="flex flex-col gap-px">
             {group.map(({ href, label, icon: Icon }) => {
@@ -88,6 +99,7 @@ function Nav({ collapsed, onNavigate, onToggle }: { collapsed: boolean; onNaviga
                     {on && <motion.span layoutId="panel-nav-marker" transition={spring} className="absolute inset-y-1.5 left-0 w-0.5 rounded-full bg-foreground" />}
                     <Icon className="size-4 shrink-0" />
                     <span className={cn("min-w-0 flex-1 truncate", fade)}>{label}</span>
+                    {href === "/inbox" && inboxCount}
                   </Link>
                 </RailTip>
               );
@@ -118,7 +130,7 @@ function Nav({ collapsed, onNavigate, onToggle }: { collapsed: boolean; onNaviga
 }
 
 /** The app frame: a hairline rail on the left that collapses with `[`, and a column each page fills with its header, content and footer. */
-export function PanelShell({ defaultCollapsed, children }: { defaultCollapsed: boolean; children: ReactNode }) {
+export function PanelShell({ defaultCollapsed, inboxCount, children }: { defaultCollapsed: boolean; inboxCount: ReactNode; children: ReactNode }) {
   const [collapsed, setCollapsed] = useState(defaultCollapsed);
   const [navOpen, setNavOpen] = useState(false);
 
@@ -149,12 +161,12 @@ export function PanelShell({ defaultCollapsed, children }: { defaultCollapsed: b
               transition={spring}
               className="hidden shrink-0 overflow-hidden border-e md:block"
             >
-              <Nav collapsed={collapsed} onToggle={() => setCollapsed((c) => !c)} />
+              <Nav collapsed={collapsed} inboxCount={inboxCount} onToggle={() => setCollapsed((c) => !c)} />
             </motion.aside>
             <Sheet open={navOpen} onOpenChange={setNavOpen}>
               <SheetPopup side="left" className="w-64 max-w-[85%] md:hidden">
                 <SheetTitle className="sr-only">Navigation</SheetTitle>
-                <Nav collapsed={false} onNavigate={() => setNavOpen(false)} />
+                <Nav collapsed={false} inboxCount={inboxCount} onNavigate={() => setNavOpen(false)} />
               </SheetPopup>
             </Sheet>
             <main className="flex min-w-0 flex-1 flex-col">{children}</main>

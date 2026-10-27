@@ -1,6 +1,5 @@
 import { Suspense } from "react";
 import { LivePanel, type DetailProps, type PanelView } from "@/components/panel/live-panel";
-import { RealtimeRoot } from "@/components/panel/realtime-root";
 import {
   agentsOverviewQuery,
   jobAuditQuery,
@@ -8,6 +7,7 @@ import {
   jobStagesQuery,
   load,
   machinesQuery,
+  parseJobKey,
   parseSessionId,
   runJob,
   runsQuery,
@@ -34,7 +34,7 @@ async function loadDetail(raw: string | undefined): Promise<DetailProps | undefi
 }
 
 async function Panel({ view, searchParams }: { view: PanelView; searchParams: Promise<Record<string, string | string[] | undefined>> }) {
-  const { run } = await searchParams;
+  const { run, job } = await searchParams;
   const [jobs, runs, agents, machines, detail] = await Promise.all([
     load(jobsQuery()),
     load(runsQuery()),
@@ -43,13 +43,19 @@ async function Panel({ view, searchParams }: { view: PanelView; searchParams: Pr
     loadDetail(typeof run === "string" ? run : undefined),
   ]);
   return (
-    <RealtimeRoot>
-      <LivePanel view={view} jobs={jobs} runs={runs} agents={agents} machines={machines} detail={detail} />
-    </RealtimeRoot>
+    <LivePanel
+      view={view}
+      jobs={jobs}
+      runs={runs}
+      agents={agents}
+      machines={machines}
+      detail={detail}
+      inboxKey={typeof job === "string" ? parseJobKey(job) : undefined}
+    />
   );
 }
 
-/** The board, the list and the other-activity page share their data, their live feeds and run detail. */
+/** The inbox, the board, the list and the other-activity page share their data, their live feeds and run detail. */
 export function PanelPage({ view, searchParams }: { view: PanelView; searchParams: Promise<Record<string, string | string[] | undefined>> }) {
   return (
     <Suspense fallback={<div className="h-full" />}>

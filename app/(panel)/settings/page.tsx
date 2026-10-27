@@ -1,6 +1,5 @@
 import { connection } from "next/server";
 import { Suspense } from "react";
-import { RealtimeRoot } from "@/components/panel/realtime-root";
 import { SettingsForm } from "@/components/panel/settings-form";
 import { db } from "@/db/client";
 import { jobs } from "@/db/schema";
@@ -16,11 +15,7 @@ async function Panel() {
   const [saved, repoRows, jobRepos] = await Promise.all([readSettings(db), readRepoSettings(db), db.selectDistinct({ repo: jobs.repo }).from(jobs)]);
   const inventoryRepos = machines.initialData.flatMap((m) => parseInventory(m.inventory)?.repos ?? []).flatMap((r) => (r.origin === UNKNOWN ? [] : [r.origin]));
   const repos = [...new Set([...inventoryRepos, ...jobRepos.map((r) => r.repo), ...repoRows.map((r) => r.repo)])].sort();
-  return (
-    <RealtimeRoot>
-      <SettingsForm machines={machines} saved={saved} merging={repos.map((repo) => ({ repo, policy: resolvePolicy(repoRows, repo) }))} />
-    </RealtimeRoot>
-  );
+  return <SettingsForm machines={machines} saved={saved} merging={repos.map((repo) => ({ repo, policy: resolvePolicy(repoRows, repo) }))} />;
 }
 
 export default function SettingsPage() {

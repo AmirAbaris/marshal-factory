@@ -3,8 +3,7 @@
 import { ChevronRightIcon } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "@/components/ui/empty";
 import { Spinner } from "@/components/ui/spinner";
 import type { AgentRow, MachineRow } from "@/db/schema";
@@ -13,7 +12,7 @@ import { cn } from "@/lib/utils";
 import { harnessLine, showsDecision, whereLine, type BoardCard } from "./cards";
 import { formatUsd, spendOf } from "./format";
 import { decisionLine } from "./merge-decision";
-import { isTyping } from "./panel-shell";
+import { useRowKeys } from "./row-keys";
 import { STAGE_META } from "./stages";
 import { ShortTime } from "./time";
 
@@ -95,54 +94,19 @@ export function JobList({
   selected: string | undefined;
   machines: ReadonlyMap<string, MachineRow>;
 }) {
-  const router = useRouter();
   const listRef = useRef<HTMLDivElement>(null);
   const [closed, setClosed] = useState<readonly Stage[]>([]);
   const isOpen = (card: BoardCard) => card.runs.some((r) => r.session_id === selected);
   const [cursor, setCursor] = useState<string | null>(() => cards.find(isOpen)?.id ?? null);
-
-  // The handler reads these on each key press, so it never needs to re-subscribe.
-  const latest = useRef({ cards, cursor, selected });
-  useEffect(() => {
-    latest.current = { cards, cursor, selected };
+  useRowKeys(listRef, {
+    cursor,
+    setCursor,
+    hrefOf: (id) => {
+      const card = cards.find((c) => c.id === id);
+      return card ? openHref(card) : null;
+    },
+    closeHref: selected ? "/list" : null,
   });
-
-  useEffect(() => {
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.metaKey || e.ctrlKey || e.altKey || isTyping(e.target)) return;
-      // Keys pressed inside a dialog, a menu or the run detail belong to them.
-      if (e.target !== document.body && !(e.target instanceof Node && listRef.current?.contains(e.target))) return;
-      const { cards, cursor, selected } = latest.current;
-      switch (e.key) {
-        case "j":
-        case "k":
-        case "ArrowDown":
-        case "ArrowUp": {
-          const rows = Array.from(listRef.current?.querySelectorAll<HTMLElement>("[data-row]") ?? []);
-          const at = rows.findIndex((row) => row.dataset.row === cursor);
-          const down = e.key === "j" || e.key === "ArrowDown";
-          const next = rows[at === -1 ? 0 : down ? Math.min(rows.length - 1, at + 1) : Math.max(0, at - 1)];
-          next?.focus();
-          setCursor(next?.dataset.row ?? null);
-          e.preventDefault();
-          return;
-        }
-        case "Enter": {
-          // A focused row is a link and opens itself.
-          if (e.target !== document.body) return;
-          const card = cards.find((c) => c.id === cursor);
-          const href = card && openHref(card);
-          if (href) router.push(href, { scroll: false });
-          return;
-        }
-        case "Escape":
-          if (selected) router.push("/list", { scroll: false });
-          return;
-      }
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [router]);
 
   if (cards.length === 0) {
     return (
