@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { join } from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { stageReportSchema, stageReportShape, type FactoryEvent, type StageReport } from "../lib/events";
@@ -10,6 +11,10 @@ import { mcpIdentity, mcpPosts, type McpIdentity } from "../lib/report-identity"
 // accepted call into the stage event, so the tool only validates. Under any other harness the tool
 // posts the event itself, through the outbox, for the job its env or its branch names.
 const FLUSH_BUDGET_MS = 3000;
+/** This checkout's factory-verify, which the playbook runs on the commit it pushes. */
+const VERIFY_COMMAND = `bun ${join(import.meta.dirname, "..", "hooks/verify.ts")}`;
+const VERIFY_HINT = `Prove the pushed commit with \`${VERIFY_COMMAND}\` (factory-verify) in the worktree; the factory merges only a head whose checks passed there.`;
+const VERIFY_STAGES = new Set<StageReport["stage"]>(["verifying", "pr"]);
 const server = new McpServer({ name: REPORT_SERVER, version: "0.1.0" });
 let started = false;
 
@@ -59,7 +64,7 @@ server.registerTool(
     }
     // A reporting failure must never fail the call; the outbox keeps whatever was queued.
     const text = await post(parsed.data).catch((error: unknown) => `Stage ${parsed.data.stage} is valid, but reporting it failed: ${error instanceof Error ? error.message : String(error)}`);
-    return { content: [{ type: "text", text }] };
+    return { content: [{ type: "text", text: VERIFY_STAGES.has(parsed.data.stage) ? `${text} ${VERIFY_HINT}` : text }] };
   },
 );
 

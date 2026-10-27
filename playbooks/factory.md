@@ -14,6 +14,7 @@ No human reads this thread while it runs. The supervision panel and the pull req
 - **Blocked or ambiguous means `waiting`.** When the issue does not say what done looks like, or something outside the repo blocks you, call `report_stage` with `stage: "waiting"`, a summary of what you found, and a `question` the reporter can answer in one reply. Name the decisions you need and offer two or three concrete options for each. Then end the turn. Do not guess and do not open a PR for a guess.
 - **Never merge yourself.** Never run `gh pr merge`, never arm auto-merge, never push to `main`. The run ends at a merge-ready PR reported with a merge assessment (see Merge assessment). The factory decides whether it merges or goes to a human.
 - **Clean up only what you started.** Other runs and the operator's own servers share this machine. Start a dev server on a free port, remember its PID, and stop that PID before the turn ends. Never `pkill` or `killall` by name, and never stop a process you did not start.
+- **Prove the commit you ship.** Before you report `pr`, run `factory-verify` in the worktree on the final pushed commit, with nothing uncommitted. In a sandbox it is on `PATH`; elsewhere run the command the `report_stage` reply for `verifying` names (`bun <factory root>/hooks/verify.ts`). It runs the repo's checks at `HEAD` and reports exit codes and output for that exact commit. The factory merges only a head whose checks passed there, and runs them itself when it can. Uncommitted changes make the run count for nothing. If you push again, run it again.
 - **Giving up means `failed`.** If you cannot finish (three fix rounds on the same failure, a broken toolchain, a dead end), call `report_stage` with `stage: "failed"` and the reason in `summary`, then end the turn.
 
 ## Triage
@@ -39,7 +40,7 @@ When the factory tells this thread that its PR conflicts with main, the board ha
 1. Run `git fetch origin` and `git merge origin/main` on this branch. Never rebase a pushed factory branch and never force-push it.
 2. Resolve each conflict so that main's change and yours both keep working. Read main's commit to learn what it meant. Do not drop either side to make the conflict go away.
 3. Call `report_stage` with `stage: "verifying"`, then run lint, typecheck, tests and build, and check the changed screen when the conflict touched UI.
-4. Commit the merge, push, and babysit the PR to green as in the bundled Babysit playbook. Then call `report_stage` with `stage: "pr"`, the `prUrl` and a fresh merge assessment again, and end the turn.
+4. Commit the merge, push, and babysit the PR to green as in the bundled Babysit playbook. Run `factory-verify` on the pushed merge commit. Then call `report_stage` with `stage: "pr"`, the `prUrl` and a fresh merge assessment again, and end the turn.
 5. If the two changes contradict each other and the issue does not say which wins, abort the merge with `git merge --abort`, report `waiting` with a question that names both changes, and end the turn.
 
 ## Merge assessment
@@ -58,13 +59,13 @@ If the issue is open enough that different readings give different features, rep
 Recommend `merge` only when all six checks hold; otherwise recommend `handover`:
 
 1. **Confident interpretation.** Every assumption passes the four tests.
-2. **Proven.** You saw the problem before and the fix after on the real surface, added a test that fails without the change, and every check is green.
+2. **Proven.** You saw the problem before and the fix after on the real surface, added a test that fails without the change, and `factory-verify` passed every check on the pushed head. Name that commit and its result in the note, as in `factory-verify at 3f2a9c1: 4/4 checks passed`.
 3. **Contained.** It touches only what the issue is about. No shared contract or public API changed.
 4. **Easy to undo.** A plain revert undoes it fully. No data migration, no external side effects such as emails, webhooks or payments.
 5. **No taste or product calls.** Small calls inside a confident assumption are fine, such as which existing component to use.
 6. **No surprises.** No flaky tests, unrelated breakage, or spec that contradicts the code.
 
-Put the assumptions in the PR body under a heading `Assumptions I made`, one bullet each; the factory copies them to the Linear comment. When you report `pr`, pass `assessment`: `recommendation`, `interpretation`, `assumptions`, and for each of `interpretation`, `proven`, `contained`, `reversible`, `noTasteCalls` and `noSurprises` an `ok` and a one-line `note`. For a handover, add `reviewFocus`: what the owner should look at first. Be honest: the factory checks CI, Bugbot, size and protected paths itself, and a `merge` it cannot back up costs trust.
+Put the assumptions in the PR body under a heading `Assumptions I made`, one bullet each; the factory copies them to the Linear comment. When you report `pr`, pass `assessment`: `recommendation`, `interpretation`, `assumptions`, and for each of `interpretation`, `proven`, `contained`, `reversible`, `noTasteCalls` and `noSurprises` an `ok` and a one-line `note`. For a handover, add `reviewFocus`: what the owner should look at first. Be honest: the factory checks CI, Bugbot, size and protected paths itself, holds the head to the evidence `factory-verify` reported for it, and a `merge` it cannot back up costs trust.
 
 ## Changes to the bundled playbooks
 
@@ -81,4 +82,4 @@ Put the assumptions in the PR body under a heading `Assumptions I made`, one bul
 - **After** "Drop a section when it has nothing to say." start the body with a line that links the issue, as in `Linear: [FAC-2](<issue url>)`.
 - **Replace** "Opening a PR does not start a babysit." with: In a factory run, opening the PR starts a `drive` babysit of that one PR right away. The factory run is the standing request to get it green.
 - **Replace** "Run `drive` and `background` under `/loop` in dynamic mode." with: Run the watcher in the foreground and rerun it until it returns a verdict. Do not use `/loop` or scheduled wakeups: once the turn ends, nothing wakes this thread.
-- **After** "Babysitting never authorizes merging." when the watcher reports `READY`, or owner approval is the only blocker left, call `report_stage` with `stage: "pr"`, the `prUrl`, a summary of the CI and review state, and your merge assessment. Then end the turn. If CI or a bot finding still fails after three fix rounds, report `failed` with the PR URL in the summary.
+- **After** "Babysitting never authorizes merging." when the watcher reports `READY`, or owner approval is the only blocker left, run `factory-verify` on the pushed head, then call `report_stage` with `stage: "pr"`, the `prUrl`, a summary of the CI and review state, and your merge assessment. Then end the turn. If CI or a bot finding still fails after three fix rounds, report `failed` with the PR URL in the summary.

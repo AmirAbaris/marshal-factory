@@ -179,7 +179,8 @@ try {
   assert.deepEqual([run!.job_key, run!.branch, run!.repo, run!.stage], [CODEX, `factory/${CODEX}`, "factory-demo", "implementing"], "a tracked run for the attempt");
 
   const prUrl = `https://github.com/ski043/factory-demo/pull/${stamp}`;
-  assert.equal(await first.report({ stage: "pr", summary: "PR is up.", prUrl, assessment }), "Recorded stage pr.");
+  const prReply = await first.report({ stage: "pr", summary: "PR is up.", prUrl, assessment });
+  assert.match(prReply, /^Recorded stage pr\. Prove the pushed commit with `bun \/\S+\/hooks\/verify\.ts` \(factory-verify\)/, "pr and verifying name this checkout's factory-verify");
   job = await row(CODEX);
   assert.deepEqual([job.stage, job.pr_url, job.merge_assessment?.recommendation], ["pr", prUrl, "handover"], "the PR URL and the merge assessment land like Claude's");
   const runsOf = await db.select().from(runs).where(eq(runs.job_key, CODEX));
