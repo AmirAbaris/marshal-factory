@@ -1,10 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { and, eq, inArray, isNotNull, isNull, or, sql, type SQL } from "drizzle-orm";
 import { db } from "../db/client";
-import { auditLog, jobs, type JobRow } from "../db/schema";
+import { auditLog, jobs, repoSettings, type JobRow } from "../db/schema";
 import type { RepoName } from "../lib/github/app";
 import { HostGoneError, hosts, isHibernated, type HostedJob, type JobHost } from "../lib/host";
 import { deleteSnapshot, isModalGone, modal, modalHost, snapshotSandbox, terminateSandbox, tunnelUrl } from "../lib/modal-host";
+import { modalSecretName, parseDetail } from "../lib/onboarding";
 import { CODEX_AUTH, T3_PORT } from "../lib/sandbox";
 import { readSettings, resolveExecution } from "../lib/settings";
 import type { JobId } from "../lib/sources/shapes";
@@ -74,8 +75,20 @@ const uniqueViolation = (error: unknown): boolean =>
  * makes the lease atomic: a slot another job took in between fails the write and the next free one
  * is tried. Undefined when every slot is held or the row no longer matches.
  */
+/** Slots an onboarding agent run holds; see runner/onboarding.ts. */
+export async function onboardingSlots() {
+  const rows = await db
+    .select({ slot: sql<string>`${repoSettings.onboarding_detail}->'run'->>'slot'` })
+    .from(repoSettings)
+    .where(sql`${repoSettings.onboarding_detail}->'run'->>'slot' is not null`);
+  return rows.map((r) => r.slot);
+}
+
 export async function leaseSlot(where: SQL | undefined, slots: readonly string[]) {
-  const held = new Set((await db.select({ slot: jobs.codex_slot }).from(jobs).where(isNotNull(jobs.codex_slot))).map((r) => r.slot));
+  const held = new Set([
+    ...(await db.select({ slot: jobs.codex_slot }).from(jobs).where(isNotNull(jobs.codex_slot))).map((r) => r.slot),
+    ...(await onboardingSlots()),
+  ]);
   for (const slot of slots.filter((s) => !held.has(s))) {
     try {
       const leased = await db
@@ -277,7 +290,9 @@ export async function wakeJob(job: HostedJob): Promise<JobHost> {
   let sandboxId: string | undefined;
   try {
     const claudeToken = sandboxRuntime.claudeToken();
+    const [repoRow] = await db.select().from(repoSettings).where(eq(repoSettings.repo, row.repo));
     const created = await createJobSandbox({
+      namedSecrets: repoRow && (parseDetail(repoRow.onboarding_detail).secretsSet ?? []).length > 0 ? [modalSecretName(row.repo)] : [],
       key: row.key,
       attempt: row.attempt,
       label: config.factory.label,

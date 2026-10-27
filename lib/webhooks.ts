@@ -23,7 +23,7 @@ export function verifyGithub(rawBody: string, signature: string | null, secret: 
 }
 
 export type IntentDraft = {
-  kind: "claim" | "stop" | "answer" | "merged" | "recheck_conflicts" | "request_changes";
+  kind: "claim" | "stop" | "answer" | "merged" | "recheck_conflicts" | "request_changes" | "repo_push";
   /** Keys the intent instead of the delivery, so two deliveries about the same thing record it once. */
   key?: string;
   jobId?: JobId;
@@ -37,8 +37,22 @@ const githubPrSchema = z.object({
 });
 const githubPushSchema = z.object({
   ref: z.string(),
-  repository: z.object({ default_branch: z.string() }),
+  after: z.string().optional(),
+  repository: z.object({ default_branch: z.string(), full_name: z.string().optional() }),
+  commits: z.array(z.object({ added: z.array(z.string()).optional(), removed: z.array(z.string()).optional(), modified: z.array(z.string()).optional() })).optional(),
 });
+
+/** At most this many changed paths go in a push's intent; a push with more counts as touching everything. */
+export const PUSH_FILES_MAX = 2000;
+
+export const repoPushDetailSchema = z.object({
+  repo: z.string(),
+  after: z.string().optional(),
+  files: z.array(z.string()),
+  /** The push changed more files than the intent keeps. */
+  truncated: z.boolean().optional(),
+});
+export type RepoPushDetail = z.infer<typeof repoPushDetailSchema>;
 
 const githubReviewSchema = z.object({
   action: z.string(),
@@ -72,6 +86,21 @@ function reviewIntent(body: unknown): IntentDraft | null {
     ...(pull_request.head && { branch: pull_request.head.ref }),
   };
   return { kind: "request_changes", key: detail.id, prUrl: pull_request.html_url, detail: JSON.stringify(detail) };
+}
+
+/** A push to a default branch, with the paths it changed, so a runner can tell whether a warm image went stale. */
+export function githubPushIntent(event: string, body: unknown): IntentDraft | null {
+  if (event !== "push") return null;
+  const push = githubPushSchema.parse(body);
+  if (push.ref !== `refs/heads/${push.repository.default_branch}` || !push.repository.full_name) return null;
+  const files = [...new Set((push.commits ?? []).flatMap((c) => [...(c.added ?? []), ...(c.removed ?? []), ...(c.modified ?? [])]))];
+  const detail: RepoPushDetail = {
+    repo: push.repository.full_name,
+    ...(push.after && { after: push.after }),
+    files: files.slice(0, PUSH_FILES_MAX),
+    ...(files.length > PUSH_FILES_MAX && { truncated: true }),
+  };
+  return { kind: "repo_push", key: `repo-push:${push.repository.full_name}:${push.after ?? push.ref}`, detail: JSON.stringify(detail) };
 }
 
 /** What a GitHub delivery means: a merged PR, a person's review to forward, or a push to the default branch that may cause conflicts. */

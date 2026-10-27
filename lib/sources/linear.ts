@@ -460,6 +460,21 @@ const fileFromEnv = (draft: FileDraft) => {
   return linearFiler(key, process.env.FACTORY_TEAM_KEY ?? "FAC", process.env.FACTORY_LABEL ?? "factory")(draft);
 };
 
+/** Adds the label groups and children the team is missing, as the runner's label sync does, from the panel. */
+export function linearLabelSyncer(apiKey: string, teamKey: string, options?: LinearOptions) {
+  const client = linearClient(apiKey, options);
+  return async (groups: readonly LabelGroupSpec[]) => {
+    const { created, problems } = await syncLabelGroups(client, (await client.team(teamKey)).id, groups);
+    return { team: teamKey, created, problems };
+  };
+}
+
+export const syncLabelsFromEnv = (groups: readonly LabelGroupSpec[]) => {
+  const key = process.env.LINEAR_API_KEY;
+  if (!key) throw new Error("LINEAR_API_KEY is not set, so the panel cannot add Linear labels");
+  return linearLabelSyncer(key, process.env.FACTORY_TEAM_KEY ?? "FAC")(groups);
+};
+
 /**
  * Posts the owner's answer from the panel as a comment on the waiting issue. It is not recorded as
  * the factory's own, so the runner reads it as a reply like one typed in Linear. The id comes from

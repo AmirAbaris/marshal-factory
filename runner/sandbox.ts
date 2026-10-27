@@ -183,8 +183,34 @@ export type SandboxSetup = {
   slot: string;
   codexAuth: string;
   githubToken: string;
-  ingest: string;
+  /** The hooks' ingest config; null for an onboarding run, which reports to no job. */
+  ingest: string | null;
+  /** Set when the sandbox starts from the repo's warm image, which has the repo at REPO_DIR already. */
+  warm?: { setup: readonly string[] };
 };
+
+const WARM_SETUP_TIMEOUT_MS = 180_000;
+
+/**
+ * A warm image has the repo cloned at the commit it was built from: bring it to origin/main and run
+ * the recipe's setup again, which only adds what changed since. A setup that fails or runs long is
+ * logged and the launch goes on; the thread's own worktree installs what it needs.
+ */
+async function refreshWarmCheckout(host: JobHost, repo: string, setup: readonly string[]) {
+  await host.run("git", ["-C", REPO_DIR, "fetch", "--quiet", "origin", "--prune"], { timeoutMs: 120_000 });
+  await host.run("git", ["-C", REPO_DIR, "checkout", "--quiet", "-B", "main", "origin/main"], { timeoutMs: 60_000 });
+  const started = Date.now();
+  for (const command of setup) {
+    const left = WARM_SETUP_TIMEOUT_MS - (Date.now() - started);
+    if (left <= 0) break;
+    try {
+      await host.run("bash", ["-c", command], { cwd: REPO_DIR, timeoutMs: left });
+    } catch (error) {
+      sandboxRuntime.log("sandbox:warm-setup-failed", { repo, command, error: error instanceof Error ? error.message.split("\n")[0] : String(error) });
+      return;
+    }
+  }
+}
 
 /**
  * Every step before the thread: logins, T3 and Codex settings, the clone, the wiring, a serving T3.
@@ -204,9 +230,10 @@ export async function setupSandbox(host: JobHost, setup: SandboxSetup, codexMode
   }
   await host.writeFile(`${CODEX_HOME}/config.toml`, codexConfig(await host.readFile(`${CODEX_HOME}/config.toml`)));
   await host.writeFile(`${T3_USERDATA}/settings.json`, json(t3Settings(choice, hasClaude)));
-  await writeSecretFile(host, INGEST_CONFIG_PATH, setup.ingest);
+  if (setup.ingest !== null) await writeSecretFile(host, INGEST_CONFIG_PATH, setup.ingest);
   await writeGithubToken(host, setup.githubToken);
-  await host.run("git", ["clone", "--quiet", `https://github.com/${setup.repo}.git`, REPO_DIR], { timeoutMs: 300_000 });
+  if (setup.warm) await refreshWarmCheckout(host, setup.repo, setup.warm.setup);
+  else await host.run("git", ["clone", "--quiet", `https://github.com/${setup.repo}.git`, REPO_DIR], { timeoutMs: 300_000 });
   await wire(host);
   if (!(await pstackEnabled(host))) sandboxRuntime.log("sandbox:no-pstack", { repo: setup.repo, plugin: PSTACK_PLUGIN });
   await startT3(host);
@@ -282,7 +309,7 @@ export async function stopT3(host: JobHost) {
  * Creates the job's sandbox, from the image or from its hibernation snapshot; its id must be
  * recorded on the job before anything else runs in it.
  */
-export async function createJobSandbox({ key, attempt, label, machineId, imageId, limits, claudeToken }: {
+export async function createJobSandbox({ key, attempt, label, machineId, imageId, limits, claudeToken, namedSecrets = [] }: {
   key: string;
   attempt: number;
   label: string;
@@ -290,12 +317,15 @@ export async function createJobSandbox({ key, attempt, label, machineId, imageId
   imageId: string;
   limits: SandboxLimits;
   claudeToken: string | undefined;
+  /** The repo's Modal secret, when its recipe's env vars have values saved. */
+  namedSecrets?: string[];
 }) {
   const sandbox = await modal.api.create({
     name: sandboxName(key, attempt),
     tags: { job: key, attempt: String(attempt), label, machine: machineId },
     imageId,
     secrets: sandboxSecrets(claudeToken),
+    namedSecrets,
     // Claude Code refuses full access as root unless told it is in a sandbox.
     env: { IS_SANDBOX: "1" },
     encryptedPorts: [T3_PORT],

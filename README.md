@@ -197,12 +197,13 @@ An issue picks its repo with a child of the **Repository** label group in Linear
 
 Per repo, a default harness and place apply when the ticket has no Harness or Runs on label: the ticket's label beats the repo default, which beats Settings. A local run needs the runner's checkout of the repo; without one the job runs in a Modal sandbox when Modal is ready, and otherwise stays queued.
 
-Until onboarding from the panel exists, add a repo by hand:
+To add a repo, click **Add repository** on the Repositories page and pick one of the repos the GitHub App can reach. **Grant access to more repositories** opens the App's installation settings when the one you want is missing. The factory then onboards it without you:
 
-1. Give the GitHub App access to it: GitHub → Settings → Applications → your factory app → **Configure**, then add the repo.
-2. For local runs, clone it on the runner's Mac and run `bun scripts/install-target.ts <path>` ([Add your repo](#add-your-repo)), then restart the runner. It registers the checkout at startup. A Modal-only repo needs no checkout, but its `main` still needs the playbook and hooks that `install-target.ts` writes.
-3. For a repo without a checkout, add its registry row in the Neon SQL editor: `insert into repo_settings (repo, updated_at, updated_by) values ('owner/name', now(), 'you');`
-4. Run `bun scripts/sync-linear-labels.ts` to create its Repository label. Run it again after renaming a repo.
+1. If the repo's `main` has a `.factory/setup.json`, the factory uses it. Otherwise an agent reads the repo in a Modal sandbox, writes that setup recipe, runs the setup and every check until they pass, and opens a pull request titled **Add the factory setup recipe**. Merge it when it looks right.
+2. If the recipe names secrets the checks need, the repo shows **Needs input** with each name and what it is for. Paste the values in the repo's detail pane, or, when the panel has no Modal token, run the command it shows on the runner Mac (`bun scripts/repo-secret.ts owner/name NAME`), which asks for the value without echoing it. Values go straight to a Modal secret for that repo and are never stored by the factory.
+3. The factory builds a warm sandbox image with the repo cloned and set up, and the repo turns **Ready**. Its Modal jobs start from that image, and a push to `main` that changes the recipe or a lockfile rebuilds it in the background.
+
+The new repo also gets its child in the **Repository** label group. A repo you also want to run locally still needs `bun scripts/install-target.ts` on the runner Mac ([Add your repo](#add-your-repo)). [docs/operations.md](docs/operations.md#onboarding-a-repository) has the details.
 
 The Jobs page and the Inbox have a repository filter in the header. It is kept in `?repo=owner/name` and remembered for the next visit. Cards and rows show their repo once more than one repo has jobs.
 
