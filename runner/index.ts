@@ -24,7 +24,9 @@ const { everyAtMost, serialQueue } = await import("./queue");
 const { isolated, reconcile } = await import("./reconcile");
 const { stopDeliverable } = await import("./binding");
 const { inferUntracked } = await import("./untracked");
-const { decideMerges } = await import("./merge-decision");
+const { approveMerge, decideMerges } = await import("./merge-decision");
+const { closeJob, requestChanges } = await import("./inbox");
+const { approveDetailSchema, closeDetailSchema, feedbackDetailSchema } = await import("../lib/inbox");
 const { watchMerges } = await import("./post-merge");
 const { syncLinearLabels } = await import("./overrides");
 type IntentRow = typeof intents.$inferSelect;
@@ -69,6 +71,12 @@ async function handle(intent: IntentRow) {
       return { recheck: recheck.request() };
     case "open_t3":
       return openT3(intent.job_id!);
+    case "approve_merge":
+      return { approval: await approveMerge(intent.job_id!, approveDetailSchema.parse(JSON.parse(intent.detail ?? "null"))), synced: await ops.writeBack() };
+    case "request_changes":
+      return { changes: await requestChanges(intent.job_id, feedbackDetailSchema.parse(JSON.parse(intent.detail ?? "null"))) };
+    case "close_job":
+      return { close: await closeJob(intent.job_id!, closeDetailSchema.parse(JSON.parse(intent.detail ?? "null"))), synced: await ops.writeBack() };
     default: {
       const unhandled: never = intent.kind;
       throw new Error(`no handler for intent ${String(unhandled)}`);
