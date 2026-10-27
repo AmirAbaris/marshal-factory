@@ -8,6 +8,7 @@ import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "@/components/u
 import { Spinner } from "@/components/ui/spinner";
 import type { AgentRow, MachineRow } from "@/db/schema";
 import { STAGES, type Stage } from "@/lib/events";
+import { stopLine } from "@/lib/stop";
 import { cn } from "@/lib/utils";
 import { harnessLine, showsDecision, whereLine, type BoardCard } from "./cards";
 import { formatUsd, spendOf } from "./format";
@@ -40,7 +41,11 @@ function Row({
 }) {
   const href = openHref(card);
   const cost = spendOf(card.attemptRuns, agentsBySession);
-  const decision = showsDecision(card) ? decisionLine(card.mergeDecision) : null;
+  const decision = card.stop
+    ? { text: stopLine(card.stop.view), tone: card.stop.view.kind === "unconfirmed" ? "text-destructive" : card.stop.view.kind === "stopping" ? "text-warning" : undefined }
+    : showsDecision(card)
+      ? decisionLine(card.mergeDecision)
+      : null;
   const where = card.runsOn && (card.runsOn.kind === "modal" && card.runsOn.sandbox ? `Modal sandbox · ${card.runsOn.sandbox}` : whereLine(card.runsOn, machineName));
   const className = cn(
     "relative flex h-9 w-full items-center gap-3 px-4 text-left outline-none transition-colors duration-150 hover:bg-accent/60 focus-visible:bg-accent @3xl:px-5",

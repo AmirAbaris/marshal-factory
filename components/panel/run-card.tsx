@@ -1,3 +1,4 @@
+import { ExternalLinkIcon } from "lucide-react";
 import Link from "next/link";
 import { Badge } from "@/components/ui/badge";
 import { Spinner } from "@/components/ui/spinner";
@@ -5,6 +6,7 @@ import type { AgentRow, RunRow } from "@/db/schema";
 import type { SandboxState } from "@/lib/execution";
 import type { Tracking } from "@/lib/harness";
 import type { MergeDecision } from "@/lib/merge-decision";
+import { stopLine, type StopView } from "@/lib/stop";
 import { cn } from "@/lib/utils";
 import { harnessLine, showsDecision, whereLine, type BoardCard } from "./cards";
 import { formatUsd, runCost, runTitle, shortId } from "./format";
@@ -93,6 +95,28 @@ function MergeLine({ decision }: { decision: MergeDecision | null }) {
   );
 }
 
+const STOP_TONE: Record<StopView["kind"], string> = {
+  stopping: "text-warning",
+  confirmed: "text-muted-foreground",
+  unconfirmed: "text-destructive",
+};
+
+/** Where the job's stop is; an unconfirmed one links to its thread in T3 when the card knows the link. */
+export function StopLine({ view, t3Href }: { view: StopView; t3Href?: string }) {
+  return (
+    <p className={cn("flex flex-wrap items-center gap-x-1.5 text-xs", STOP_TONE[view.kind])} title={view.kind === "stopping" ? undefined : view.kind === "confirmed" ? view.evidence : view.reason}>
+      {view.kind === "stopping" && <Spinner className="size-2.5" />}
+      {stopLine(view)}
+      {view.kind === "unconfirmed" && t3Href && (
+        <a href={t3Href} className="relative inline-flex items-center gap-0.5 underline underline-offset-2">
+          Open in T3
+          <ExternalLinkIcon className="size-3" />
+        </a>
+      )}
+    </p>
+  );
+}
+
 const prLabel = (url: string) => {
   const number = url.match(/\/pull\/(\d+)/)?.[1];
   return number ? `PR #${number}` : "PR";
@@ -104,6 +128,7 @@ export function StageCard({
   selected,
   machineName,
   repoLabel,
+  t3Href,
 }: {
   card: BoardCard;
   agents: readonly AgentRow[];
@@ -111,6 +136,8 @@ export function StageCard({
   machineName: string | null;
   /** Shown only while more than one repo has jobs. */
   repoLabel?: string;
+  /** The job's thread in its machine's T3, for a stop that couldn't be confirmed. */
+  t3Href?: string;
 }) {
   const { latest } = card;
   return (
@@ -142,6 +169,7 @@ export function StageCard({
       </div>
       <div className="line-clamp-2 font-medium leading-snug">{card.title}</div>
       {showsDecision(card) && <MergeLine decision={card.mergeDecision} />}
+      {card.stop && <StopLine view={card.stop.view} t3Href={t3Href} />}
       {card.nudgedAt && (
         <p className="text-xs text-warning">
           Stuck · nudged <Time date={card.nudgedAt} />

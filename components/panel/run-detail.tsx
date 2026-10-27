@@ -12,6 +12,7 @@ import { sandboxState } from "@/lib/execution";
 import { harnessLabel, type Harness } from "@/lib/harness";
 import { parseInventory, t3ThreadLink, UNKNOWN } from "@/lib/machine";
 import { sourceLink } from "@/lib/sources/shapes";
+import { parseStop, stopLine, stopView } from "@/lib/stop";
 import { RUNS_ON_LABELS, ticketRecordSchema } from "@/lib/ticket-overrides";
 import { runsOn } from "./cards";
 import { AgentTree } from "./agent-tree";
@@ -60,6 +61,47 @@ function TicketOverrides({ job, harnesses }: { job: JobRow; harnesses: readonly 
   );
 }
 
+const STOP_BOX = {
+  stopping: { box: "border-warning/40 bg-warning/10", title: "text-warning" },
+  confirmed: { box: "border-border bg-muted/40", title: "text-foreground" },
+  unconfirmed: { box: "border-destructive/40 bg-destructive/10", title: "text-destructive" },
+} as const;
+
+/** Where the job's stop is: what the runner last did, why it counts as stopped, or why it could not tell. */
+function StopBanner({ job, t3Href }: { job: JobRow; t3Href: string | null }) {
+  const sandboxed = runsOn(job)?.kind === "modal";
+  const view = stopView(job.stop, sandboxed);
+  const stop = parseStop(job.stop);
+  if (!view || !stop) return null;
+  const detail = view.kind === "stopping" ? stop.step : view.kind === "confirmed" ? view.evidence : view.reason;
+  return (
+    <div className={cn("mx-4.5 mb-3.5 flex flex-col gap-1 rounded-lg border px-3 py-2.5 text-xs", STOP_BOX[view.kind].box)}>
+      <div className={cn("font-semibold", STOP_BOX[view.kind].title)}>{stopLine(view)}</div>
+      {detail && <p className="text-muted-foreground">{detail}</p>}
+      <p className="text-muted-foreground">
+        Stop asked by {stop.by} <Time date={new Date(stop.requestedAt)} />
+        {stop.retries > 0 && ` · retried ${stop.retries}×`}
+        {view.kind === "stopping" && " · the job keeps its slot until the stop is confirmed"}
+      </p>
+      {view.kind === "unconfirmed" && (
+        <div className="mt-1 flex flex-wrap items-center gap-2">
+          {sandboxed ? (
+            <OpenSandboxT3 jobId={job.id} />
+          ) : (
+            t3Href && (
+              <Button render={<a href={t3Href} />} variant="outline" size="sm">
+                Open in T3
+                <ExternalLinkIcon data-icon="inline-end" />
+              </Button>
+            )
+          )}
+          <span className="text-muted-foreground">Retry stop or dismiss it in the inbox once the thread has stopped.</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function RunDetail({
   run,
   agents,
@@ -97,6 +139,7 @@ export function RunDetail({
   const environmentId = t3 && t3 !== UNKNOWN ? t3.environmentId : null;
   const sandboxed = job ? sandboxState(job) !== null : false;
   const where = job && runsOn(job);
+  const stopThread = job && (parseStop(job.stop)?.thread ?? job.t3_thread_id);
 
   return (
     <aside className="flex min-h-0 flex-col border-l bg-card">
@@ -166,6 +209,7 @@ export function RunDetail({
           </div>
           {job && <TicketOverrides job={job} harnesses={harnesses} />}
         </div>
+        {job && <StopBanner job={job} t3Href={stopThread ? t3ThreadLink(stopThread, environmentId) : null} />}
         {job?.nudged_at && job.nudged_stage === job.stage && (
           <div className="mx-4.5 mb-3.5 rounded-lg border border-warning/40 bg-warning/10 px-3 py-2.5 text-xs">
             <span className="font-semibold text-warning">Stuck</span> · the

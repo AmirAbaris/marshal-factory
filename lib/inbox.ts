@@ -1,16 +1,18 @@
 import { z } from "zod";
 import type { JobRow } from "../db/schema";
 import { MERGE_VIAS, mergeDecisionSchema, type MergeDecision } from "./merge-decision";
+import { parseStop, stopLine, stopNeedsOwner, stopView } from "./stop";
 
 // The "Needs you" inbox: every job waiting on the owner, in one list. Pure, so the panel, its
 // nav badge, the runner and the regressions share the rules.
 //   question       the job is waiting on an answer
 //   revert_failed  the factory merged it, main went red, and its revert failed
 //   handover       its PR is ready for review: the runner handed it over, autonomy is off, or trial would merge
-//   failed         the job failed and the owner has not dismissed it
+//   failed         the job failed and the owner has not dismissed it; while its stop is on its way the reason says so
+//   stop_unconfirmed  the job was stopped but the runner could not confirm its work ended (lib/stop.ts)
 // The panel's actions become intents the job's runner carries out; their detail shapes live here.
 
-export const INBOX_KINDS = ["question", "revert_failed", "handover", "failed"] as const;
+export const INBOX_KINDS = ["question", "revert_failed", "stop_unconfirmed", "handover", "failed"] as const;
 export type InboxKind = (typeof INBOX_KINDS)[number];
 
 export const INBOX_LABELS: Record<InboxKind, string> = {
@@ -18,12 +20,13 @@ export const INBOX_LABELS: Record<InboxKind, string> = {
   revert_failed: "Revert failed",
   handover: "Ready for your review",
   failed: "Failed",
+  stop_unconfirmed: "Stop not confirmed",
 };
 
-/** Questions and failed reverts block work or main, so they come first; failures last. */
-const RANK: Record<InboxKind, number> = { question: 0, revert_failed: 0, handover: 1, failed: 2 };
+/** Questions, failed reverts and agents that may still run block work or main, so they come first; failures last. */
+const RANK: Record<InboxKind, number> = { question: 0, revert_failed: 0, stop_unconfirmed: 0, handover: 1, failed: 2 };
 
-export type InboxJob = Pick<JobRow, "key" | "stage" | "stage_at" | "updated_at" | "pr_url" | "merge_decision" | "dismissed_at">;
+export type InboxJob = Pick<JobRow, "key" | "stage" | "stage_at" | "updated_at" | "pr_url" | "merge_decision" | "dismissed_at" | "stop" | "execution">;
 
 export type InboxItem<J extends InboxJob = InboxJob> = { kind: InboxKind; job: J; decision: MergeDecision | null; at: Date };
 
@@ -53,6 +56,7 @@ function handedOver(decision: MergeDecision | null) {
 }
 
 export function inboxKind(job: InboxJob, decision = parseDecision(job.merge_decision)): InboxKind | null {
+  if (stopNeedsOwner(job.stop, job.dismissed_at)) return "stop_unconfirmed";
   switch (job.stage) {
     case "waiting":
       return "question";
@@ -81,7 +85,8 @@ export function inboxItems<J extends InboxJob>(jobs: readonly J[]): InboxItem<J>
   for (const job of jobs) {
     const decision = parseDecision(job.merge_decision);
     const kind = inboxKind(job, decision);
-    if (kind) items.push({ kind, job, decision, at: job.stage_at ?? job.updated_at });
+    const settled = kind === "stop_unconfirmed" ? parseStop(job.stop)?.settledAt : null;
+    if (kind) items.push({ kind, job, decision, at: settled ? new Date(settled) : (job.stage_at ?? job.updated_at) });
   }
   return items.sort((a, b) => RANK[a.kind] - RANK[b.kind] || b.at.getTime() - a.at.getTime() || a.job.key.localeCompare(b.job.key));
 }
@@ -97,8 +102,15 @@ export function inboxReason(item: InboxItem<InboxJob & Pick<JobRow, "question" |
     case "handover":
       if (decision?.outcome === "merge" && decision.autonomy === "trial") return "Would merge (trial)";
       return decision?.reasons[0] ?? "Ready for your review";
-    case "failed":
-      return job.stage_summary ?? "The job failed.";
+    case "failed": {
+      const stop = stopView(job.stop, job.execution === "modal");
+      const summary = job.stage_summary ?? "The job failed.";
+      return stop?.kind === "stopping" ? `${stopLine(stop)} · ${summary}` : summary;
+    }
+    case "stop_unconfirmed": {
+      const stop = stopView(job.stop, job.execution === "modal");
+      return stop?.kind === "unconfirmed" ? stop.reason : "The runner could not confirm that the work stopped.";
+    }
     default: {
       const never: never = kind;
       throw new Error(`unknown inbox kind ${String(never)}`);
@@ -112,8 +124,9 @@ export const INBOX_ACTIONS = {
   revert_failed: ["follow_up", "dismiss"],
   handover: ["approve", "request_changes", "close"],
   failed: ["close", "dismiss"],
+  stop_unconfirmed: ["retry_stop", "dismiss"],
 } as const satisfies Record<InboxKind, readonly InboxAction[]>;
-export type InboxAction = "answer" | "approve" | "request_changes" | "follow_up" | "close" | "dismiss";
+export type InboxAction = "answer" | "approve" | "request_changes" | "follow_up" | "close" | "dismiss" | "retry_stop";
 
 export const allows = (kind: InboxKind | null, action: InboxAction) =>
   kind !== null && (INBOX_ACTIONS[kind] as readonly InboxAction[]).includes(action);

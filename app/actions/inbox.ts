@@ -11,6 +11,7 @@ import {
   fileFollowUp as followUp,
   intentOutcome as outcome,
   requestChanges as changes,
+  retryStop as retry,
   type InboxDeps,
 } from "@/lib/inbox-actions";
 import { newJobDeps } from "@/lib/new-job-deps";
@@ -50,6 +51,10 @@ export async function answerQuestion(jobId: JobId, requestId: string, body: stri
 
 export async function closeJob(jobId: JobId, requestId: string, reason: string) {
   return close(deps, jobId, requestId, reason);
+}
+
+export async function retryStop(jobId: JobId, requestId: string) {
+  return retry(deps, jobId, requestId);
 }
 
 export async function dismissJob(jobId: JobId) {

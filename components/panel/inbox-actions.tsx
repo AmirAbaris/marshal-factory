@@ -1,8 +1,8 @@
 "use client";
 
-import { FilePlusIcon, GitMergeIcon, MessageSquareReplyIcon, SendIcon, XIcon } from "lucide-react";
+import { FilePlusIcon, GitMergeIcon, MessageSquareReplyIcon, OctagonXIcon, SendIcon, XIcon } from "lucide-react";
 import { type ReactNode, useEffect, useRef, useState } from "react";
-import { answerQuestion, approveMerge, closeJob, dismissJob, fileFollowUp, inboxIntentOutcome, requestChanges } from "@/app/actions/inbox";
+import { answerQuestion, approveMerge, closeJob, dismissJob, fileFollowUp, inboxIntentOutcome, requestChanges, retryStop } from "@/app/actions/inbox";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import {
   AlertDialog,
@@ -280,6 +280,12 @@ export function InboxActions({
       )}
       {has("close") && (
         <CloseButton job={job} kind={kind} disabled={disabled} loading={loading("close")} onClose={(reason) => void run("close", () => closeJob(job.id, requestId(), reason), "Closed.")} />
+      )}
+      {has("retry_stop") && (
+        <Button size="sm" variant="outline" disabled={disabled} loading={loading("retry_stop")} onClick={() => void run("retry_stop", () => retryStop(job.id, requestId()), "Interrupting again.")}>
+          <OctagonXIcon data-icon="inline-start" />
+          Retry stop
+        </Button>
       )}
       {has("dismiss") && (
         <Button size="sm" variant="ghost" disabled={disabled} loading={loading("dismiss")} onClick={() => void run("dismiss", () => dismissJob(job.id), "Dismissed from the inbox.")}>

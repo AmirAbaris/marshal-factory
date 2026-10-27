@@ -299,7 +299,7 @@ try {
   assert.equal((await intentRows(HAND)).length, 0, "a non-owner records nothing");
   assert.deepEqual(await inbox.approveMerge(deps(), handId, "not-a-uuid", "h1"), { ok: false, message: "The request is not valid." });
   assert.deepEqual(await inbox.requestChanges(deps(), handId, id1, "   "), { ok: false, message: "Write what should change." });
-  assert.deepEqual(await inbox.dismissJob(deps(), handId), { ok: false, message: "Only a failed job can be dismissed." }, "a handover is not dismissed");
+  assert.deepEqual(await inbox.dismissJob(deps(), handId), { ok: false, message: "Only a failed job or a stop that couldn't be confirmed can be dismissed." }, "a handover is not dismissed");
   assert.deepEqual(await inbox.answerQuestion(deps(), handId, id1, "yes"), { ok: false, message: "The job is no longer waiting on an answer." });
 
   const approval = await inbox.approveMerge(deps(), handId, id1, "h1");
@@ -532,7 +532,7 @@ try {
   assert.deepEqual(await inbox.dismissJob(deps(), failedId), { ok: true, intentId: null });
   const dismissed = await row(FAILED);
   assert.deepEqual([dismissed.stage, inboxKind(dismissed)], ["failed", null], "dismiss only hides it");
-  assert.deepEqual(await inbox.dismissJob(deps(), failedId), { ok: false, message: "Only a failed job can be dismissed." });
+  assert.deepEqual(await inbox.dismissJob(deps(), failedId), { ok: false, message: "Only a failed job or a stop that couldn't be confirmed can be dismissed." });
 
   // --- a failed revert: a follow-up job, filed like the panel's New job, with the original's overrides
   const revertDecision = decision({ merged, watch: { ...watch("revert_failed"), revertPr: "https://github.com/o/r/pull/90" } });
