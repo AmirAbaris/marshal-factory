@@ -1,6 +1,7 @@
 import "./test-guard";
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { eq, inArray, like, sql } from "drizzle-orm";
@@ -63,6 +64,32 @@ assert.deepEqual(recipes.parseCheckResults("test\t0\nlint\t1\nbogus\t0\n", recip
   { name: "test", command: "bun test", ok: true },
   { name: "lint", command: "bun run lint", ok: false, note: "exited 1" },
 ]);
+// A Python pin installs that version and fails the build when python3 is still another one. Fakes stand in for every installer.
+const pyBin = mkdtempSync(join(tmpdir(), "onb-python-"));
+const fakeTool = (name: string, body: string) => writeFileSync(join(pyBin, name), `#!/bin/bash\n${body}\n`, { mode: 0o755 });
+fakeTool("python3", `cat ${pyBin}/version`);
+fakeTool("uv", `echo "uv $*" >> ${pyBin}/calls; if [ "$1 $2" = "python find" ]; then echo /opt/uv-python/cpython/bin/python3; fi`);
+fakeTool("apt-get", `echo "apt-get $*" >> ${pyBin}/calls`);
+fakeTool("ln", `echo "ln $*" >> ${pyBin}/calls`);
+const buildWithPython = (installed: string) => {
+  writeFileSync(join(pyBin, "version"), `Python ${installed}\n`);
+  writeFileSync(join(pyBin, "calls"), "");
+  const result = spawnSync("bash", ["-c", buildScript({ runtimes: { python: "3.12" }, setup: ["true"], checks: {} }, pyBin, { checks: false })], {
+    env: { ...process.env, PATH: `${pyBin}:/usr/bin:/bin` },
+    encoding: "utf8",
+  });
+  return { code: result.status, calls: readFileSync(join(pyBin, "calls"), "utf8"), out: result.stdout };
+};
+const pinned = buildWithPython("3.12.4");
+assert.deepEqual([pinned.code, pinned.calls], [0, ""], "the pinned Python already there installs nothing");
+const stale = buildWithPython("3.11.2");
+assert.match(stale.calls, /^uv python install 3\.12$/m, "another Python installs the pin with uv");
+assert.match(stale.calls, /^ln -sf \/opt\/uv-python\/cpython\/bin\/python3 \/usr\/local\/bin\/python3$/m, "and puts it first on PATH");
+assert.doesNotMatch(stale.calls, /apt-get/, "not Debian's python3");
+assert.equal(stale.code, 13, "a build whose python3 is still not the pin fails");
+assert.match(stale.out, /python3 is Python 3\.11\.2, not the pinned 3\.12/);
+assert.equal(buildWithPython("3.120.1").code, 13, "3.120 is not 3.12");
+assert.equal(recipes.BUILD_EXIT[13], "installing the pinned Python failed");
 const leaky = "DATABASE_URL=postgres://u:hunter2@h/db\nAuthorization: Bearer abcdefghijklmnop\nghp_abcdefghijklmnopqrstuvwxyz0123\nok line";
 const redacted = recipes.redact(leaky, ["DATABASE_URL"]);
 assert.ok(!/hunter2|abcdefghijklmnop|ghp_/.test(redacted), redacted);
