@@ -8,7 +8,7 @@ import { ingestBodySchema } from "../../lib/events";
 import { ingest } from "../../lib/ingest";
 import { isJobSource, sourceFor } from "../../lib/sources";
 import type { JobSource } from "../../lib/sources/types";
-import { githubIntent, verifyGithub, type IntentDraft } from "../../lib/webhooks";
+import { githubIntent, githubPushIntent, verifyGithub, type IntentDraft } from "../../lib/webhooks";
 
 const pool = new Pool({ connectionString: process.env.DATABASE_URL, max: 5 });
 attachDatabasePool(pool);
@@ -21,10 +21,11 @@ function authorized(request: Request) {
 }
 
 /**
- * Stores the delivery and the intent it implies in one transaction. A delivery id seen before
+ * Stores the delivery and the intents it implies in one transaction. A delivery id seen before
  * stores nothing, so a redelivery or replay has no effect.
  */
-async function record(source: string, deliveryId: string, event: string, payload: unknown, intent: IntentDraft | null) {
+async function record(source: string, deliveryId: string, event: string, payload: unknown, drafts: IntentDraft | null | readonly (IntentDraft | null)[]) {
+  const all = (Array.isArray(drafts) ? drafts : [drafts]).filter((d): d is IntentDraft => d !== null);
   return db.transaction(async (tx) => {
     const now = new Date();
     const fresh = await tx
@@ -33,7 +34,7 @@ async function record(source: string, deliveryId: string, event: string, payload
       .onConflictDoNothing()
       .returning({ id: schema.webhookDeliveries.delivery_id });
     if (fresh.length === 0) return { duplicate: true, intent: null };
-    if (intent) {
+    for (const intent of all) {
       const [byPr] = intent.prUrl && !intent.jobId
         ? await tx.select({ id: schema.jobs.id }).from(schema.jobs).where(eq(schema.jobs.pr_url, intent.prUrl))
         : [];
@@ -46,7 +47,7 @@ async function record(source: string, deliveryId: string, event: string, payload
         created_at: now,
       }).onConflictDoNothing();
     }
-    return { duplicate: false, intent: intent?.kind ?? null };
+    return { duplicate: false, intent: all.map((i) => i.kind).join(",") || null };
   });
 }
 
@@ -74,7 +75,7 @@ async function githubWebhook(request: Request) {
   const event = request.headers.get("x-github-event") ?? "?";
   if (!deliveryId) return Response.json({ error: "missing X-GitHub-Delivery" }, { status: 400 });
   const body = JSON.parse(raw) as unknown;
-  return Response.json(await record("github", deliveryId, event, body, githubIntent(event, body)));
+  return Response.json(await record("github", deliveryId, event, body, [githubIntent(event, body), githubPushIntent(event, body)]));
 }
 
 async function ingestEvents(request: Request) {

@@ -17,6 +17,7 @@ import { STAGES } from "../lib/events";
 import type { MergeAssessment } from "../lib/assessment";
 import { DEFAULT_EXECUTION, type Execution } from "../lib/execution";
 import type { Autonomy, MergeDecision } from "../lib/merge-decision";
+import { ONBOARDING_STATES, type OnboardingDetail } from "../lib/onboarding";
 import { JOB_SOURCES, type JobId } from "../lib/sources/shapes";
 import type { TicketRecord } from "../lib/ticket-overrides";
 
@@ -200,6 +201,9 @@ export const intentKind = pgEnum("intent_kind", [
   "approve_merge",
   "request_changes",
   "close_job",
+  "onboard_repo",
+  "rebuild_repo_image",
+  "repo_push",
 ]);
 
 /**
@@ -208,6 +212,8 @@ export const intentKind = pgEnum("intent_kind", [
  * The panel records open_t3 itself; its result holds a one-time T3 pairing link until the panel
  * shows it or it expires. The inbox records approve_merge, request_changes and close_job; a
  * human's GitHub review records request_changes too. Their detail is JSON; see lib/inbox.ts.
+ * The Repositories page records onboard_repo and rebuild_repo_image with the repo as detail; a push
+ * to a default branch records repo_push with the repo and the changed files (lib/webhooks.ts).
  */
 export const intents = pgTable(
   "intents",
@@ -265,6 +271,8 @@ export const settings = pgTable("settings", {
   updated_by: text("updated_by").notNull(),
 });
 
+export const onboardingState = pgEnum("onboarding_state", ONBOARDING_STATES);
+
 /**
  * The repositories the factory works in, and per repo its merge policy and launch defaults; see
  * lib/repositories.ts. A repo with no row merges nothing and runs on Settings.
@@ -289,6 +297,13 @@ export const repoSettings = pgTable(
     protected_paths: jsonb("protected_paths").$type<string[]>(),
     /** Most additions plus deletions a PR may have to merge on its own; null means the default. */
     max_changed_lines: integer("max_changed_lines"),
+    /** Where onboarding stands (lib/onboarding.ts); null for a repo registered before onboarding existed. */
+    onboarding_state: onboardingState("onboarding_state"),
+    /** The recipe, its PR, check results, secret names (never values), the warm image and any run in flight. */
+    onboarding_detail: jsonb("onboarding_detail").$type<OnboardingDetail>(),
+    onboarding_started_at: ts("onboarding_started_at"),
+    /** When onboarding_state last changed. */
+    onboarding_at: ts("onboarding_at"),
     updated_at: ts("updated_at").notNull(),
     updated_by: text("updated_by").notNull(),
   },

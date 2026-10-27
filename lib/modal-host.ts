@@ -30,6 +30,8 @@ export type SandboxSpec = {
   imageId: string;
   /** Injected as environment variables through a Modal secret, so they never show in the sandbox's spec. */
   secrets: Record<string, string>;
+  /** Named Modal secrets to attach as well, such as a repo's mf-repo-* secret; their values never pass through the runner. */
+  namedSecrets?: string[];
   env: Record<string, string>;
   /** Ports Modal exposes through a TLS tunnel; anything listening there is reachable from the internet. */
   encryptedPorts: number[];
@@ -51,7 +53,7 @@ const modalClient = () => {
 };
 
 export const realModal: ModalApi = {
-  async create({ name, tags, imageId, secrets, env, encryptedPorts, limits }) {
+  async create({ name, tags, imageId, secrets, namedSecrets = [], env, encryptedPorts, limits }) {
     const modal = modalClient();
     const app = await modal.apps.fromName(limits.appName, { createIfMissing: true });
     const image = await modal.images.fromId(imageId);
@@ -65,7 +67,10 @@ export const realModal: ModalApi = {
       timeoutMs: limits.timeoutMs,
       runtime: "gvisor",
       command: ["sleep", "infinity"],
-      secrets: Object.keys(secrets).length > 0 ? [await modal.secrets.fromObject(secrets)] : [],
+      secrets: [
+        ...(Object.keys(secrets).length > 0 ? [await modal.secrets.fromObject(secrets)] : []),
+        ...(await Promise.all(namedSecrets.map((secret) => modal.secrets.fromName(secret)))),
+      ],
       env,
       encryptedPorts,
     });

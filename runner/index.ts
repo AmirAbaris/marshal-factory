@@ -29,6 +29,8 @@ const { closeJob, forwardReview, requestChanges } = await import("./inbox");
 const { approveDetailSchema, closeDetailSchema, feedbackDetailSchema } = await import("../lib/inbox");
 const { watchMerges } = await import("./post-merge");
 const { syncLinearLabels } = await import("./overrides");
+const { advanceOnboarding, onboardRepo, repoPushed, requestRebuild } = await import("./onboarding");
+const { repoPushDetailSchema } = await import("../lib/webhooks");
 type IntentRow = typeof intents.$inferSelect;
 
 const machine = await thisMachine();
@@ -82,6 +84,12 @@ async function handle(intent: IntentRow) {
     }
     case "close_job":
       return { close: await closeJob(intent.job_id!, closeDetailSchema.parse(JSON.parse(intent.detail ?? "null"))), synced: await ops.writeBack() };
+    case "onboard_repo":
+      return { onboarding: await onboardRepo(intent.detail!) };
+    case "rebuild_repo_image":
+      return { rebuild: await requestRebuild(intent.detail!, "the owner asked for a rebuild") };
+    case "repo_push":
+      return { push: await repoPushed(repoPushDetailSchema.parse(JSON.parse(intent.detail ?? "null"))) };
     default: {
       const unhandled: never = intent.kind;
       throw new Error(`no handler for intent ${String(unhandled)}`);
@@ -282,6 +290,8 @@ setInterval(() => {
     const labels = await labelSync?.();
     return { ...result, ...(cleaned !== undefined && { cleaned }), ...(labels !== undefined && { labels }) };
   });
+  // Its own step, so a snapshot that takes minutes never pushes the tick past its timeout.
+  void serial("onboarding", advanceOnboarding);
   // Intents the subscription may not have delivered.
   void openIntents().then(takeIntents);
 }, ops.config.factory.tickSeconds * 1000);

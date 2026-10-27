@@ -3,13 +3,16 @@ import type { ExecError } from "../lib/exec";
 import type { RepoName } from "../lib/github/app";
 import { HostGoneError, hosts, localHost, type JobHost } from "../lib/host";
 import { terminateSandbox } from "../lib/modal-host";
-import { imageProblem, REPO_DIR } from "../lib/sandbox";
+import { builtVersions, imageProblem, REPO_DIR } from "../lib/sandbox";
+import { modalSecretName, parseDetail, repoImage } from "../lib/onboarding";
+import { RECIPE_PATH } from "../lib/recipe";
 import { PENDING } from "./binding";
 import { thisMachine } from "./heartbeat";
 import type { JobSource } from "../lib/sources/types";
 import type { Execution } from "../lib/execution";
 import type { HarnessChoice } from "../lib/settings";
-import { routeRepo, withRepoDefaults } from "../lib/repositories";
+import type { RepoSettingsRow } from "../db/schema";
+import { routeRepo, withRepoDefaults, type Registry } from "../lib/repositories";
 import { ticketLabels, type TicketRecord } from "../lib/ticket-overrides";
 import {
   bindThread,
@@ -253,7 +256,10 @@ export async function launchQueued(onWorktree: (check: Record<string, unknown>) 
     const labels = ticketLabels(job.source_state);
     const { defaults, problems } = withRepoDefaults(settings, registry.find((r) => r.repo === job.repo), harnesses);
     if (problems.length > 0 && !repoDefaults.some((d) => d.repo === job.repo)) repoDefaults.push({ repo: job.repo, problems });
-    const plan = planLaunch(labels, defaults, harnesses, { ...can, checkout: checkouts.has(job.repo) });
+    const row = registry.find((r) => r.repo === job.repo);
+    const image = repoImage(row, null);
+    const modal = can.modal ?? (image.kind === "blocked" ? image.reason : null);
+    const plan = planLaunch(labels, defaults, harnesses, { ...can, modal, checkout: checkouts.has(job.repo) });
     switch (plan.kind) {
       case "launch": {
         // The claim routed the job already; a Repository label that could not apply is told like any other fallback.
@@ -281,7 +287,7 @@ export async function launchQueued(onWorktree: (check: Record<string, unknown>) 
   return [
     ...recovered,
     ...(local.length > 0 ? await launchLocal(local, checkouts, slot, claimed, onWorktree) : []),
-    ...(modal.length > 0 ? await launchInSandboxes(modal, slot, claimed) : []),
+    ...(modal.length > 0 ? await launchInSandboxes(modal, slot, claimed, registry) : []),
   ];
 }
 
@@ -335,7 +341,37 @@ class SandboxSetupError extends Error {}
  * them findable. A failure before the thread start ends the sandbox and frees the slot; a start
  * that may have made the thread keeps both for launch recovery, which asks the sandbox's T3.
  */
-export async function launchInSandboxes(pending: readonly LaunchEntry[], slot: LaunchSlot, claimed: Claimed = async () => {}) {
+/**
+ * Where a repo's sandbox starts: its warm image when that fits the base, so the repo is cloned and
+ * set up already, else the base image. A recipe's secrets come along as the repo's Modal secret.
+ */
+export type SandboxStart = { imageId: string; namedSecrets: string[]; warm?: { setup: readonly string[] }; outdated?: string } | { blocked: string };
+
+export function sandboxStart(row: RepoSettingsRow | undefined, base: { imageId: string; builtAt: string; versions: ReturnType<typeof builtVersions> }): SandboxStart {
+  const choice = repoImage(row, { versions: base.versions, builtAt: base.builtAt });
+  const detail = parseDetail(row?.onboarding_detail);
+  const namedSecrets = row && (detail.secretsSet ?? []).length > 0 ? [modalSecretName(row.repo)] : [];
+  switch (choice.kind) {
+    case "warm":
+      return { imageId: choice.imageId, warm: { setup: detail.recipe?.setup ?? [] }, namedSecrets };
+    case "base":
+      return { imageId: base.imageId, namedSecrets, ...(choice.outdated && { outdated: choice.outdated }) };
+    case "blocked":
+      return { blocked: choice.reason };
+    default: {
+      const never: never = choice;
+      throw new Error(`unknown image choice ${String(never)}`);
+    }
+  }
+}
+
+/** A repo with a recipe tells the thread where its setup lives, since the thread's worktree starts bare. */
+const withRecipeNote = (message: string, row: RepoSettingsRow | undefined) =>
+  parseDetail(row?.onboarding_detail).recipe
+    ? `${message}\n\nThis repository's setup recipe is ${RECIPE_PATH}: run its setup commands in your worktree before anything else, and use its checks to verify.`
+    : message;
+
+export async function launchInSandboxes(pending: readonly LaunchEntry[], slot: LaunchSlot, claimed: Claimed = async () => {}, registry: Registry = []) {
   const limits = config.factory.sandbox;
   const runtime = sandboxRuntime;
   const image = runtime.image();
@@ -344,6 +380,8 @@ export async function launchInSandboxes(pending: readonly LaunchEntry[], slot: L
     runtime.log("sandbox:no-image", { queued: pending.map((e) => e.key), reason: problem });
     return [];
   }
+  const base = { imageId: image.imageId, builtAt: image.builtAt, versions: builtVersions(image) };
+  const starts = new Map(pending.map((entry) => [entry.key, sandboxStart(registry.find((r) => r.repo === entry.repo), base)]));
   const claudeToken = runtime.claudeToken();
   const byKey = new Map(pending.map((entry) => [entry.key, entry]));
   let room = limits.maxParallel - (await sandboxesInFlight(slot.id));
@@ -352,6 +390,12 @@ export async function launchInSandboxes(pending: readonly LaunchEntry[], slot: L
     async claim(key, marker) {
       if (room <= 0) return false;
       const entry = byKey.get(key)!;
+      const start = starts.get(key)!;
+      if ("blocked" in start) {
+        runtime.log("sandbox:repo-not-ready", { key, reason: start.blocked });
+        return false;
+      }
+      if (start.outdated) runtime.log("sandbox:warm-image-outdated", { key, repo: entry.repo, reason: start.outdated });
       const { choice, fallback } = sandboxHarness(entry.harness, runtime.driverOf(entry.harness.provider), Boolean(claudeToken), limits.codexModel);
       if (!(await claimLaunch(key, marker, slot, choice, { execution: "modal", ticket: entry.ticket }))) return false;
       const codexSlot = await leaseCodexSlot(key, marker, usableSlots(limits));
@@ -368,6 +412,8 @@ export async function launchInSandboxes(pending: readonly LaunchEntry[], slot: L
     },
     async start(entry) {
       const lease = leases.get(entry.key)!;
+      const start = starts.get(entry.key)!;
+      if ("blocked" in start) throw new SandboxSetupError(start.blocked);
       let host: JobHost;
       let ran: HarnessChoice;
       try {
@@ -378,9 +424,10 @@ export async function launchInSandboxes(pending: readonly LaunchEntry[], slot: L
           attempt: entry.attempt,
           label: config.factory.label,
           machineId: slot.id,
-          imageId: image.imageId,
+          imageId: start.imageId,
           limits,
           claudeToken,
+          namedSecrets: start.namedSecrets,
         });
         try {
           await recordSandbox(entry.key, lease.marker, created.sandboxId);
@@ -389,7 +436,16 @@ export async function launchInSandboxes(pending: readonly LaunchEntry[], slot: L
           throw error;
         }
         host = created.host;
-        const setup = { repo: entry.repo, choice: lease.choice, hasClaude: Boolean(claudeToken), slot: lease.slot, codexAuth, githubToken, ingest: ingestConfig(config, entry.budgetUsd) };
+        const setup = {
+          repo: entry.repo,
+          choice: lease.choice,
+          hasClaude: Boolean(claudeToken),
+          slot: lease.slot,
+          codexAuth,
+          githubToken,
+          ingest: ingestConfig(config, entry.budgetUsd),
+          ...(start.warm && { warm: start.warm }),
+        };
         const outcome = await setupSandbox(host, setup, limits.codexModel);
         noteTokenWritten(created.sandboxId);
         ran = outcome.choice;
@@ -402,7 +458,7 @@ export async function launchInSandboxes(pending: readonly LaunchEntry[], slot: L
         throw new SandboxSetupError(`sandbox setup failed: ${error instanceof Error ? error.message.split("\n")[0] : String(error)}`);
       }
       // Images stay on this machine for now; the thread gets the issue text with their links.
-      return startThread(host, REPO_DIR, entry.branch, entry.threadTitle, entry.message, ran);
+      return startThread(host, REPO_DIR, entry.branch, entry.threadTitle, withRecipeNote(entry.message, registry.find((r) => r.repo === entry.repo)), ran);
     },
     bind: bindThread,
     release: async (key, marker) => {

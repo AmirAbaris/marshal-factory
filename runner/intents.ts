@@ -20,6 +20,9 @@ export const INTENT_ROUTES = {
   approve_merge: "owner",
   request_changes: "owner",
   close_job: "owner",
+  onboard_repo: "any",
+  rebuild_repo_image: "any",
+  repo_push: "any",
 } as const satisfies Record<IntentKind, "any" | "owner" | "broadcast">;
 
 /**
@@ -38,6 +41,10 @@ export const INTENT_ATTEMPTS = {
   approve_merge: 3,
   request_changes: 60,
   close_job: 50,
+  // Each try may start an onboarding sandbox; a repo that keeps failing shows why on its row.
+  onboard_repo: 10,
+  rebuild_repo_image: 10,
+  repo_push: 20,
 } as const satisfies Record<IntentKind, number>;
 
 /** An intent's result as the runner logs it: a pairing link only ever goes to the intent row. */
