@@ -241,8 +241,8 @@ export function SettingsForm({ machines, saved, merging }: { machines: Feed<Mach
   return (
     <>
       <PanelHeader title="Settings" />
-      <div className="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto p-5">
-        <Card className="max-w-2xl">
+      <div className="grid min-h-0 flex-1 content-start items-start gap-5 overflow-y-auto p-5 xl:grid-cols-2">
+        <Card>
           <CardHeader>
             <CardTitle>Harness and model</CardTitle>
             <CardDescription>

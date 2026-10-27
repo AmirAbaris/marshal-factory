@@ -76,7 +76,7 @@ function RepoRow({ repo, policy }: RepoMerging) {
 
 export function MergingSettings({ repos }: { repos: readonly RepoMerging[] }) {
   return (
-    <Card className="max-w-2xl">
+    <Card>
       <CardHeader>
         <CardTitle>Merging</CardTitle>
         <CardDescription>

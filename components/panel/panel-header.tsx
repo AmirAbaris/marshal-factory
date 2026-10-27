@@ -2,11 +2,11 @@
 
 import { MenuIcon, PanelLeftIcon } from "lucide-react";
 import { motion } from "motion/react";
-import Link from "next/link";
 import type { ReactNode } from "react";
 import { Button } from "@/components/ui/button";
 import { Kbd } from "@/components/ui/kbd";
 import { cn } from "@/lib/utils";
+import type { JobView } from "./job-view";
 import { useShell } from "./panel-shell";
 import type { FeedStatus } from "./sealed";
 
@@ -16,20 +16,21 @@ const STATUS: Record<FeedStatus, { dot: string; label: string }> = {
   off: { dot: "bg-faint", label: "Live updates off in previews" },
 };
 
-export type JobView = "board" | "list";
-
 const JOB_VIEWS = [
-  { view: "board", label: "Board", href: "/" },
-  { view: "list", label: "List", href: "/list" },
-] as const satisfies readonly { view: JobView; label: string; href: string }[];
+  { view: "board", label: "Board" },
+  { view: "list", label: "List" },
+] as const satisfies readonly { view: JobView; label: string }[];
 
-function ViewSwitch({ current }: { current: JobView }) {
+type ViewSwitchProps = { current: JobView; onChange: (view: JobView) => void };
+
+function ViewSwitch({ current, onChange }: ViewSwitchProps) {
   return (
-    <div role="radiogroup" aria-label="Layout" className="hidden items-center rounded-md border p-0.5 sm:flex">
-      {JOB_VIEWS.map(({ view, label, href }) => (
-        <Link
+    <div role="radiogroup" aria-label="Layout" className="flex shrink-0 items-center rounded-md border p-0.5">
+      {JOB_VIEWS.map(({ view, label }) => (
+        <button
           key={view}
-          href={href}
+          type="button"
+          onClick={() => view !== current && onChange(view)}
           role="radio"
           aria-checked={view === current}
           className={cn(
@@ -41,14 +42,14 @@ function ViewSwitch({ current }: { current: JobView }) {
             <motion.span layoutId="panel-view-marker" transition={{ type: "spring", stiffness: 500, damping: 40 }} className="absolute inset-0 rounded-[5px] bg-accent" />
           )}
           <span className="relative">{label}</span>
-        </Link>
+        </button>
       ))}
     </div>
   );
 }
 
-/** The page's hairline header: the title, the board and list switch on job views, and the page's actions. */
-export function PanelHeader({ title, view, actions }: { title: string; view?: JobView; actions?: ReactNode }) {
+/** The page's hairline header: the title, the board and list switch on the jobs page, and the page's actions. */
+export function PanelHeader({ title, jobView, actions }: { title: string; jobView?: ViewSwitchProps; actions?: ReactNode }) {
   const { collapsed, expand, openNav } = useShell();
   return (
     <header className="flex h-11 shrink-0 items-center gap-2 border-b px-2 md:px-3">
@@ -61,7 +62,7 @@ export function PanelHeader({ title, view, actions }: { title: string; view?: Jo
         </Button>
       )}
       <h1 className="min-w-0 flex-1 truncate ps-1 font-medium">{title}</h1>
-      {view && <ViewSwitch current={view} />}
+      {jobView && <ViewSwitch {...jobView} />}
       {actions}
     </header>
   );

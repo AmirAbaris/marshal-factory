@@ -11,6 +11,7 @@ import { STAGES, type Stage } from "@/lib/events";
 import { cn } from "@/lib/utils";
 import { harnessLine, showsDecision, whereLine, type BoardCard } from "./cards";
 import { formatUsd, spendOf } from "./format";
+import { jobsHref } from "./job-view";
 import { decisionLine } from "./merge-decision";
 import { useRowKeys } from "./row-keys";
 import { STAGE_META } from "./stages";
@@ -18,7 +19,7 @@ import { ShortTime } from "./time";
 
 const spring = { type: "spring", stiffness: 500, damping: 40 } as const;
 
-const openHref = (card: BoardCard) => (card.latest ? `/list?run=${card.latest.session_id}` : null);
+const openHref = (card: BoardCard) => (card.latest ? jobsHref("list", card.latest.session_id) : null);
 
 function Row({
   card,
@@ -105,7 +106,7 @@ export function JobList({
       const card = cards.find((c) => c.id === id);
       return card ? openHref(card) : null;
     },
-    closeHref: selected ? "/list" : null,
+    closeHref: selected ? jobsHref("list") : null,
   });
 
   if (cards.length === 0) {

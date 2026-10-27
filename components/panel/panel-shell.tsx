@@ -1,6 +1,6 @@
 "use client";
 
-import { ActivityIcon, InboxIcon, KanbanIcon, ListIcon, type LucideIcon, PanelLeftIcon, ServerIcon, SettingsIcon } from "lucide-react";
+import { ActivityIcon, InboxIcon, KanbanIcon, type LucideIcon, PanelLeftIcon, ServerIcon, SettingsIcon } from "lucide-react";
 import { LayoutGroup, MotionConfig, motion } from "motion/react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
@@ -15,14 +15,13 @@ import { cn } from "@/lib/utils";
 /** The layout reads this cookie, so a reload keeps the rail collapsed. */
 export const COLLAPSED_COOKIE = "sidebar_state";
 
-type NavItem = { href: "/inbox" | "/" | "/list" | "/activity" | "/machines" | "/settings"; label: string; icon: LucideIcon };
+type NavItem = { href: "/inbox" | "/" | "/activity" | "/machines" | "/settings"; label: string; icon: LucideIcon };
 
-/** The job views come first, led by the inbox of jobs that need the owner. */
+/** The jobs come first, led by the inbox of jobs that need the owner. */
 const NAV: readonly (readonly NavItem[])[] = [
   [
     { href: "/inbox", label: "Inbox", icon: InboxIcon },
-    { href: "/", label: "Board", icon: KanbanIcon },
-    { href: "/list", label: "List", icon: ListIcon },
+    { href: "/", label: "Jobs", icon: KanbanIcon },
   ],
   [
     { href: "/activity", label: "Other activity", icon: ActivityIcon },
@@ -169,7 +168,7 @@ export function PanelShell({ defaultCollapsed, inboxCount, children }: { default
                 <Nav collapsed={false} inboxCount={inboxCount} onNavigate={() => setNavOpen(false)} />
               </SheetPopup>
             </Sheet>
-            <main className="flex min-w-0 flex-1 flex-col">{children}</main>
+            <main className="flex min-h-0 min-w-0 flex-1 flex-col">{children}</main>
           </div>
         </LayoutGroup>
       </ShellContext>
