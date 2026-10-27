@@ -444,6 +444,7 @@ export async function launchInSandboxes(pending: readonly LaunchEntry[], slot: L
           codexAuth,
           githubToken,
           ingest: ingestConfig(config, entry.budgetUsd),
+          job: { key: entry.key, attempt: entry.attempt },
           ...(start.warm && { warm: start.warm }),
         };
         const outcome = await setupSandbox(host, setup, limits.codexModel);

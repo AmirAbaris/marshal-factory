@@ -93,7 +93,7 @@ assert.deepEqual(decideMerge(input()), { outcome: "merge", reasons: [] }, "trial
 assert.deepEqual(decideMerge(input({ policy: { ...DEFAULT_POLICY, autonomy: "auto" } })), { outcome: "merge", reasons: [] }, "auto merges with no caveat");
 assert.deepEqual(decideMerge(input({ policy: DEFAULT_POLICY, pr: null, tracked: false, attempt: 3 })), { outcome: "handover", reasons: [] }, "off evaluates nothing");
 assert.throws(() => decideMerge(input({ pr: null })), /needs the PR's facts/);
-handsOver({ tracked: false, assessment: null }, /^This harness doesn't report a merge assessment\.$/, "an untracked harness");
+handsOver({ tracked: false, assessment: null }, /^This harness doesn't report its cost, so its PRs never merge on their own\.$/, "an untracked harness");
 handsOver({ assessment: null }, /didn't report a merge assessment/, "a tracked run with no assessment");
 handsOver({ assessment: assessment({ recommendation: "handover", checks: { ...assessment().checks, noTasteCalls: { ok: false, note: "The empty-state copy is a product call." } } }) }, /^No taste or product calls: The empty-state copy/, "the agent hands over, naming the check");
 handsOver({ assessment: assessment({ recommendation: "handover" }) }, /recommends handing over/, "a handover with every check ok");
@@ -300,7 +300,7 @@ try {
   assert.deepEqual((await row(LABELED)).merge_decision!.reasons, ['The issue has the "review" label.']);
   assert.deepEqual((await row(OFF)).merge_decision, { outcome: "handover", reasons: [], autonomy: "off", headSha: null, headSeenAt: null, stageEventId: null, evaluatedAt: new Date(at(0)).toISOString() });
   assert.ok(!calls.some((c) => c.includes(prUrl(4)) || c.includes(OFF)), "an off repo asks neither GitHub nor Linear");
-  assert.deepEqual((await row(CODEX)).merge_decision!.reasons, ["This harness doesn't report a merge assessment."]);
+  assert.deepEqual((await row(CODEX)).merge_decision!.reasons, ["This harness doesn't report its cost, so its PRs never merge on their own."]);
   assert.equal((await row(WORKING)).merge_decision, null, "only jobs in pr");
   const [goodAudit] = await auditsOf(GOOD);
   assert.deepEqual([goodAudit!.action, goodAudit!.actor, goodAudit!.head_sha, goodAudit!.detail], ["merge_decided", "factory", "h1", "Would merge (trial)"]);

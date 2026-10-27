@@ -24,6 +24,7 @@ const { everyAtMost, serialQueue } = await import("./queue");
 const { isolated, reconcile } = await import("./reconcile");
 const { stopDeliverable } = await import("./binding");
 const { inferUntracked } = await import("./untracked");
+const { flushLocalOutbox } = await import("./outbox");
 const { approveMerge, decideMerges } = await import("./merge-decision");
 const { closeJob, forwardReview, requestChanges } = await import("./inbox");
 const { approveDetailSchema, closeDetailSchema, feedbackDetailSchema } = await import("../lib/inbox");
@@ -178,6 +179,8 @@ const startupReconcile = () => reconcile({ tick, cleanup: () => ops.cleanup(), l
 async function tick() {
   // Each check on its own: one failing (Linear or GitHub down) must not skip the others this tick.
   return {
+    // First, so stage reports a hook or MCP call could not deliver reach the board before anything reads it.
+    outbox: await isolated(flushLocalOutbox),
     claimed: await isolated(() => ops.claim()),
     // An answer can land before its question reached Linear, and its intent then finds nothing.
     resumed: await isolated(ops.resumeAnswered),

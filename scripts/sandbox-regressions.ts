@@ -210,11 +210,16 @@ try {
   assert.equal(sbA.files.get("/root/.codex/auth.json"), `{"slot":"${slotA}"}`, "the slot's login");
   assert.match(sbA.files.get("/root/.codex/config.toml")!, /\[mcp_servers\.factory-report\]\ncommand = "bun"\nargs = \["\/opt\/marshal-factory\/mcp\/factory-report\.ts"\]/);
   assert.ok(sbA.files.get("/root/.codex/config.toml")!.startsWith(imageCodexConfig), "the image's PStack plugin stays enabled for Codex");
+  assert.ok(
+    sbA.files.get("/root/.codex/config.toml")!.includes(`env = { FACTORY_REPORTER = "mcp", FACTORY_JOB_KEY = "${keys[0]}", FACTORY_ATTEMPT = "1", FACTORY_REPO = "factory-demo" }`),
+    "Codex's report server posts for this job's attempt",
+  );
   assert.ok(events.some((e) => e.event === "sandbox:no-pstack" && e.detail.plugin === PSTACK_PLUGIN), "a sandbox whose claude lacks PStack is logged");
   assert.equal(sbA.files.get("/root/.config/marshal-factory/github-token"), "ghs_fake_installation_token");
   assert.deepEqual(JSON.parse(sbA.files.get("/root/.config/marshal-factory/config.json")!), { ingestUrl: config.ingestUrl, secret: config.secret, factory: { budgetUsd: 7 } });
   assert.match(sbA.files.get("/root/.claude/settings.json")!, /bun \\"\/opt\/marshal-factory\/hooks\/budget\.ts\\"/, "user-level hooks point at the sandbox's factory");
   assert.equal(JSON.parse(sbA.files.get("/root/.claude.json")!).mcpServers["factory-report"].args[0], "/opt/marshal-factory/mcp/factory-report.ts");
+  assert.deepEqual(JSON.parse(sbA.files.get("/root/.claude.json")!).mcpServers["factory-report"].env, { FACTORY_REPORTER: "hook" }, "Claude Code's hooks report its stages, so its server only validates");
   const argvs = sbA.execs.map((e) => e.argv.join(" "));
   for (const path of ["/root/.codex/auth.json", "/root/.config/marshal-factory/github-token", "/root/.config/marshal-factory/config.json"]) {
     assert.ok(argvs.includes(`chmod 600 ${path}`), `${path} is owner-only`);

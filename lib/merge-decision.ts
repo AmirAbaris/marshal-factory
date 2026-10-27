@@ -218,7 +218,8 @@ function hardLimits(input: DecisionInput, pr: PrFacts) {
 }
 
 function agentReasons({ tracked, assessment }: DecisionInput) {
-  if (!tracked) return ["This harness doesn't report a merge assessment."];
+  // A harness whose cost is not tracked can't be held to its budget, whatever it assessed.
+  if (!tracked) return ["This harness doesn't report its cost, so its PRs never merge on their own."];
   if (!assessment) return ["The agent didn't report a merge assessment."];
   if (assessment.recommendation === "merge") return [];
   const failed = ASSESSMENT_CHECKS.filter((name) => !assessment.checks[name].ok).map((name) => `${CHECK_LABELS[name]}: ${assessment.checks[name].note}`);

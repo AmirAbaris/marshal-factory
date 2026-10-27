@@ -185,6 +185,8 @@ const stamp = Date.now();
 const cardJob = { ...linearJob(`card-${stamp}`, `CARD-${stamp}`), stage: "implementing" as const, provider: "codex", model: "gpt-6-astra", execution: "modal" as const, machine_id: "m1", sandbox_id: "sb" };
 const [card] = boardCards([cardJob as never], [], harnesses);
 assert.equal(harnessLine(card!.harness!), "Codex · not tracked", "an untracked harness says so, without its model");
+const mcpRun = { session_id: `mcp:factory/${cardJob.key}`, job_key: cardJob.key, branch: `factory/${cardJob.key}`, stage: "implementing", stage_at: new Date(), last_event_at: new Date() };
+assert.equal(harnessLine(boardCards([cardJob as never], [mcpRun as never], harnesses)[0]!.harness!), "Codex · no cost tracking", "a Codex job whose report server posted shows stages, not cost");
 assert.equal(harnessLine(boardCards([{ ...cardJob, provider: "claudeAgent" } as never], [], harnesses)[0]!.harness!), "Claude Code");
 
 // New job: the chosen harness and place go on the issue as the group labels.

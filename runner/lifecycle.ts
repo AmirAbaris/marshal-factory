@@ -13,6 +13,7 @@ import { HIBERNATED_MESSAGE, type PairingResult } from "../lib/t3-pairing";
 import { bindingOf, PENDING, stopOwed } from "./binding";
 import { config } from "./config";
 import { thisMachine } from "./heartbeat";
+import { flushSandboxOutbox } from "./outbox";
 import { isolated } from "./reconcile";
 import { CodexLoginError, createJobSandbox, installCodexLogin, markSlotUnusable, pairT3, sandboxRuntime, startT3, stopT3, usableSlots, writeGithubToken } from "./sandbox";
 import { threads } from "./threads";
@@ -141,8 +142,9 @@ export async function writeBackLogin(key: string, sandboxId: string, slot: strin
   return "written";
 }
 
-/** Every end of a job's sandbox: the login goes back to its slot first. */
+/** Every end of a job's sandbox: undelivered reports and the login leave it first. */
 export async function retireSandbox(key: string, sandboxId: string, slot: string | null) {
+  await flushSandboxOutbox(key, modalHost(sandboxId));
   await writeBackLogin(key, sandboxId, slot);
   await terminateSandbox(sandboxId);
   tokenWrites.delete(sandboxId);
@@ -242,6 +244,12 @@ export async function hibernateIdle(now = Date.now()) {
       await db.update(jobs).set({ codex_slot: null }).where(and(eq(jobs.key, row.key), eq(jobs.sandbox_id, sandboxId)));
       return row.codex_slot ? "gone, slot freed" : undefined;
     }
+    // Whatever stays undelivered is in the snapshot, and the wake flushes it. A report delivered
+    // now may have moved the job on, and then it is not idle.
+    if ((await flushSandboxOutbox(row.key, host))?.delivered) {
+      const [current] = await db.select({ stage: jobs.stage }).from(jobs).where(eq(jobs.key, row.key));
+      if (current?.stage !== row.stage) return undefined;
+    }
     await writeBackLogin(row.key, sandboxId, row.codex_slot);
     await stopT3(host);
     let imageId: string;
@@ -310,6 +318,7 @@ export async function wakeJob(job: HostedJob): Promise<JobHost> {
     await writeGithubToken(created.host, await sandboxRuntime.githubToken(row.repo as RepoName));
     noteTokenWritten(sandboxId);
     await startT3(created.host);
+    await flushSandboxOutbox(row.key, created.host);
     await db.update(jobs).set({ sandbox_snapshot: null }).where(and(eq(jobs.key, row.key), eq(jobs.sandbox_id, sandboxId)));
     wokenAt.set(row.key, Date.now());
     log("sandbox:woken", { key: row.key, sandbox: sandboxId, slot });

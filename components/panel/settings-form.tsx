@@ -12,7 +12,7 @@ import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "@/c
 import { Spinner } from "@/components/ui/spinner";
 import type { MachineRow, SettingsRow } from "@/db/schema";
 import { DEFAULT_EXECUTION, EXECUTIONS, type Execution } from "@/lib/execution";
-import { DEFAULT_MODEL, DEFAULT_PROVIDER, harnessLabel, isTracked, type Harness } from "@/lib/harness";
+import { DEFAULT_MODEL, DEFAULT_PROVIDER, harnessLabel, trackingOf, type Harness, type Tracking } from "@/lib/harness";
 import { componentName, IMAGE_COMPONENTS, rebuildText, reportedDrift, reportedHarnesses, reportedSandbox, type SandboxReadiness } from "@/lib/machine";
 import { useFeed, type Feed } from "./sealed";
 import { PanelFooter, PanelHeader } from "./panel-header";
@@ -30,18 +30,21 @@ const describe = (harnesses: readonly Harness[], provider: string, model: string
   return {
     harness: harness?.name ?? harnessLabel(provider),
     model: harness?.models.find((m) => m.slug === model)?.name ?? model,
-    tracked: isTracked(harness?.driver ?? provider),
+    tracking: trackingOf(harness?.driver ?? provider),
   };
 };
 
-function UntrackedWarning({ name }: { name: string }) {
+function UntrackedWarning({ name, tracking }: { name: string; tracking: Exclude<Tracking, "full"> }) {
+  const shows =
+    tracking === "stages"
+      ? `Runs on ${name} report their stages, questions and pull requests through the factory-report MCP server, but no agents or cost.`
+      : `Runs on ${name} will not show stages, agents or cost on the board yet.`;
   return (
     <div role="note" className="flex gap-2.5 rounded-lg border border-warning/40 bg-warning/10 p-3 text-sm">
       <TriangleAlertIcon className="mt-0.5 size-4 shrink-0 text-warning" />
       <p>
-        Runs on {name} will not show stages, agents or cost on the board yet. The budget cap and the quiet-run watchdog do not
-        apply to them, so check them in T3 directly. The board still shows when a run is queued and launched, and the watchdog
-        still fails a run whose thread is gone.
+        {shows} The budget cap and the quiet-run watchdog do not apply to them, so check them in T3 directly. The board still
+        shows when a run is queued and launched, and the watchdog still fails a run whose thread is gone.
       </p>
     </div>
   );
@@ -311,7 +314,7 @@ export function SettingsForm({ machines, saved }: { machines: Feed<MachineRow>; 
                     </SelectPopup>
                   </Select>
                 </Field>
-                {harness && !chosen.tracked && <UntrackedWarning name={chosen.harness} />}
+                {harness && chosen.tracking !== "full" && <UntrackedWarning name={chosen.harness} tracking={chosen.tracking} />}
                 <Field>
                   <FieldLabel htmlFor="settings-execution">Run jobs on</FieldLabel>
                   <Select

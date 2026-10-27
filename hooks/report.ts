@@ -4,10 +4,10 @@ import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "no
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { promisify } from "node:util";
-import { CONFIG_PATH } from "../lib/config";
 import { stageReportSchema, type FactoryEvent, type Usage } from "../lib/events";
 import { jobKeyFromBranch, REPORT_STAGE_TOOL } from "../lib/factory";
 import { localHost } from "../lib/host";
+import { readIngestTarget, reportEvents } from "../lib/outbox";
 import { rememberSessionBranch, sessionBranch, writeSpend } from "../lib/spend-cache";
 import { mainTranscript, readTranscript, subagentTranscripts, sumUsage } from "../lib/transcript";
 
@@ -15,7 +15,8 @@ const run = promisify(execFile);
 
 // T3 exports its CLI path to the sessions it starts.
 const T3 = process.env.T3CODE_CLI_PATH ?? "t3";
-const FETCH_TIMEOUT_MS = 4000;
+/** How long one hook spends delivering its event and the backlog; what is left waits in the outbox. */
+const FLUSH_BUDGET_MS = 4000;
 const SUBPROCESS_TIMEOUT_MS = 3000;
 const LAST_MESSAGE_MAX = 500;
 
@@ -34,17 +35,6 @@ type HookInput = Record<string, unknown> & {
 
 const str = (value: unknown) =>
   typeof value === "string" && value !== "" ? value : undefined;
-
-function readConfig() {
-  if (!existsSync(CONFIG_PATH)) return undefined;
-  const config = JSON.parse(readFileSync(CONFIG_PATH, "utf8")) as {
-    ingestUrl?: string;
-    secret?: string;
-  };
-  return config.ingestUrl && config.secret
-    ? { ingestUrl: config.ingestUrl, secret: config.secret }
-    : undefined;
-}
 
 const SETTLE_POLL_MS = 250;
 const SETTLE_TRIES = 12;
@@ -236,9 +226,8 @@ async function toEvent(
 async function main() {
   const raw = readFileSync(0, "utf8");
   const input = JSON.parse(raw) as HookInput;
-  const config = readConfig();
   const sessionId = str(input.session_id);
-  if (!config || !sessionId) return;
+  if (!readIngestTarget() || !sessionId) return;
 
   const eventId = createHash("sha256")
     .update(`${input.hook_event_name}\n${raw}`)
@@ -250,19 +239,10 @@ async function main() {
     // Hooks inside a subagent may name its own transcript; the run records the session's.
     transcriptPath: mainTranscript(str(input.transcript_path), sessionId),
   });
-  if (!event) return;
-
-  const res = await fetch(config.ingestUrl, {
-    method: "POST",
-    headers: {
-      authorization: `Bearer ${config.secret}`,
-      "content-type": "application/json",
-    },
-    body: JSON.stringify(event),
-    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-  });
-  const result = (await res.json()) as { spend?: Record<string, number> };
-  if (result.spend) writeSpend(result.spend);
+  // Every call flushes, so a backlog left by an ingest outage drains even from hooks that send nothing.
+  const flushed = await reportEvents(event ? [event] : [], FLUSH_BUDGET_MS);
+  if (flushed && Object.keys(flushed.spend).length > 0) writeSpend(flushed.spend);
+  if (flushed?.error && process.env.REPORT_DEBUG) console.error(flushed.error);
 }
 
 // A reporting failure must never disturb the session.

@@ -30,6 +30,7 @@ import {
 import type { HarnessChoice } from "../lib/settings";
 import { readHarnesses } from "../lib/t3-state";
 import { PAIRING_TTL_MINUTES, pairingSchema, type T3Pairing } from "../lib/t3-pairing";
+import { codexReportEnv } from "../lib/report-identity";
 import { inTestMode } from "../lib/test-mode";
 import { json, reportServer, wiredRoots, withHooks, withServer, type Json } from "../lib/target-wiring";
 
@@ -118,12 +119,14 @@ export const t3Settings = (choice: HarnessChoice, hasClaude: boolean) => ({
 });
 
 /**
- * Codex gets the factory-report server too, so a Codex-led run can call report_stage. It goes after
- * the image's config, which holds the PStack marketplace and plugin.
+ * Codex gets the factory-report server too, and has no hooks, so the server posts each report_stage
+ * itself for the job its env names. It goes after the image's config, which holds the PStack
+ * marketplace and plugin. An onboarding run names no job and has no ingest config, so it posts nothing.
  */
-export function codexConfig(image: string | null = null) {
+export function codexConfig(image: string | null = null, job?: { key: string; attempt: number; repo: string }) {
   const { command, args } = reportServer(FACTORY_ROOT);
-  const server = `[mcp_servers.factory-report]\ncommand = ${JSON.stringify(command)}\nargs = ${JSON.stringify(args)}\n`;
+  const env = Object.entries(job ? codexReportEnv(job) : { FACTORY_REPORTER: "mcp" }).map(([name, value]) => `${name} = ${JSON.stringify(value)}`);
+  const server = `[mcp_servers.factory-report]\ncommand = ${JSON.stringify(command)}\nargs = ${JSON.stringify(args)}\nenv = { ${env.join(", ")} }\n`;
   return image?.trim() ? `${image.trimEnd()}\n\n${server}` : server;
 }
 
@@ -185,6 +188,8 @@ export type SandboxSetup = {
   githubToken: string;
   /** The hooks' ingest config; null for an onboarding run, which reports to no job. */
   ingest: string | null;
+  /** The job the sandbox runs, which Codex's report server posts for; absent for an onboarding run. */
+  job?: { key: string; attempt: number };
   /** Set when the sandbox starts from the repo's warm image, which has the repo at REPO_DIR already. */
   warm?: { setup: readonly string[] };
 };
@@ -228,7 +233,7 @@ export async function setupSandbox(host: JobHost, setup: SandboxSetup, codexMode
     choice = { provider: CODEX, model: codexModel };
     hasClaude = false;
   }
-  await host.writeFile(`${CODEX_HOME}/config.toml`, codexConfig(await host.readFile(`${CODEX_HOME}/config.toml`)));
+  await host.writeFile(`${CODEX_HOME}/config.toml`, codexConfig(await host.readFile(`${CODEX_HOME}/config.toml`), setup.job && { ...setup.job, repo: setup.repo }));
   await host.writeFile(`${T3_USERDATA}/settings.json`, json(t3Settings(choice, hasClaude)));
   if (setup.ingest !== null) await writeSecretFile(host, INGEST_CONFIG_PATH, setup.ingest);
   await writeGithubToken(host, setup.githubToken);

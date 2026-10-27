@@ -1,8 +1,8 @@
 import type { JobRow, RunRow } from "@/db/schema";
 import type { Stage } from "@/lib/events";
 import { sandboxState, type SandboxState } from "@/lib/execution";
-import { attemptBranch } from "@/lib/factory";
-import { harnessLabel, isTracked, type Harness } from "@/lib/harness";
+import { attemptBranch, isMcpSession } from "@/lib/factory";
+import { harnessLabel, isTracked, type Harness, type Tracking } from "@/lib/harness";
 import { mergeDecisionSchema, type MergeDecision } from "@/lib/merge-decision";
 import { sourceLink } from "@/lib/sources/shapes";
 import { groupBy } from "./format";
@@ -40,8 +40,8 @@ export type BoardCard = {
   updatedAt: Date;
 };
 
-/** Untracked harnesses report no stages or cost, so the card says so. */
-export type CardHarness = { name: string; tracked: boolean };
+/** What the card can show of the harness's run: Codex jobs whose report server posted have stages but no cost. */
+export type CardHarness = { name: string; tracking: Tracking };
 
 export type RunsOn = { kind: "modal"; sandbox: SandboxState | null } | { kind: "local"; machineId: string };
 
@@ -64,7 +64,20 @@ export function whereLine(where: RunsOn, machineName: string | null) {
   }
 }
 
-export const harnessLine = (harness: CardHarness) => (harness.tracked ? harness.name : `${harness.name} · not tracked`);
+export function harnessLine(harness: CardHarness) {
+  switch (harness.tracking) {
+    case "full":
+      return harness.name;
+    case "stages":
+      return `${harness.name} · no cost tracking`;
+    case "none":
+      return `${harness.name} · not tracked`;
+    default: {
+      const never: never = harness.tracking;
+      throw new Error(`unknown tracking ${String(never)}`);
+    }
+  }
+}
 
 /** A tracked job in pr waits on a merge decision; a merged one shows the factory's watch on main. */
 export const showsDecision = (card: Pick<BoardCard, "stage" | "sourceLink" | "mergeDecision">) =>
@@ -80,9 +93,11 @@ const stagedAt = (run: RunRow) => run.stage_at?.getTime() ?? 0;
 
 /** `harnesses` are the ones the machines report, so a renamed Claude Code instance keeps its name and stays tracked. */
 export function boardCards(jobs: readonly JobRow[], runs: readonly RunRow[], harnesses: readonly Harness[] = []): BoardCard[] {
-  const harnessOf = (provider: string): CardHarness => {
+  const harnessOf = (provider: string, attemptRuns: readonly RunRow[]): CardHarness => {
     const known = harnesses.find((h) => h.id === provider);
-    return { name: known?.name ?? harnessLabel(provider), tracked: isTracked(known?.driver ?? provider) };
+    const name = known?.name ?? harnessLabel(provider);
+    if (isTracked(known?.driver ?? provider)) return { name, tracking: "full" };
+    return { name, tracking: attemptRuns.some((r) => isMcpSession(r.session_id)) ? "stages" : "none" };
   };
   const byKey = groupBy(
     runs.filter((r) => r.job_key !== null),
@@ -112,7 +127,7 @@ export function boardCards(jobs: readonly JobRow[], runs: readonly RunRow[], har
       nudgedAt: job.nudged_stage === job.stage ? job.nudged_at : null,
       latest: attemptRuns.find((r) => r.session_id === job.session_id) ?? attemptRuns[0] ?? null,
       runs: jobRuns,
-      harness: job.provider ? harnessOf(job.provider) : null,
+      harness: job.provider ? harnessOf(job.provider, attemptRuns) : null,
       runsOn: runsOn(job),
       mergeDecision: shownDecision(job),
       updatedAt: new Date(Math.max(job.updated_at.getTime(), ...jobRuns.map((r) => r.last_event_at.getTime()))),
