@@ -8,7 +8,7 @@ import type { OnboardingDetail } from "../lib/onboarding";
 import { fake, fakeModal, sandboxes, type FakeSandbox } from "./fake-modal";
 
 const { db } = await import("../db/client");
-const { intents, jobs, repoSettings } = await import("../db/schema");
+const { codexSlotLeases, intents, jobs, repoSettings } = await import("../db/schema");
 type RepoRow = typeof repoSettings.$inferSelect;
 const { linearJob } = await import("./fixtures");
 const { jobId } = await import("../lib/sources/shapes");
@@ -168,7 +168,7 @@ const COMMITTED = `${NS}/committed`;
 const AGENT = `${NS}/agent`;
 const BROKEN = `${NS}/broken`;
 const LAUNCH = `${NS}/launch`;
-const jobIds = [`onb-${stamp}-warm`, `onb-${stamp}-old`, `onb-${stamp}-wait`];
+const jobIds = [`onb-${stamp}-warm`, `onb-${stamp}-old`, `onb-${stamp}-wait`, `onb-${stamp}-race`];
 const VALUE = `s3cr3t-value-${stamp}`;
 const logged: string[] = [];
 const realLog = console.log;
@@ -280,9 +280,20 @@ try {
   await db.update(repoSettings).set({ enabled: false }).where(eq(repoSettings.repo, COMMITTED));
 
   // No recipe on main: one agent thread writes it, the result comes back, the sandbox goes.
+  // The slot is leased before the sandbox exists: a job leasing while it is created cannot take it.
+  const { leaseSlot } = await import("../runner/lifecycle");
+  const raceKey = `ONBR-${stamp % 100000}`;
+  await db.insert(jobs).values(linearJob(jobIds[3]!, raceKey, { repo: LAUNCH }));
+  const leases = async () => (await db.select().from(codexSlotLeases).where(inArray(codexSlotLeases.slot, [slotA, slotB]))).map((l) => [l.slot, l.holder_kind, l.holder_id]);
   await insert(AGENT, "analyzing");
+  let raced: string | undefined = "not tried";
+  modal.api = { ...fakeModal, create: async (spec) => ((raced = await leaseSlot(eq(jobs.key, raceKey), [slotA])), fakeModal.create(spec)) };
   const agentStart = await runner.onboardRepo(AGENT);
+  modal.api = fakeModal;
   assert.deepEqual(agentStart, { repo: AGENT, agent: "thread-onb" });
+  assert.equal(raced, undefined, "a job cannot lease the slot an onboarding run took while its sandbox is created");
+  assert.deepEqual(await leases(), [[slotA, "onboarding", AGENT]], "the run holds the slot's lease");
+  await assert.rejects(db.update(jobs).set({ codex_slot: slotA }).where(eq(jobs.key, raceKey)), (e: { cause?: { code?: string } }) => e.cause?.code === "23505", "nor can a job be written onto it");
   d = await detail(AGENT);
   assert.deepEqual([d.run?.kind, d.run?.threadId, d.run?.slot], ["agent", "thread-onb", slotA]);
   const agentBox = sandboxOf(d.run?.sandboxId);
@@ -292,8 +303,7 @@ try {
   assert.match(startExec.input, /\/work\/onboarding\/result\.json/);
   assert.equal(agentBox.files.has("/root/.config/marshal-factory/config.json"), false, "an onboarding run reports to no job");
   assert.match(JSON.stringify(await runner.onboardRepo(AGENT)), /an agent run is in flight/, "a second onboard waits for the first");
-  const { leaseSlot } = await import("../runner/lifecycle");
-  assert.equal(await leaseSlot(sql`false`, [slotA]), undefined, "a job cannot lease the slot the agent holds");
+  assert.equal(await leaseSlot(eq(jobs.key, raceKey), [slotA]), undefined, "a job cannot lease the slot the agent holds");
   await runner.advanceOnboarding();
   assert.equal((await detail(AGENT)).run?.kind, "agent", "a running thread is left alone");
   threadState = "stopped";
@@ -305,7 +315,20 @@ try {
   assert.equal(agentRow.onboarding_state, "needs_input", "a required env var without a value waits for the owner");
   assert.deepEqual([d.recipeSource, d.recipePr, d.missingSecrets, d.run, d.checks?.length], ["agent", `https://github.com/${AGENT}/pull/7`, ["API_KEY"], undefined, 1]);
   assert.equal(agentBox.terminated, true, "the onboarding sandbox is torn down");
+  assert.deepEqual(await leases(), [], "and its slot's lease is released");
   threadState = "running";
+
+  // A run that never gets recorded hands its lease back: here the sandbox cannot be created.
+  const FLAKY = `${NS}/flaky`;
+  await insert(FLAKY, "analyzing");
+  modal.api = { ...fakeModal, create: async () => Promise.reject(new Error("modal is down")) };
+  await assert.rejects(runner.onboardRepo(FLAKY), /modal is down/);
+  modal.api = fakeModal;
+  assert.deepEqual(await leases(), [], "a failed sandbox create releases the slot");
+  assert.equal(await leaseSlot(eq(jobs.key, raceKey), [slotA]), slotA, "which a job can then lease");
+  assert.deepEqual(await leases(), [[slotA, "job", jobId("linear", jobIds[3]!)]]);
+  await db.update(jobs).set({ codex_slot: null }).where(eq(jobs.key, raceKey));
+  assert.deepEqual(await leases(), [], "clearing the job's slot releases it");
 
   // Secrets: the value goes to the store and nowhere else; the names are recorded and the build starts.
   console.log = (...args: unknown[]) => void logged.push(args.map(String).join(" "));
@@ -381,7 +404,7 @@ try {
   fake.images.set("im-warm-launch", new Map());
   fake.images.set("im-base", new Map());
   await insert(LAUNCH, "ready", { recipe, image: launchImage, secretsSet: ["API_KEY"] });
-  await db.insert(jobs).values(jobIds.map((id, i) => linearJob(id, `ONB${i}-${stamp % 100000}`, { repo: LAUNCH })));
+  await db.insert(jobs).values(jobIds.slice(0, 3).map((id, i) => linearJob(id, `ONB${i}-${stamp % 100000}`, { repo: LAUNCH })));
   const slot = { id: TEST_MACHINE_ID, repos: [LAUNCH], maxInFlight: 1000 };
   sandboxRuntime.slots = () => [slotA, slotB];
   config.factory.sandbox.maxParallel = 100;

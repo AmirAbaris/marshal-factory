@@ -189,6 +189,25 @@ export const jobs = pgTable(
 );
 
 /**
+ * Who holds each Codex login slot: a job or an onboarding agent run. The slot is the primary key,
+ * so one holder at a time across both. Triggers from migration 0032 keep it in step with
+ * jobs.codex_slot and a repo's onboarding_detail run slot: setting either to a slot someone else
+ * holds fails with a unique violation, and clearing it releases the slot. Onboarding inserts its
+ * row itself before it creates the sandbox; see runner/onboarding.ts.
+ */
+export const codexSlotLeases = pgTable(
+  "codex_slot_leases",
+  {
+    slot: text("slot").primaryKey(),
+    holder_kind: text("holder_kind").$type<"job" | "onboarding">().notNull(),
+    /** The job's id, or the repo an onboarding run is for. */
+    holder_id: text("holder_id").notNull(),
+    leased_at: ts("leased_at").notNull().defaultNow(),
+  },
+  (t) => [check("codex_slot_leases_holder_kind_check", sql`${t.holder_kind} in ('job', 'onboarding')`)],
+);
+
+/**
  * The checks run at one commit of a job, from an evidence event (lib/evidence.ts). One row per job
  * and commit: a later run at the same commit replaces it, except that a run with uncommitted
  * changes never replaces a clean one, since it says nothing about the commit.

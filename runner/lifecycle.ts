@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { and, eq, inArray, isNotNull, isNull, or, sql, type SQL } from "drizzle-orm";
 import { db } from "../db/client";
-import { auditLog, jobs, repoSettings, type JobRow } from "../db/schema";
+import { auditLog, codexSlotLeases, jobs, repoSettings, type JobRow } from "../db/schema";
 import type { RepoName } from "../lib/github/app";
 import { HostGoneError, hosts, isHibernated, type HostedJob, type JobHost } from "../lib/host";
 import { deleteSnapshot, isModalGone, modal, modalHost, snapshotSandbox, terminateSandbox, tunnelUrl } from "../lib/modal-host";
@@ -73,25 +73,19 @@ async function each<T extends { key: string }>(rows: readonly T[], step: (row: T
 const uniqueViolation = (error: unknown): boolean =>
   (error as { code?: string })?.code === "23505" || (error instanceof Error && error.cause !== undefined && uniqueViolation(error.cause));
 
-/**
- * Leases a free login slot to the job row `where` matches. The partial unique index on codex_slot
- * makes the lease atomic: a slot another job took in between fails the write and the next free one
- * is tried. Undefined when every slot is held or the row no longer matches.
- */
-/** Slots an onboarding agent run holds; see runner/onboarding.ts. */
-export async function onboardingSlots() {
-  const rows = await db
-    .select({ slot: sql<string>`${repoSettings.onboarding_detail}->'run'->>'slot'` })
-    .from(repoSettings)
-    .where(sql`${repoSettings.onboarding_detail}->'run'->>'slot' is not null`);
-  return rows.map((r) => r.slot);
+/** Slots a job or an onboarding run holds; see codex_slot_leases in db/schema.ts. */
+export async function leasedSlots() {
+  return new Set((await db.select({ slot: codexSlotLeases.slot }).from(codexSlotLeases)).map((r) => r.slot));
 }
 
+/**
+ * Leases a free login slot to the job row `where` matches. Setting codex_slot takes the slot's row
+ * in codex_slot_leases, so the lease is atomic against jobs and onboarding runs alike: a slot taken
+ * in between fails the write and the next free one is tried. Undefined when every slot is held or
+ * the row no longer matches.
+ */
 export async function leaseSlot(where: SQL | undefined, slots: readonly string[]) {
-  const held = new Set([
-    ...(await db.select({ slot: jobs.codex_slot }).from(jobs).where(isNotNull(jobs.codex_slot))).map((r) => r.slot),
-    ...(await onboardingSlots()),
-  ]);
+  const held = await leasedSlots();
   for (const slot of slots.filter((s) => !held.has(s))) {
     try {
       const leased = await db

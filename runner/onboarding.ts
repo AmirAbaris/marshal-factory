@@ -1,9 +1,9 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { asc, eq, isNotNull, sql } from "drizzle-orm";
+import { and, asc, eq, sql } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "../db/client";
-import { jobs, repoSettings, type RepoSettingsRow } from "../db/schema";
+import { codexSlotLeases, repoSettings, type RepoSettingsRow } from "../db/schema";
 import type { RepoName } from "../lib/github/app";
 import { fileOnDefaultBranch } from "../lib/github/installation";
 import { HostGoneError, type JobHost } from "../lib/host";
@@ -42,7 +42,7 @@ import { config } from "./config";
 import { thisMachine } from "./heartbeat";
 import { startThread } from "./launch";
 import { launchSettings } from "./ops";
-import { loginFailed, onboardingSlots, TOKEN_REFRESH_MS, writeBackLogin } from "./lifecycle";
+import { leasedSlots, loginFailed, TOKEN_REFRESH_MS, writeBackLogin } from "./lifecycle";
 import { CodexLoginError, sandboxHarness, sandboxRuntime, sandboxSecrets, setupSandbox, usableSlots, writeGithubToken } from "./sandbox";
 import { threads } from "./threads";
 
@@ -161,14 +161,26 @@ async function claimRun(repo: string, run: OnboardingRun, state?: OnboardingStat
 
 const secretsFor = (repo: string, detail: OnboardingDetail) => ((detail.secretsSet ?? []).length > 0 ? [modalSecretName(repo)] : []);
 
-/** A free Codex login slot: one no job and no other onboarding run holds. */
-async function freeSlot() {
-  const held = new Set([
-    ...(await db.select({ slot: jobs.codex_slot }).from(jobs).where(isNotNull(jobs.codex_slot))).map((r) => r.slot),
-    ...(await onboardingSlots()),
-  ]);
-  return usableSlots(config.factory.sandbox).find((slot) => !held.has(slot));
+/**
+ * Leases a free Codex login slot to the repo's onboarding run, before its sandbox exists. The run
+ * recorded with that slot keeps the lease and clearing the run frees it; a run never recorded
+ * must call releaseSlot.
+ */
+async function leaseOnboardingSlot(repo: string) {
+  const held = await leasedSlots();
+  for (const slot of usableSlots(config.factory.sandbox).filter((s) => !held.has(s))) {
+    const [leased] = await db
+      .insert(codexSlotLeases)
+      .values({ slot, holder_kind: "onboarding", holder_id: repo })
+      .onConflictDoNothing()
+      .returning({ slot: codexSlotLeases.slot });
+    if (leased) return slot;
+  }
+  return undefined;
 }
+
+const releaseSlot = (repo: string, slot: string) =>
+  db.delete(codexSlotLeases).where(and(eq(codexSlotLeases.slot, slot), eq(codexSlotLeases.holder_kind, "onboarding"), eq(codexSlotLeases.holder_id, repo)));
 
 /** The recipe is known: record it with what came along, then secrets, then the image. */
 async function applyRecipe(repo: string, recipe: Recipe, extra: Partial<OnboardingDetail>) {
@@ -215,21 +227,31 @@ export async function onboardRepo(repo: string) {
 async function startAgent(repo: string, committedError: string | undefined) {
   const base = launchable();
   if ("problem" in base) return fail(repo, `Modal cannot start the onboarding sandbox: ${base.problem}.`);
-  const slot = await freeSlot();
+  const slot = await leaseOnboardingSlot(repo);
   if (!slot) throw new Error("no free Codex login slot for the onboarding run; it retries");
+  let recorded = false;
+  try {
+    return await runAgent(repo, slot, base.image, committedError, () => void (recorded = true));
+  } finally {
+    if (!recorded) await releaseSlot(repo, slot);
+  }
+}
+
+async function runAgent(repo: string, slot: string, image: SandboxImage, committedError: string | undefined, recorded: () => void) {
   const limits = config.factory.sandbox;
   const { harness } = await launchSettings();
   const claudeToken = sandboxRuntime.claudeToken();
   const { choice } = sandboxHarness(harness, sandboxRuntime.driverOf(harness.provider), Boolean(claudeToken), limits.codexModel);
   const [row] = await db.select().from(repoSettings).where(eq(repoSettings.repo, repo));
   const detail = parseDetail(row?.onboarding_detail);
-  const created = await createSandbox(repo, "agent", base.image.imageId, secretsFor(repo, detail));
+  const created = await createSandbox(repo, "agent", image.imageId, secretsFor(repo, detail));
   const now = onboardingRuntime.now().toISOString();
   const run: OnboardingRun = { kind: "agent", machine: created.machine, sandboxId: created.sandboxId, startedAt: now, slot, tokenAt: now };
   if (!(await claimRun(repo, run, "analyzing"))) {
     await terminateSandbox(created.sandboxId);
     return { repo, skipped: "another run started" };
   }
+  recorded();
   try {
     const githubToken = await sandboxRuntime.githubToken(repo as RepoName);
     const setup = { repo, choice, hasClaude: Boolean(claudeToken), slot, codexAuth: sandboxRuntime.slotAuth(slot), githubToken, ingest: null };
