@@ -140,6 +140,31 @@ try {
   assert.equal(again.question, questionFrom(null, "interrupted"), "with a fallback question when it left no message");
   assert.equal((await eventsOf(DONE)).filter((id) => id.startsWith("inferred:")).length, 2, "each settle is its own event");
 
+  // A stage the agent reported through the MCP server stands within the grace: its own pr report,
+  // with the assessment, comes first. After the grace the gap is filled as before.
+  const REPORTED = await insert("REPORTED", {});
+  const mcpReport = { sessionId: `mcp:factory/${REPORTED}`, kind: "stage", jobKey: REPORTED, branch: `factory/${REPORTED}` } as const;
+  await ingest(db, [eventSchema.parse({ ...mcpReport, eventId: `abc${stamp}verifying`, at: Date.now(), stage: "verifying", summary: "Running the checks." })]);
+  assert.equal((await row(REPORTED)).stage, "verifying");
+  prs.set(`factory/${REPORTED}`, { url: prUrl(5), state: "open" });
+  shown.set(`thread-${REPORTED}`, { state: "stopped", status: "completed", lastMessage: "Opened the PR." });
+  lookedUp.length = 0;
+  assert.deepEqual(await inferUntracked({ only: [REPORTED] }), [], "inference does not override a stage reported inside the grace");
+  assert.ok(!lookedUp.includes(`factory/${REPORTED}`), "nor looks for its PR yet");
+  await ingest(db, [eventSchema.parse({ ...mcpReport, eventId: `abc${stamp}pr`, at: Date.now(), stage: "pr", summary: "PR is up.", prUrl: prUrl(5) })]);
+  assert.deepEqual(await inferUntracked({ only: [REPORTED], now: later() }), [], "a job the agent moved to pr is no longer inferred");
+  const reported = await row(REPORTED);
+  assert.deepEqual([reported.stage, reported.stage_summary, reported.stage_event_id], ["pr", "PR is up.", `abc${stamp}pr`], "the reported pr stands");
+
+  const GAP = await insert("GAP", {});
+  await ingest(db, [eventSchema.parse({ ...mcpReport, sessionId: `mcp:factory/${GAP}`, jobKey: GAP, branch: `factory/${GAP}`, eventId: `abc${stamp}gap`, at: Date.now(), stage: "implementing", summary: "Building it." })]);
+  prs.set(`factory/${GAP}`, { url: prUrl(6), state: "open" });
+  assert.deepEqual(await inferUntracked({ only: [GAP] }), [], "inside the grace the reported stage stands");
+  assert.deepEqual(await inferUntracked({ only: [GAP], now: later() }), [`${GAP}:pr`], "past it, a PR the agent never reported fills the gap");
+  const gap = await row(GAP);
+  assert.deepEqual([gap.stage, gap.session_id], ["pr", null]);
+  assert.ok((await eventsOf(GAP)).some((id) => id.startsWith("inferred:")));
+
   assert.equal(questionFrom("x".repeat(3000), "completed").length, 2000, "a long message is cut to what a stage report takes");
 
   console.log("untracked regressions passed");
