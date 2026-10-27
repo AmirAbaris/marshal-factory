@@ -97,6 +97,10 @@ export function slackClient({ token, baseUrl = SLACK_API_URL, minGapMs = 1_000, 
       const body = await call("conversations.open", { users: user });
       return str((body.channel as { id?: unknown } | undefined)?.id, "channel id");
     },
+    /** Opens a modal; the trigger id from a click is good for 3 seconds. */
+    async openView(triggerId: string, view: object) {
+      await call("views.open", { trigger_id: triggerId, view: JSON.stringify(view) });
+    },
     async channelInfo(channel: string) {
       const body = await call("conversations.info", { channel });
       const info = body.channel as { id?: unknown; name?: unknown; is_private?: unknown; is_member?: unknown } | undefined;
@@ -104,4 +108,15 @@ export function slackClient({ token, baseUrl = SLACK_API_URL, minGapMs = 1_000, 
     },
     pausedUntil: () => pausedUntil,
   };
+}
+
+/** Replies through a click's response_url, which needs no token: an ephemeral note, or a replacement of the message. */
+export async function postResponse(url: string, body: object) {
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(10_000),
+  });
+  if (!response.ok) throw new SlackApiError("response_url", `http_${response.status}`);
 }

@@ -57,10 +57,10 @@ for (const path of ["/", "/api/live/runs"]) {
 }
 
 const matcher = new RegExp(`^${config.matcher[0]}$`);
-for (const path of ["/", "/api/live/runs", "/api/live/jobs/FAC-7/stages", "/machines", "/authors", "/auth/settings", "/auth/sign-in-evil", "/auth/sign-upx", "/auth/forbiddenx", "/favicon.icox", "/faviconxico", "/api/authx", "/_next/staticx", "/auth/sign-in.evil"]) {
+for (const path of ["/", "/api/live/runs", "/api/live/jobs/FAC-7/stages", "/machines", "/authors", "/auth/settings", "/auth/sign-in-evil", "/auth/sign-upx", "/auth/forbiddenx", "/favicon.icox", "/faviconxico", "/api/authx", "/api/slackx", "/_next/staticx", "/auth/sign-in.evil"]) {
   assert.ok(matcher.test(path), `the proxy guards ${path}`);
 }
-for (const path of ["/auth/sign-in", "/auth/sign-in/", "/auth/sign-in.rsc", "/auth/sign-in.segments/_tree.segment.rsc", "/auth/sign-up", "/auth/forbidden", "/api/auth/sign-in/email", "/_next/static/chunk.js", "/_next/image", "/favicon.ico"]) {
+for (const path of ["/auth/sign-in", "/auth/sign-in/", "/auth/sign-in.rsc", "/auth/sign-in.segments/_tree.segment.rsc", "/auth/sign-up", "/auth/forbidden", "/api/auth/sign-in/email", "/api/slack/interactions", "/_next/static/chunk.js", "/_next/image", "/favicon.ico"]) {
   assert.ok(!matcher.test(path), `the proxy lets ${path} through without a session`);
 }
 
