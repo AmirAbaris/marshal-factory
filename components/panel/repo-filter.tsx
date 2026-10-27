@@ -1,7 +1,7 @@
 "use client";
 
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { startTransition, useMemo, useOptimistic } from "react";
+import { startTransition, useEffect, useMemo, useOptimistic } from "react";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "@/components/ui/select";
 import type { JobRow, RepoSettingsRow } from "@/db/schema";
 import { ALL_REPOS, REPO_FILTER_COOKIE } from "@/lib/repo-filter";
@@ -17,17 +17,23 @@ export function repoOptions(registry: readonly Pick<RepoSettingsRow, "repo" | "d
   return [...registered, ...others].sort((a, b) => a.name.localeCompare(b.name));
 }
 
+const remember = (repo: string | null) => {
+  document.cookie = `${REPO_FILTER_COOKIE}=${repo ?? ALL_REPOS}; path=/; max-age=${60 * 60 * 24 * 365}`;
+};
+
 /**
  * The repo the jobs page and the inbox show; null shows all. A pick is remembered in the cookie
- * and written to `?repo`, and the page stays mounted, so the live feeds stay subscribed.
+ * and written to `?repo`, and the page stays mounted, so the live feeds stay subscribed. A repo
+ * opened by link is remembered too, so links without `?repo`, such as a run's, keep showing it.
  */
 export function useRepoFilter(current: string | null) {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const [repo, setOptimistic] = useOptimistic(current);
+  useEffect(() => remember(current), [current]);
   const pick = (next: string | null) => {
-    document.cookie = `${REPO_FILTER_COOKIE}=${next ?? ALL_REPOS}; path=/; max-age=${60 * 60 * 24 * 365}`;
+    remember(next);
     const params = new URLSearchParams(searchParams);
     if (next) params.set("repo", next);
     else params.delete("repo");
