@@ -68,14 +68,7 @@ function Row({
       <span className="hidden w-44 shrink-0 @3xl:block">{card.evidence && <EvidenceLine line={card.evidence} />}</span>
       <span className="hidden w-44 shrink-0 truncate text-xs text-muted-foreground @4xl:block">{where}</span>
       <span className="hidden w-28 shrink-0 truncate text-xs text-muted-foreground @5xl:block">{card.harness && harnessLine(card.harness)}</span>
-      <span
-        className={cn(
-          "hidden w-14 shrink-0 text-right font-mono text-xs text-muted-foreground tabular-nums @3xl:block",
-          card.budgetUsd !== null && cost >= card.budgetUsd && "text-destructive",
-        )}
-      >
-        {formatUsd(cost)}
-      </span>
+      <span className="hidden w-14 shrink-0 text-right font-mono text-xs text-muted-foreground tabular-nums @3xl:block">{formatUsd(cost)}</span>
       <span className="hidden w-12 shrink-0 text-right text-xs text-muted-foreground tabular-nums @md:block">
         <ShortTime date={card.updatedAt} />
       </span>

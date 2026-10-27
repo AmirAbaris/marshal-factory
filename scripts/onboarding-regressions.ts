@@ -506,7 +506,7 @@ try {
   const slot = { id: TEST_MACHINE_ID, repos: [LAUNCH], maxInFlight: 1000 };
   sandboxRuntime.slots = () => [slotA, slotB];
   config.factory.sandbox.maxParallel = 100;
-  const entry = (i: number) => ({ key: `ONB${i}-${stamp % 100000}`, sandbox_id: null, attempt: 1, budgetUsd: 5, source: "linear" as const, repo: LAUNCH, branch: `factory/ONB${i}`, threadTitle: "t", message: "Work it", harness: { provider: "codex", model: "gpt-6-astra" }, ticket: null });
+  const entry = (i: number) => ({ key: `ONB${i}-${stamp % 100000}`, sandbox_id: null, attempt: 1, source: "linear" as const, repo: LAUNCH, branch: `factory/ONB${i}`, threadTitle: "t", message: "Work it", harness: { provider: "codex", model: "gpt-6-astra" }, ticket: null });
   fake.answer = (_sandbox, argv) => (argv.slice(0, 3).join(" ") === "t3 thread start" ? { stdout: '{"threadId":"thread-warm"}' } : argv[0] === "claude" ? { stdout: "[]" } : {});
   const registryNow = async () => db.select().from(repoSettings).where(eq(repoSettings.repo, LAUNCH));
   const [warmLaunch] = await launchInSandboxes([entry(0)], slot, async () => {}, await registryNow());

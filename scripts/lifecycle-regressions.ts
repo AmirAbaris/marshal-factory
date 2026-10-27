@@ -223,7 +223,7 @@ try {
   const L = await insert("L", { stage: "queued", machine_id: null });
   const machine = { id: TEST_MACHINE_ID, repos: ["ski043/factory-demo"], maxInFlight: 1000 };
   const codex = { provider: "codex", model: "gpt-6-astra" };
-  const entry = (k: string, harness = codex) => ({ key: k, sandbox_id: null, attempt: 1, budgetUsd: 5, source: "linear" as const, repo: "ski043/factory-demo", branch: `factory/${k}`, threadTitle: k, message: `Work ${k}`, harness, ticket: null });
+  const entry = (k: string, harness = codex) => ({ key: k, sandbox_id: null, attempt: 1, source: "linear" as const, repo: "ski043/factory-demo", branch: `factory/${k}`, threadTitle: k, message: `Work ${k}`, harness, ticket: null });
   sandboxRuntime.slots = () => [slotC];
   codexOk = false;
   const [loginless] = await launchInSandboxes([entry(L)], machine);

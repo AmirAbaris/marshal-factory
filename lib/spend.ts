@@ -14,7 +14,7 @@ export type BranchCost = { usd: number; known: boolean };
 
 /**
  * Cost per factory branch: every run on it, main session plus subagents. Each attempt at a job
- * gets its own branch, so this is the spend of one attempt, which is what the cap limits.
+ * gets its own branch, so this is the spend of one attempt.
  */
 export async function branchCosts(db: Reader, branches: readonly string[], overrides?: PricingOverrides) {
   const costs: Record<string, BranchCost> = {};

@@ -14,7 +14,7 @@ import {
   uniqueIndex,
 } from "drizzle-orm/pg-core";
 import { STAGES } from "../lib/events";
-import type { MergeAssessment } from "../lib/assessment";
+import type { AssessmentInput } from "../lib/assessment";
 import type { CheckSource, EvidenceCheck, EvidenceSummary, Producer } from "../lib/evidence";
 import { DEFAULT_EXECUTION, type Execution } from "../lib/execution";
 import type { Autonomy, MergeDecision } from "../lib/merge-decision";
@@ -136,11 +136,12 @@ export const jobs = pgTable(
     answer: text("answer"),
     /** The question and answer a relaunched thread gets when the original thread is gone. */
     resume_context: text("resume_context"),
-    /** Each retry after a failure is a new attempt on its own branch, with its own budget. */
+    /** Each retry after a failure is a new attempt on its own branch. */
     attempt: integer("attempt").notNull().default(1),
     /** Why the previous attempt failed; the next attempt's first message quotes it. */
     previous_failure: text("previous_failure"),
-    budget_usd: doublePrecision("budget_usd").notNull(),
+    /** Unused: the per-attempt cap it held was removed. Kept, with a default, for runners and ingest deployed before that. */
+    budget_usd: doublePrecision("budget_usd").notNull().default(5),
     /** When the watchdog nudged a stuck run, and in which stage; cleared once the stage moves on. */
     nudged_at: ts("nudged_at"),
     nudged_stage: runStage("nudged_stage"),
@@ -168,8 +169,8 @@ export const jobs = pgTable(
     sandbox_snapshot: text("sandbox_snapshot"),
     /** The runner-side CODEX_HOME whose ChatGPT login the sandbox holds; one job per slot. */
     codex_slot: text("codex_slot"),
-    /** The agent's assessment from its latest pr report on this attempt; see lib/assessment.ts. */
-    merge_assessment: jsonb("merge_assessment").$type<MergeAssessment>(),
+    /** The agent's assessment from its latest pr report on this attempt; rows from before the six checks were dropped keep that shape, so read it with parseAssessment. */
+    merge_assessment: jsonb("merge_assessment").$type<AssessmentInput>(),
     /** The runner's latest merge decision while the job sits in pr; see lib/merge-decision.ts. */
     merge_decision: jsonb("merge_decision").$type<MergeDecision>(),
     /** The latest evidence for the current attempt, without output; job_evidence keeps every commit's. See lib/evidence.ts. */

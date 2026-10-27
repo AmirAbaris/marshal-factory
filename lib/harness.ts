@@ -15,7 +15,7 @@ export const harnessSchema = z.object({
 });
 export type Harness = z.infer<typeof harnessSchema>;
 
-/** Drivers whose sessions run the factory's hooks and MCP reporter, so stages, cost and the budget cap work. */
+/** Drivers whose sessions run the factory's hooks and MCP reporter, so stages and cost work. */
 export const TRACKED_DRIVERS: readonly string[] = ["claudeAgent"];
 
 /** Drivers without hooks whose factory-report MCP server posts their stages, questions, PRs and assessments; the runner reads their cost from their session logs (lib/codex-usage.ts). */

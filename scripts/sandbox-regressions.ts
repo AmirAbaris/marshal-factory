@@ -134,7 +134,7 @@ Object.assign(sandboxRuntime, {
   slotHealthPath: join(mkdtempSync(join(tmpdir(), "slot-health-")), "codex-slots.json"),
 });
 const claudeCode = { provider: "claudeAgent", model: "claude-opus-5-5" };
-const entry = (key: string, harness = claudeCode) => ({ key, sandbox_id: null, attempt: 1, budgetUsd: 7, source: "linear" as const, repo: "ski043/factory-demo", branch: `factory/${key}`, threadTitle: `${key} t`, message: `Work ${key}`, harness, ticket: null });
+const entry = (key: string, harness = claudeCode) => ({ key, sandbox_id: null, attempt: 1, source: "linear" as const, repo: "ski043/factory-demo", branch: `factory/${key}`, threadTitle: `${key} t`, message: `Work ${key}`, harness, ticket: null });
 const row = async (key: string) => (await db.select().from(jobs).where(eq(jobs.key, key)))[0]!;
 const ids = keys.map((k) => `sandbox-regress-${k}`);
 
@@ -216,8 +216,9 @@ try {
   );
   assert.ok(events.some((e) => e.event === "sandbox:no-pstack" && e.detail.plugin === PSTACK_PLUGIN), "a sandbox whose claude lacks PStack is logged");
   assert.equal(sbA.files.get("/root/.config/marshal-factory/github-token"), "ghs_fake_installation_token");
-  assert.deepEqual(JSON.parse(sbA.files.get("/root/.config/marshal-factory/config.json")!), { ingestUrl: config.ingestUrl, secret: config.secret, factory: { budgetUsd: 7 } });
-  assert.match(sbA.files.get("/root/.claude/settings.json")!, /bun \\"\/opt\/marshal-factory\/hooks\/budget\.ts\\"/, "user-level hooks point at the sandbox's factory");
+  assert.deepEqual(JSON.parse(sbA.files.get("/root/.config/marshal-factory/config.json")!), { ingestUrl: config.ingestUrl, secret: config.secret });
+  assert.match(sbA.files.get("/root/.claude/settings.json")!, /bun \\"\/opt\/marshal-factory\/hooks\/report\.ts\\"/, "user-level hooks point at the sandbox's factory");
+  assert.doesNotMatch(sbA.files.get("/root/.claude/settings.json")!, /hooks\/budget\.ts/, "and wire no budget hook");
   assert.equal(JSON.parse(sbA.files.get("/root/.claude.json")!).mcpServers["factory-report"].args[0], "/opt/marshal-factory/mcp/factory-report.ts");
   assert.deepEqual(JSON.parse(sbA.files.get("/root/.claude.json")!).mcpServers["factory-report"].env, { FACTORY_REPORTER: "hook" }, "Claude Code's hooks report its stages, so its server only validates");
   const argvs = sbA.execs.map((e) => e.argv.join(" "));

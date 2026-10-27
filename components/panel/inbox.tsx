@@ -1,6 +1,6 @@
 "use client";
 
-import { CheckIcon, ExternalLinkIcon, XIcon } from "lucide-react";
+import { ExternalLinkIcon, XIcon } from "lucide-react";
 import Link from "next/link";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -11,7 +11,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import type { JobRow } from "@/db/schema";
-import { ASSESSMENT_CHECKS, assessmentSchema, CHECK_LABELS } from "@/lib/assessment";
+import { parseAssessment } from "@/lib/assessment";
 import { INBOX_LABELS, inboxItems, inboxReason, type InboxItem, type InboxKind } from "@/lib/inbox";
 import { stopLine, stopView } from "@/lib/stop";
 import { AUTONOMY_LABELS, type ReviewSummary } from "@/lib/merge-decision";
@@ -21,6 +21,7 @@ import type { BoardCard } from "./cards";
 import { EvidenceSummaryList } from "./evidence";
 import { InboxActions } from "./inbox-actions";
 import { jobsHref } from "./job-view";
+import { Confidence } from "./merge-decision";
 import { useRowKeys } from "./row-keys";
 import { ShortTime } from "./time";
 
@@ -155,13 +156,16 @@ function Why({ item }: { item: Item }) {
 }
 
 function Assessment({ job }: { job: JobRow }) {
-  const assessment = assessmentSchema.safeParse(job.merge_assessment).data;
+  const assessment = parseAssessment(job.merge_assessment);
   if (!assessment) return null;
   return (
     <>
-      {assessment.reviewFocus && (
-        <Section title="What to look at">
-          <p className="whitespace-pre-wrap">{assessment.reviewFocus}</p>
+      <Section title="Confidence">
+        <Confidence assessment={assessment} />
+      </Section>
+      {assessment.notes && (
+        <Section title="Notes">
+          <p className="whitespace-pre-wrap">{assessment.notes}</p>
         </Section>
       )}
       {assessment.assumptions.length > 0 && (
@@ -173,22 +177,6 @@ function Assessment({ job }: { job: JobRow }) {
           </ul>
         </Section>
       )}
-      <Section title={`Confidence · ${ASSESSMENT_CHECKS.filter((c) => assessment.checks[c].ok).length} of ${ASSESSMENT_CHECKS.length}`}>
-        <ul className="flex flex-col gap-1.5">
-          {ASSESSMENT_CHECKS.map((name) => {
-            const check = assessment.checks[name];
-            return (
-              <li key={name} className="flex gap-2">
-                {check.ok ? <CheckIcon className="mt-0.5 size-4 shrink-0 text-success" /> : <XIcon className="mt-0.5 size-4 shrink-0 text-destructive" />}
-                <div className="flex min-w-0 flex-col">
-                  <span className="font-medium">{CHECK_LABELS[name]}</span>
-                  <span className="text-muted-foreground">{check.note}</span>
-                </div>
-              </li>
-            );
-          })}
-        </ul>
-      </Section>
     </>
   );
 }

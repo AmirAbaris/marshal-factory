@@ -26,13 +26,12 @@ const logged: string[] = [];
 const log = console.log;
 console.log = (...args: unknown[]) => (logged.push(args.map(String).join(" ")), log(...args));
 
-const ok = (note = "fine") => ({ ok: true, note });
 const assessment: MergeAssessment = {
   recommendation: "merge",
   interpretation: "Sort the list by name.",
   assumptions: ["Case-insensitive, like the search box."],
-  checks: { interpretation: ok(), proven: ok(), contained: ok(), reversible: ok(), noTasteCalls: ok(), noSurprises: ok() },
-  reviewFocus: "The sort order",
+  confidence: { confident: true },
+  notes: "The sort order",
 };
 
 // --- pure helpers
@@ -296,7 +295,7 @@ try {
   assert.equal(goodComments.length, 1);
   assert.ok(goodComments[0]!.body.startsWith(`${DECISION_MARKER}\n\n✅ Merged by the factory`), goodComments[0]!.body);
   assert.match(goodComments[0]!.body, /\*\*Assumptions I made\*\*\n\n- Case-insensitive/);
-  assert.match(goodComments[0]!.body, /✅ Easy to undo: fine/);
+  assert.match(goodComments[0]!.body, /\*\*Confidence\*\*\n\nConfident it built what the issue asked for/);
   assert.deepEqual(notesOf(GOOD), [`Merged by the factory: ${prUrl(AUTO, 1)}`]);
 
   // A push between the decision and the merge aborts it; the next pass merges the new head.
@@ -313,7 +312,7 @@ try {
   const reason = "The factory's GitHub App can't merge in this repo: Resource not accessible by integration";
   assert.deepEqual([forbidden.outcome, forbidden.reasons, forbidden.blocked], ["handover", [reason], "Resource not accessible by integration"]);
   assert.match(comments.get(pullKey(AUTO, 4))![0]!.body, /Ready for your review\n\n- The factory's GitHub App can't merge/);
-  assert.match(comments.get(pullKey(AUTO, 4))![0]!.body, /What to look at first\*\*\n\nThe sort order/);
+  assert.match(comments.get(pullKey(AUTO, 4))![0]!.body, /Notes\*\*\n\nThe sort order/);
 
   // Trial and off never merge; trial comments.
   assert.equal(putsTo(TRIAL, 6).length + putsTo(OFF, 7).length, 0);

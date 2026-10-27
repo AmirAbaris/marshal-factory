@@ -13,11 +13,9 @@ type HookEntry = {
 /** Ours, per event, in order. PostToolUse takes every tool so the reporter can send usage snapshots. */
 function hooksFor(root: string): Record<string, HookEntry[]> {
   const reporter = { type: "command", command: `bun "${join(root, "hooks/report.ts")}"`, async: true, timeout: 20 };
-  // Synchronous on purpose: it has to answer before the tool runs.
-  const budget = { type: "command", command: `bun "${join(root, "hooks/budget.ts")}"`, timeout: 10 };
   return {
     SessionStart: [{ hooks: [reporter] }],
-    PreToolUse: [{ hooks: [budget] }, { matcher: "Agent", hooks: [reporter] }],
+    PreToolUse: [{ matcher: "Agent", hooks: [reporter] }],
     PostToolUse: [{ hooks: [reporter] }],
     SubagentStop: [{ hooks: [reporter] }],
     Stop: [{ hooks: [reporter] }],
@@ -25,6 +23,7 @@ function hooksFor(root: string): Record<string, HookEntry[]> {
   };
 }
 
+/** hooks/budget.ts counts as ours so rewiring a repo from before the cap was removed drops it. */
 const isOurs = (entry: HookEntry) => entry.hooks?.some((hook) => /hooks\/(report|budget)\.ts/.test(hook.command ?? ""));
 
 export function withHooks(settings: Json, root: string): Json {

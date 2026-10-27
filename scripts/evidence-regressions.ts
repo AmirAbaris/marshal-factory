@@ -304,7 +304,7 @@ try {
     recommendation: "merge",
     interpretation: "x",
     assumptions: [],
-    checks: Object.fromEntries(["interpretation", "proven", "contained", "reversible", "noTasteCalls", "noSurprises"].map((c) => [c, { ok: true, note: "fine" }])) as MergeAssessment["checks"],
+    confidence: { confident: true },
   };
   const byUrl = new Map<string, string>();
   const pr = (k: string, over: Partial<typeof jobs.$inferInsert>) => {

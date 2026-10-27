@@ -98,6 +98,7 @@ function gitRepo(branch: string) {
   return repo;
 }
 
+// The six-check shape agents reported before confidence replaced it; ingest still takes it.
 const assessment = {
   recommendation: "handover",
   interpretation: "Added the flag.",
@@ -193,6 +194,7 @@ try {
   assert.match(prReply, /^Recorded stage pr\. Prove the pushed commit with `bun \/\S+\/hooks\/verify\.ts` \(factory-verify\)/, "pr and verifying name this checkout's factory-verify");
   job = await row(CODEX);
   assert.deepEqual([job.stage, job.pr_url, job.merge_assessment?.recommendation], ["pr", prUrl, "handover"], "the PR URL and the merge assessment land like Claude's");
+  assert.deepEqual(job.merge_assessment?.confidence, { confident: false, reason: "Proven: n" }, "stored in the current shape");
   const runsOf = await db.select().from(runs).where(eq(runs.job_key, CODEX));
   assert.equal(harnessLine(boardCards([job], runsOf)[0]!.harness!), "Codex · cost unknown", "the card shows stages, and no cost before the runner reads its usage");
   await first.close();

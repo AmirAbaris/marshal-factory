@@ -1,10 +1,10 @@
 import { z } from "zod";
-import { ASSESSMENT_CHECKS, CHECK_LABELS, type MergeAssessment } from "./assessment";
+import type { MergeAssessment } from "./assessment";
 import { headEvidenceSchema, notVerifiedWhy, shortSha, type HeadEvidence } from "./evidence";
 import { globToRegExp, matchesAny } from "./globs";
 
-// Whether a factory PR would merge on its own. The agent recommends (lib/assessment.ts); the
-// runner enforces hard limits that no recommendation overrides. Pure, so the runner pass and the
+// Whether a factory PR would merge on its own. The agent recommends merge unless it isn't confident
+// (lib/assessment.ts); the runner enforces factual hard limits that no recommendation overrides. Pure, so the runner pass and the
 // regressions share it.
 
 export const AUTONOMY_LEVELS = ["off", "trial", "auto"] as const;
@@ -156,12 +156,8 @@ export type PrFacts = {
 
 export type DecisionInput = {
   policy: RepoPolicy;
-  /** False when the attempt recorded no usage, or used a model without a price; see lib/spend.ts. */
-  costKnown: boolean;
   assessment: MergeAssessment | null;
   attempt: number;
-  spendUsd: number;
-  budgetUsd: number;
   labels: readonly string[];
   /** Null only when autonomy is off, which never asks GitHub. */
   pr: PrFacts | null;
@@ -207,7 +203,6 @@ function hardLimits(input: DecisionInput, pr: PrFacts) {
   const reasons: string[] = [];
   if (input.labels.some((l) => l.toLowerCase() === REVIEW_LABEL)) reasons.push(`The issue has the "${REVIEW_LABEL}" label.`);
   if (input.attempt !== 1) reasons.push(`This is attempt ${input.attempt}; only a first attempt merges on its own.`);
-  if (input.spendUsd >= input.budgetUsd) reasons.push("The run went over its budget.");
   if (pr.checks === "failure") reasons.push("A check failed on the latest commit.");
   if (pr.mergeable === "conflicting") reasons.push("The pull request conflicts with its base branch.");
   if (pr.behindBy > 0) reasons.push(`The branch is ${pr.behindBy} commit${pr.behindBy === 1 ? "" : "s"} behind its base.`);
@@ -226,15 +221,10 @@ function hardLimits(input: DecisionInput, pr: PrFacts) {
   return reasons;
 }
 
-export const COST_UNKNOWN_REASON = "This run's cost is unknown, so it can't be held to its budget.";
-
-function agentReasons({ costKnown, assessment }: DecisionInput) {
-  // A run whose cost is unknown can't be held to its budget, whatever it assessed.
-  if (!costKnown) return [COST_UNKNOWN_REASON];
-  if (!assessment) return ["The agent didn't report a merge assessment."];
+function agentReasons({ assessment }: DecisionInput) {
+  if (!assessment) return ["The agent didn't report an assessment."];
   if (assessment.recommendation === "merge") return [];
-  const failed = ASSESSMENT_CHECKS.filter((name) => !assessment.checks[name].ok).map((name) => `${CHECK_LABELS[name]}: ${assessment.checks[name].note}`);
-  return failed.length > 0 ? failed : ["The agent recommends handing over."];
+  return [`The agent isn't confident: ${assessment.confidence.reason ?? "it recommends handing over."}`];
 }
 
 /** The verified-at-head limit: what the agent or the runner ran at exactly the PR's head. */

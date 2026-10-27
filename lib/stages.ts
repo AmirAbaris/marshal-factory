@@ -4,6 +4,7 @@ import { attemptBranch } from "./factory";
 
 // inferred: the runner reads a harness that never reports stages (its PR on GitHub, its settled thread).
 // changes: the owner asked for changes on the PR, in the inbox or in a GitHub review.
+// budget: posted only by runners from before the budget cap was removed; kept so their events still read.
 export const RUNNER_CAUSES = ["resume", "conflict", "merged", "watchdog", "budget", "stop", "closed", "reclaim", "inferred", "changes"] as const;
 export type RunnerCause = (typeof RUNNER_CAUSES)[number];
 export type Cause = "report" | RunnerCause;

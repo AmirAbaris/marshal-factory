@@ -4,8 +4,10 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { factorySchema } from "../lib/config";
+import { wiredRoots, withHooks } from "../lib/target-wiring";
 
-// Runs hooks/budget.ts as Claude Code would, against a throwaway HOME and two fake checkouts.
+// There is no budget cap. Repos wired before it was removed still run hooks/budget.ts, which must allow everything.
 const home = mkdtempSync(join(tmpdir(), "budget-"));
 const hook = join(import.meta.dirname, "../hooks/budget.ts");
 const write = (path: string, text: string) => {
@@ -14,52 +16,46 @@ const write = (path: string, text: string) => {
 };
 
 write(join(home, ".config/marshal-factory/config.json"), JSON.stringify({ factory: { budgetUsd: 1 } }));
-const repo = join(home, "repo");
-write(join(repo, ".git/HEAD"), "ref: refs/heads/main\n");
 const worktree = join(home, "worktree");
-write(join(repo, ".git/worktrees/w/HEAD"), "ref: refs/heads/factory/TST-1\n");
-write(join(worktree, ".git"), `gitdir: ${join(repo, ".git/worktrees/w")}\n`);
-mkdirSync(join(worktree, "src"), { recursive: true });
+write(join(worktree, ".git/HEAD"), "ref: refs/heads/factory/TST-1\n");
+// What the old reporter cached for the old hook: far over the old config's cap.
+write(join(home, ".cache/marshal-factory/spend/factory_TST-1.json"), JSON.stringify({ usd: 50, at: Date.now() }));
 
-function runHook(toolName: string, cwd: string, sessionId = "s-main") {
-  const started = Date.now();
+function runHook(toolName: string) {
   const result = spawnSync("bun", [hook], {
-    input: JSON.stringify({ tool_name: toolName, cwd, session_id: sessionId }),
+    input: JSON.stringify({ tool_name: toolName, cwd: worktree, session_id: "s-main" }),
     env: { ...process.env, HOME: home },
     encoding: "utf8",
   });
-  return { code: result.status, stderr: result.stderr, ms: Date.now() - started };
+  return { code: result.status, stderr: result.stderr };
 }
-const spend = (usd: number) =>
-  write(join(home, ".cache/marshal-factory/spend/factory_TST-1.json"), JSON.stringify({ usd, at: Date.now() }));
 
 try {
-  assert.equal(runHook("Bash", join(worktree, "src")).code, 0, "no cached spend yet means no block");
-  spend(0.4);
-  assert.equal(runHook("Bash", worktree).code, 0, "under the cap");
-  spend(1.2);
-  const blocked = runHook("Bash", join(worktree, "src"));
-  assert.equal(blocked.code, 2, "over the cap blocks the tool call");
-  assert.match(blocked.stderr, /report_stage with stage "failed"/);
-  assert.equal(runHook("mcp__factory-report__report_stage", worktree).code, 0, "report_stage stays allowed");
-  write(join(home, "folder/.git/HEAD"), "ref: refs/heads/factory/TST-1\n");
-  assert.equal(runHook("Bash", join(home, "folder")).code, 2, "a plain checkout on a factory branch is capped too");
+  for (const tool of ["Bash", "Edit", "Agent", "mcp__factory-report__report_stage"]) {
+    const result = runHook(tool);
+    assert.equal(result.code, 0, `${tool} is allowed however much the attempt spent`);
+    assert.equal(result.stderr, "", `${tool} gets no message`);
+  }
 
-  assert.equal(runHook("Bash", repo, "s-factory").code, 0, "an unknown session on a plain branch passes");
-  write(join(home, ".cache/marshal-factory/sessions/s-factory"), "factory/TST-1");
-  assert.equal(
-    runHook("Bash", repo, "s-factory").code,
-    2,
-    "a subagent in its own non-factory worktree is capped through its session",
-  );
+  assert.equal(factorySchema.parse({ budgetUsd: 5 }).teamKey, "FAC", "a config that still sets budgetUsd parses");
+  assert.ok(!("budgetUsd" in factorySchema.parse({ budgetUsd: 5 })), "and the key is ignored");
 
-  write(join(home, "retry/.git/HEAD"), "ref: refs/heads/factory/TST-1-a2\n");
-  assert.equal(runHook("Bash", join(home, "retry")).code, 0, "a retry attempt starts with its own budget");
-
-  const plain = runHook("Bash", repo);
-  assert.equal(plain.code, 0, "a session that is not on a factory branch is never blocked");
-  assert.ok(plain.ms < 1000, `the hook stays fast (${plain.ms} ms)`);
-  console.log(`budget regressions passed (${blocked.ms} ms blocked, ${plain.ms} ms pass-through)`);
+  const root = "/opt/marshal-factory";
+  const old = {
+    hooks: {
+      PreToolUse: [
+        { hooks: [{ type: "command", command: `bun "${root}/hooks/budget.ts"`, timeout: 10 }] },
+        { matcher: "Agent", hooks: [{ type: "command", command: `bun "${root}/hooks/report.ts"`, async: true, timeout: 20 }] },
+        { matcher: "Bash", hooks: [{ type: "command", command: "echo theirs" }] },
+      ],
+    },
+  };
+  const rewired = JSON.stringify(withHooks(old, root));
+  assert.ok(!rewired.includes("hooks/budget.ts"), "rewiring an old repo drops the budget hook");
+  assert.ok(rewired.includes("echo theirs"), "and keeps the repo's own hooks");
+  assert.ok(!JSON.stringify(withHooks({}, root)).includes("budget"), "new wiring has no budget hook");
+  assert.deepEqual(wiredRoots(JSON.stringify(old)), [root], "an old wiring still names its factory checkout");
+  console.log("budget regressions passed");
 } catch (error) {
   console.error(error);
   process.exitCode = 1;

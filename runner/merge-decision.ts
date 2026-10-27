@@ -2,8 +2,8 @@ import { randomUUID } from "node:crypto";
 import { and, eq, isNotNull, inArray } from "drizzle-orm";
 import { db } from "../db/client";
 import { auditLog, jobEvidence, jobs, type AuditRow, type RepoSettingsRow } from "../db/schema";
+import { parseAssessment } from "../lib/assessment";
 import { headEvidence, type EvidenceRow, type HeadEvidence } from "../lib/evidence";
-import { attemptBranch } from "../lib/factory";
 import { parseDetail } from "../lib/onboarding";
 import { CHECKS, type CheckName, type Recipe } from "../lib/recipe";
 import type { ApproveDetail } from "../lib/inbox";
@@ -26,7 +26,6 @@ import {
 import { readRepoSettings, resolvePolicy } from "../lib/settings";
 import { parseJob, parseJobs, sourceFor } from "../lib/sources";
 import type { Job, JobId } from "../lib/sources/types";
-import { branchCosts } from "../lib/spend";
 import { thisMachine } from "./heartbeat";
 import { mergeNow, recoverMerges, storeDecision, storedDecision, syncComments } from "./merge-service";
 import { config } from "./config";
@@ -93,21 +92,15 @@ async function evaluate(job: Job, policy: RepoPolicy, previous: MergeDecision | 
   if (sameReport && sameHead && fresh && !unsettled && sameEvidence(previous.evidence, evidence)) return "unchanged";
   const runner = runnerVerification(job, detail.headSha, policy, previous, now);
 
-  const branch = attemptBranch(job.key, job.attempt);
   const headSeenAt = sameHead && previous.headSeenAt ? Date.parse(previous.headSeenAt) : now;
-  const [pr, labels, costs] = await Promise.all([
+  const [pr, labels] = await Promise.all([
     prFacts(job.pr_url!, job.repo as RepoName, detail.headSha, detail.baseRef, detail.mergeable, headSeenAt),
     sourceFor(job.source).labels(job),
-    branchCosts(db, [branch], config.factory.pricing),
   ]);
-  const cost = costs[branch] ?? { usd: 0, known: false };
   const decision = decideMerge({
     policy,
-    costKnown: cost.known,
-    assessment: job.merge_assessment,
+    assessment: parseAssessment(job.merge_assessment),
     attempt: job.attempt,
-    spendUsd: cost.usd,
-    budgetUsd: job.budget_usd,
     labels,
     pr,
     headSeenAt,

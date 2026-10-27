@@ -4,6 +4,7 @@ import * as schema from "../db/schema";
 import { agents, events, jobEvidence, jobs, runs } from "../db/schema";
 import type { FactoryEvent, Usage } from "./events";
 import { summarize } from "./evidence";
+import { normalizeAssessment } from "./assessment";
 import { attemptBranchSql } from "./branch-sql";
 import { parseBranch } from "./factory";
 import { branchSpend } from "./spend";
@@ -351,7 +352,7 @@ async function moveJob(tx: Tx, event: Extract<FactoryEvent, { kind: "stage" }>):
       question: event.question ?? null,
       pr_url: sql`coalesce(${event.prUrl ?? null}, ${jobs.pr_url})`,
       // Each pr report replaces the assessment, so the latest report on this attempt wins.
-      ...(event.stage === "pr" && { merge_assessment: event.assessment ?? null }),
+      ...(event.stage === "pr" && { merge_assessment: event.assessment ? normalizeAssessment(event.assessment) : null }),
       stage_event_id: event.eventId,
       updated_at: at,
     })
@@ -432,7 +433,7 @@ async function applyAgentEvent(tx: Tx, event: FactoryEvent) {
 export type IngestResult = {
   received: number;
   inserted: number;
-  /** USD spent so far per factory branch (one attempt at a job) touched by the batch; the reporter caches it for the budget hook. */
+  /** USD spent so far per factory branch (one attempt at a job) touched by the batch; reporters from before the budget cap was removed still cache it. */
   spend: Record<string, number>;
   /** Stage events the transition table refused; stored, but neither the job nor the run moved. */
   refused: StageRefusal[];

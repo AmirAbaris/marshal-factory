@@ -179,7 +179,7 @@ bun scripts/install-target.ts ~/code/my-app
 
 This writes three things into the repo, all pointing at your live checkout:
 
-- `.claude/settings.json`: the reporter hooks and the budget hook.
+- `.claude/settings.json`: the reporter hooks.
 - `.mcp.json`: the `factory-report` MCP server.
 - `.agents/playbooks/factory.md`: a copy of the factory playbook. Threads follow the factory's own `playbooks/factory.md`, which every launch message names; the copy may only add notes about the repo.
 
@@ -220,7 +220,7 @@ Within seconds the issue moves to In Progress, a comment says the factory took i
 
 **Watch it.** Cards move through Queued, Triage, Investigating, Implementing, Verifying and PR. Open a card to see the stage history, the agents and subagents, the models, and the spend. **Other activity** lists Claude Code sessions that report no factory stage, such as work you start by hand in a target repo. **Machines** shows each runner's Mac, its load, and its T3 projects.
 
-![The panel's board: runs grouped by stage, each card showing its ticket, model, spend against the cap, and machine](docs/images/panel-board.png)
+![The panel's board: runs grouped by stage, each card showing its ticket, model, spend, and machine](docs/images/panel-board.png)
 
 **Answer questions.** When the issue is ambiguous or something blocks the run, the card moves to Waiting, and the question is posted as a comment on the Linear issue, usually with options to pick from. Reply with a comment on the issue. The thread continues with your answer.
 
@@ -228,7 +228,7 @@ Within seconds the issue moves to In Progress, a comment says the factory took i
 
 **Stop a job.** Remove the `factory` label, or cancel the issue. The runner stops the thread.
 
-**When it fails.** A job fails when the agent gives up, when it stays stuck after one nudge, or when it hits its budget (5 USD per attempt by default). The reason is posted on the issue, the issue goes back to Todo, and the label changes to `factory-failed`. To retry, add `factory` again. The retry runs on a new branch (`factory/FAC-7-a2`) with a fresh budget. A failed job's worktree is kept for three days, so you can look at what it did.
+**When it fails.** A job fails when the agent gives up, or when it stays stuck after one nudge. The reason is posted on the issue, the issue goes back to Todo, and the label changes to `factory-failed`. To retry, add `factory` again. The retry runs on a new branch (`factory/FAC-7-a2`). A failed job's worktree is kept for three days, so you can look at what it did. Spend is measured per attempt and shown on the card; no amount stops a run.
 
 ## Settings
 
@@ -236,7 +236,6 @@ The optional `factory` object in `~/.config/marshal-factory/config.json` overrid
 
 - `teamKey` (`FAC`) and `label` (`factory`): the Linear team and label to work on.
 - `maxInFlight` (2): how many jobs this Mac runs at once.
-- `budgetUsd` (5): what one attempt may spend, main session plus subagents.
 - `provider` (`claudeAgent`) and `model` (`claude-opus-5-5`): what new threads run on.
 - `stuckAfterMinutes` (30) and `failAfterNudgeMinutes` (30): when a quiet job gets nudged, and when it fails after the nudge.
 - `cleanupGraceDays` (3): how long a failed job's worktree is kept.
@@ -288,6 +287,6 @@ Work in a separate clone or worktree, never in the live checkout. Run `bun dev` 
 
 ## Further reading
 
-- [docs/operations.md](docs/operations.md): how each part behaves, including the runner, write-back, retries, budgets, cleanup, the watchdog, sign-in and deploys.
+- [docs/operations.md](docs/operations.md): how each part behaves, including the runner, write-back, retries, spend, cleanup, the watchdog, sign-in and deploys.
 - [playbooks/factory.md](playbooks/factory.md): what each factory thread is told to do.
 - [docs/research/](docs/research/): background reports from the initial investigation.
