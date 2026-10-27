@@ -5,7 +5,8 @@ import type { JobHost } from "./host";
 // Codex writes each thread to $CODEX_HOME/sessions/YYYY/MM/DD/rollout-<time>-<thread id>.jsonl.
 // The first line is `session_meta` (thread id, root session id, cwd, git branch, and for a
 // subagent the parent thread); each turn writes a `turn_context` with its model; every model call
-// writes an `event_msg` `token_count` whose info.total_token_usage is the thread's running total.
+// writes an `event_msg` `token_count` whose info.total_token_usage is the thread's running total,
+// and each turn starts with `task_started` and ends with `task_complete`.
 // OpenAI counts cached input inside input_tokens and reasoning inside output_tokens, so input here
 // is the uncached rest, like Claude's.
 
@@ -36,6 +37,8 @@ const tokenCount = z.object({
   payload: z.object({ type: z.literal("token_count"), info: z.object({ total_token_usage: tokenUsage }).nullish() }),
 });
 
+const taskEvent = z.object({ type: z.literal("event_msg"), payload: z.object({ type: z.enum(["task_started", "task_complete"]) }) });
+
 const subagentSource = z.object({ subagent: z.object({ thread_spawn: z.object({ parent_thread_id: z.string() }) }) });
 
 export type Rollout = {
@@ -48,6 +51,9 @@ export type Rollout = {
   startedAt: number | null;
   /** When the last token count was written; null with no count yet. */
   lastUsageAt: number | null;
+  /** The last turn ended and no other started. */
+  settled: boolean;
+  /** The model is "unknown" until a turn_context names one. */
   usage: Usage;
 };
 
@@ -62,6 +68,7 @@ export function parseRollout(text: string): Rollout | undefined {
   let model = "unknown";
   let total: z.infer<typeof tokenUsage> | undefined;
   let lastUsageAt: number | null = null;
+  let settled = false;
   for (const raw of text.split("\n")) {
     if (!raw.trim()) continue;
     let line: unknown;
@@ -78,6 +85,11 @@ export function parseRollout(text: string): Rollout | undefined {
     const turn = turnContext.safeParse(line);
     if (turn.success) {
       model = turn.data.payload.model;
+      continue;
+    }
+    const task = taskEvent.safeParse(line);
+    if (task.success) {
+      settled = task.data.payload.type === "task_complete";
       continue;
     }
     const count = tokenCount.safeParse(line);
@@ -100,6 +112,7 @@ export function parseRollout(text: string): Rollout | undefined {
     branch: meta.git?.branch ?? null,
     startedAt: time(meta.timestamp),
     lastUsageAt,
+    settled,
     usage: {
       input: Math.max(0, (total?.input_tokens ?? 0) - cacheRead - cacheWrite),
       output: total?.output_tokens ?? 0,
@@ -153,13 +166,15 @@ export function codexUsage(rollouts: readonly Rollout[], run: CodexRun): CodexUs
 const RECORD = "\u001e";
 
 // Prints, per rollout written to in the last $2 minutes, a separator with its path, then only the
-// lines the parser needs: the session_meta, the last turn_context and the last running total.
+// lines the parser needs: the session_meta, the last turn_context, the last turn start or end, and
+// the last running total.
 const READ_SCRIPT = `
 cd "$1" 2>/dev/null || exit 0
 find . -name 'rollout-*.jsonl' -mmin "-$2" | while IFS= read -r f; do
   printf '${RECORD}%s\\n' "$f"
   head -n 1 "$f"
   grep -F '"type":"turn_context"' "$f" | tail -n 1
+  grep -E '"type":"task_(started|complete)"' "$f" | tail -n 1
   grep -F '"total_token_usage"' "$f" | tail -n 1
 done
 `;

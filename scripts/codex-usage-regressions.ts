@@ -1,7 +1,7 @@
 import "./test-guard";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { appendFileSync, cpSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { appendFileSync, cpSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { eq, inArray, like } from "drizzle-orm";
@@ -30,6 +30,7 @@ const ROOT = "019a2b3c-0000-7000-8000-000000000001";
 const SUB = "019a2b3c-0000-7000-8000-000000000002";
 const OTHER = "019a2b3c-0000-7000-8000-000000000003";
 const BARE = "019a2b3c-0000-7000-8000-000000000004";
+const DONE = "019a2b3c-0000-7000-8000-000000000005";
 const WORKTREE = "/root/.t3/worktrees/factory-demo/factory-FAC-61";
 const RUN_START = Date.parse("2026-10-27T10:05:00.000Z");
 
@@ -45,6 +46,7 @@ assert.deepEqual(
     branch: "factory/FAC-61",
     startedAt: Date.parse("2026-10-27T10:00:00.000Z"),
     lastUsageAt: Date.parse("2026-10-27T10:04:00.000Z"),
+    settled: false,
     // 30000 input, of it 21000 cached and 1000 cache writes; reasoning is inside the 2500 output.
     usage: { input: 8000, output: 2500, cacheRead: 21000, cacheWrite: 1000, model: "gpt-6.1-sol" },
   },
@@ -52,6 +54,8 @@ assert.deepEqual(
 );
 const sub = parseRollout(fixture(SUB))!;
 assert.deepEqual([sub.sessionId, sub.parentThreadId, sub.usage], [ROOT, ROOT, { input: 2000, output: 400, cacheRead: 3000, cacheWrite: 0, model: "gpt-6-luna" }], "a subagent shares its root's session; a missing field counts 0");
+assert.equal(parseRollout(fixture(DONE))!.settled, true, "a thread whose last turn completed is settled");
+assert.equal(parseRollout(`${fixture(DONE)}${JSON.stringify({ type: "event_msg", payload: { type: "task_started" } })}\n`)!.settled, false, "until another turn starts");
 const bare = parseRollout(fixture(BARE))!;
 assert.deepEqual([bare.cwd, bare.branch, bare.startedAt, bare.lastUsageAt, bare.usage], [null, null, null, null, { input: 100, output: 0, cacheRead: 0, cacheWrite: 0, model: "unknown" }], "missing metadata and model stay unknown");
 assert.equal(parseRollout(fixture(ROOT).split("\n").slice(1).join("\n")), undefined, "no session_meta, no rollout");
@@ -63,6 +67,7 @@ const all = [root, sub, parseRollout(fixture(OTHER))!, bare];
 const run = { cwd: WORKTREE, branch: "factory/FAC-61", startedAt: RUN_START };
 assert.deepEqual(matchRollouts(all, run).map((r) => r.threadId), [ROOT, SUB], "the worktree's root and its subagent");
 assert.deepEqual(matchRollouts(all, { ...run, cwd: null }).map((r) => r.threadId), [ROOT, SUB], "the attempt branch alone finds it");
+assert.deepEqual(matchRollouts([...all, parseRollout(fixture(DONE))!], run).map((r) => r.threadId), [ROOT, SUB, DONE], "every subagent of the root");
 assert.deepEqual(matchRollouts(all, { ...run, cwd: "/root/.t3/worktrees/factory-demo/factory-FAC-6", branch: null }).map((r) => r.threadId), [], "a worktree whose path only starts the same is another one");
 assert.deepEqual(matchRollouts([{ ...root, cwd: `${WORKTREE}/packages/app` }], { ...run, branch: null }).length, 1, "a directory inside the worktree is");
 assert.deepEqual(matchRollouts(all, { ...run, startedAt: root.startedAt! + ROLLOUT_SLACK_MS + 1 }), [], "a root that started well before the run is an earlier one's");
@@ -95,7 +100,8 @@ modal.api = fakeModal;
 const home = mkdtempSync(join(tmpdir(), "codex-usage-"));
 cpSync(FIXTURES, home, { recursive: true });
 const homeRead = await readRollouts(localHost, home, RUN_START - ROLLOUT_SLACK_MS);
-assert.deepEqual(homeRead.map((r) => r.threadId).sort(), [ROOT, SUB, OTHER, BARE].sort(), "the host command reads every recent rollout");
+assert.deepEqual(homeRead.map((r) => r.threadId).sort(), [ROOT, SUB, OTHER, BARE, DONE].sort(), "the host command reads every recent rollout");
+assert.equal(homeRead.find((r) => r.threadId === DONE)!.settled, true, "and keeps the line that settles a thread");
 assert.deepEqual(homeRead.find((r) => r.threadId === ROOT)!.usage, root.usage, "and the lines it keeps parse like the whole file");
 assert.deepEqual(await readRollouts(localHost, join(home, "missing"), Date.now() - 60_000), [], "no sessions dir, no rollouts");
 
@@ -127,6 +133,15 @@ try {
   await db.update(runs).set({ last_event_at: new Date() }).where(eq(runs.session_id, SESSION));
   const lastEventAt = (await runRow()).last_event_at.getTime();
 
+  // A read before the root's first turn_context knows no model: it posts nothing rather than "unknown".
+  const dayDir = join(home, "sessions/2026/10/27");
+  const rootFile = join(dayDir, readdirSync(dayDir).find((f) => f.endsWith(`${ROOT}.jsonl`))!);
+  const rootText = readFileSync(rootFile, "utf8");
+  writeFileSync(rootFile, rootText.split("\n").filter((l) => !l.includes('"type":"turn_context"')).join("\n"));
+  assert.deepEqual(await reconcileUsage({ only: [KEY] }), [], "no model, no usage posted");
+  assert.equal((await runRow()).model, null, "the run's model is never set to unknown");
+  writeFileSync(rootFile, rootText);
+
   assert.deepEqual(await reconcileUsage({ only: [KEY] }), [KEY], "the pass records the Codex run's usage");
   const recorded = await runRow();
   assert.deepEqual(
@@ -135,14 +150,32 @@ try {
     "into the run's usage columns, like Claude's",
   );
   assert.equal(recorded.last_event_at.getTime(), lastEventAt, "a usage read is not activity");
-  assert.deepEqual((await agentRows()).map((a) => [a.agent_id, a.model, a.input_tokens, a.cache_read_tokens]), [[`codex:${SUB}`, "gpt-6-luna", 2000, 3000]], "the subagent gets its own row");
+  assert.equal(recorded.started_at.getTime(), RUN_START, "nor does its earlier token time move the run's start");
+  const agentState = async () => (await agentRows()).map((a) => [a.agent_id, a.model, a.status, a.input_tokens, a.cache_read_tokens]).sort((a, b) => String(a[0]).localeCompare(String(b[0])));
+  assert.deepEqual(
+    await agentState(),
+    [
+      [`codex:${SUB}`, "gpt-6-luna", "running", 2000, 3000],
+      [`codex:${DONE}`, "gpt-6-luna", "completed", 1000, 0],
+    ],
+    "each subagent gets its own row; one whose last turn completed is settled",
+  );
   assert.deepEqual(await reconcileUsage({ only: [KEY] }), [], "nothing new, nothing posted");
+  assert.equal((await runRow()).started_at.getTime(), RUN_START);
+
+  // A model recorded as unknown (by an older reader) is replaced even when the totals did not move.
+  await db.update(runs).set({ model: "unknown" }).where(eq(runs.session_id, SESSION));
+  await db.update(agents).set({ model: "unknown" }).where(eq(agents.agent_id, `codex:${SUB}`));
+  assert.deepEqual(await reconcileUsage({ only: [KEY] }), [KEY], "a known model is news");
+  assert.equal((await runRow()).model, "gpt-6.1-sol");
+  assert.equal((await agentRows()).find((a) => a.agent_id === `codex:${SUB}`)!.model, "gpt-6-luna", "for a subagent too");
+  await ingest(db, [eventSchema.parse({ kind: "usage", eventId: `cxu-unknown-${stamp}`, sessionId: SESSION, at: RUN_START, usage: { input: 8000, output: 2500, cacheRead: 21000, cacheWrite: 1000, model: "unknown" }, agents: [{ agentId: `codex:${SUB}`, usage: { input: 2000, output: 400, cacheRead: 3000, cacheWrite: 0, model: "unknown" } }] })]);
+  assert.deepEqual([(await runRow()).model, (await agentRows()).find((a) => a.agent_id === `codex:${SUB}`)!.model], ["gpt-6.1-sol", "gpt-6-luna"], "ingest never lets unknown replace a model");
   const cost = (await branchCosts(db, [`factory/${KEY}`]))[`factory/${KEY}`]!;
   assert.equal(cost.known, true);
-  assert.ok(Math.abs(cost.usd - (8000 * 2 + 2500 * 10 + 21000 * 0.1 + 1000 * 2.5 + 2000 * 0.1 + 400 * 0.5 + 3000 * 0.01) / 1e6) < 1e-12, `the attempt's cost is priced per model: ${cost.usd}`);
+  assert.ok(Math.abs(cost.usd - (8000 * 2 + 2500 * 10 + 21000 * 0.1 + 1000 * 2.5 + 2000 * 0.1 + 400 * 0.5 + 3000 * 0.01 + 1000 * 0.1 + 100 * 0.5) / 1e6) < 1e-12, `the attempt's cost is priced per model: ${cost.usd}`);
 
   // More work lands after the last pass; the teardown reads it before the sandbox goes.
-  const rootFile = join(home, "sessions/2026/10/27", readdirSync(join(home, "sessions/2026/10/27")).find((f) => f.endsWith(`${ROOT}.jsonl`))!);
   const total = { input_tokens: 50_000, cached_input_tokens: 30_000, cache_write_input_tokens: 1000, output_tokens: 4000, reasoning_output_tokens: 2000, total_tokens: 54_000 };
   appendFileSync(rootFile, `${JSON.stringify({ timestamp: "2026-10-27T10:30:00.000Z", type: "event_msg", payload: { type: "token_count", info: { total_token_usage: total } } })}\n`);
   await db.update(jobs).set({ stage: "merged" }).where(eq(jobs.key, KEY));
@@ -150,6 +183,7 @@ try {
   const final = await runRow();
   assert.deepEqual([final.input_tokens, final.output_tokens, final.cache_read_tokens], [19_000, 4000, 30_000], "the last usage is recorded before teardown");
   assert.equal((await jobRow(KEY)).sandbox_id, null, "and the sandbox is gone");
+  assert.deepEqual((await agentRows()).map((a) => a.status), ["completed", "completed"], "no subagent of a torn-down thread is left running");
   assert.ok(sandboxes.get(SANDBOX)!.terminated);
 
   // A sandbox that is gone has no rollouts left: the pass skips its run and goes on.

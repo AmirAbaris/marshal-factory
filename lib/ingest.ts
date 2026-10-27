@@ -38,6 +38,9 @@ function usageColumns(usage: Usage) {
   };
 }
 
+/** "unknown" is what a reader says before it has seen a model; it never replaces one. */
+const knownModel = (model: string | null | undefined) => (model && model !== "unknown" ? model : undefined);
+
 const keepGreater = (column: { name: string }) =>
   sql.raw(`greatest(runs."${column.name}", excluded."${column.name}")`);
 
@@ -56,7 +59,7 @@ async function upsertRun(tx: Tx, event: FactoryEvent) {
           model: event.model,
         }
       : event.kind === "turn_stop" || event.kind === "usage"
-        ? { model: event.usage.model, ...usageColumns(event.usage) }
+        ? { model: knownModel(event.usage.model), ...usageColumns(event.usage) }
         : {};
   const meta = {
     ...kindMeta,
@@ -227,7 +230,7 @@ async function applyAgentUsage(tx: Tx, e: Extract<FactoryEvent, { kind: "usage" 
         session_id: e.sessionId,
         agent_id: agent.agentId,
         status: "running",
-        model: agent.usage.model,
+        model: knownModel(agent.usage.model),
         started_at: when(e.at),
         ...usageColumns(agent.usage),
       });
@@ -236,7 +239,7 @@ async function applyAgentUsage(tx: Tx, e: Extract<FactoryEvent, { kind: "usage" 
     await tx
       .update(agents)
       .set({
-        model: existing.model ?? agent.usage.model,
+        model: knownModel(existing.model) ?? knownModel(agent.usage.model) ?? existing.model,
         input_tokens: Math.max(existing.input_tokens, agent.usage.input),
         output_tokens: Math.max(existing.output_tokens, agent.usage.output),
         cache_read_tokens: Math.max(existing.cache_read_tokens, agent.usage.cacheRead),

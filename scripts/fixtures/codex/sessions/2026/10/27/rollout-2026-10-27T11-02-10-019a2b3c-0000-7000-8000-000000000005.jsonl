@@ -1,0 +1,5 @@
+{"timestamp":"2026-10-27T10:02:10.000Z","type":"session_meta","payload":{"id":"019a2b3c-0000-7000-8000-000000000005","session_id":"019a2b3c-0000-7000-8000-000000000001","timestamp":"2026-10-27T10:02:10.000Z","cwd":"/root/.t3/worktrees/factory-demo/factory-FAC-61","originator":"codex_exec","cli_version":"0.164.0","source":{"subagent":{"thread_spawn":{"parent_thread_id":"019a2b3c-0000-7000-8000-000000000001","depth":1}}},"model_provider":"openai"}}
+{"timestamp":"2026-10-27T10:02:11.000Z","type":"event_msg","payload":{"type":"task_started","turn_id":"t1"}}
+{"timestamp":"2026-10-27T10:02:11.000Z","type":"turn_context","payload":{"turn_id":"t1","cwd":"/root/.t3/worktrees/factory-demo/factory-FAC-61","model":"gpt-6-luna"}}
+{"timestamp":"2026-10-27T10:02:40.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1000,"cached_input_tokens":0,"cache_write_input_tokens":0,"output_tokens":100,"reasoning_output_tokens":0,"total_tokens":1100}}}}
+{"timestamp":"2026-10-27T10:02:41.000Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"t1"}}

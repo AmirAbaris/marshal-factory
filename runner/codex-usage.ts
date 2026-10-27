@@ -17,30 +17,67 @@ import { postEvent } from "./ingest-client";
 /** Where Codex writes its sessions on the host: the sandbox's CODEX_HOME, or this machine's. */
 export const codexHomeOf = (host: JobHost) => (host === localHost ? (process.env.CODEX_HOME ?? join(homedir(), ".codex")) : CODEX_HOME);
 
-type Tokens = Pick<RunRow, "input_tokens" | "output_tokens" | "cache_read_tokens" | "cache_write_tokens">;
-const lags = (u: Usage, row: Tokens | undefined) =>
-  !row || u.input > row.input_tokens || u.output > row.output_tokens || u.cacheRead > row.cache_read_tokens || u.cacheWrite > row.cache_write_tokens;
+type Row = Pick<RunRow, "input_tokens" | "output_tokens" | "cache_read_tokens" | "cache_write_tokens" | "model">;
+const lags = (u: Usage, row: Row | undefined) =>
+  !row ||
+  u.input > row.input_tokens ||
+  u.output > row.output_tokens ||
+  u.cacheRead > row.cache_read_tokens ||
+  u.cacheWrite > row.cache_write_tokens ||
+  u.model !== row.model;
 
-/** Posts the run's Codex usage when its rollouts are ahead of the board; true when it did. */
-export async function recordCodexUsage(run: RunRow, host: JobHost) {
+const UNKNOWN_MODEL = "unknown";
+/** A rollout read before its first turn_context keeps the model the board has; with none, it waits for one. */
+const withModel = (u: Usage, recorded: string | null | undefined): Usage | undefined => {
+  const model = u.model !== UNKNOWN_MODEL ? u.model : recorded && recorded !== UNKNOWN_MODEL ? recorded : undefined;
+  return model ? { ...u, model } : undefined;
+};
+const fingerprintOf = (u: Usage) => `${u.input}.${u.output}.${u.cacheRead}.${u.cacheWrite}.${u.model}`;
+
+/**
+ * Posts the run's Codex usage when its rollouts are ahead of the board; true when it did. A subagent
+ * whose last turn ended, or any subagent once `final`, is settled with an agent_stop, since Codex
+ * sends no SubagentStop of its own.
+ */
+export async function recordCodexUsage(run: RunRow, host: JobHost, { final = false }: { final?: boolean } = {}) {
   const startedAt = run.started_at.getTime();
   const rollouts = await readRollouts(host, codexHomeOf(host), startedAt - ROLLOUT_SLACK_MS);
   const usage = codexUsage(rollouts, { cwd: run.cwd, branch: run.branch, startedAt });
-  if (!usage) return false;
-  const others = usage.others.map((r) => ({ agentId: `codex:${r.threadId}`, usage: r.usage }));
+  const main = usage && withModel(usage.main.usage, run.model);
+  if (!usage || !main) return false;
   const rows = await db.select().from(agents).where(eq(agents.session_id, run.session_id));
-  const behind = lags(usage.main.usage, run) || others.some((o) => lags(o.usage, rows.find((r) => r.agent_id === o.agentId)));
-  if (!behind) return false;
-  const fingerprint = [usage.main.usage, ...others.map((o) => o.usage)].map((u) => `${u.input}.${u.output}.${u.cacheRead}.${u.cacheWrite}`).join(":");
-  await postEvent({
-    eventId: `codex-usage:${run.session_id}:${fingerprint}`,
-    sessionId: run.session_id,
-    // The thread's own last count, so the usage never reads as new activity.
-    at: Math.min(usage.main.lastUsageAt ?? run.last_event_at.getTime(), run.last_event_at.getTime()),
-    kind: "usage",
-    usage: usage.main.usage,
-    agents: others,
+  const others = usage.others.flatMap((r) => {
+    const agentId = `codex:${r.threadId}`;
+    const row = rows.find((a) => a.agent_id === agentId);
+    const u = withModel(r.usage, row?.model);
+    if (!u) return [];
+    const settle = (final || r.settled) && row?.status !== "completed";
+    return [{ agentId, usage: u, behind: lags(u, row) || settle, settle }];
   });
+  if (!lags(main, run) && !others.some((o) => o.behind)) return false;
+  // Never before the run opened, so a usage read cannot move its start, nor after its last event.
+  const at = Math.max(startedAt, Math.min(usage.main.lastUsageAt ?? run.last_event_at.getTime(), run.last_event_at.getTime()));
+  const running = others.filter((o) => !o.settle);
+  await postEvent({
+    eventId: `codex-usage:${run.session_id}:${[main, ...running.map((o) => o.usage)].map(fingerprintOf).join(":")}`,
+    sessionId: run.session_id,
+    at,
+    kind: "usage",
+    usage: main,
+    agents: running.map(({ agentId, usage: u }) => ({ agentId, usage: u })),
+  });
+  for (const o of others.filter((x) => x.settle)) {
+    await postEvent({
+      eventId: `codex-stop:${o.agentId}:${fingerprintOf(o.usage)}`,
+      sessionId: run.session_id,
+      at,
+      kind: "agent_stop",
+      agentId: o.agentId,
+      status: "completed",
+      usage: o.usage,
+      model: o.usage.model,
+    });
+  }
   return true;
 }
 
@@ -51,7 +88,8 @@ export async function recordCodexUsage(run: RunRow, host: JobHost) {
 export async function recordJobCodexUsage(key: string, host: JobHost) {
   try {
     const codexRuns = await db.select().from(runs).where(and(eq(runs.job_key, key), like(runs.session_id, "mcp:%")));
-    for (const run of codexRuns) await recordCodexUsage(run, host);
+    // The thread is settled or about to end, so no subagent of it runs any more.
+    for (const run of codexRuns) await recordCodexUsage(run, host, { final: true });
   } catch (error) {
     const reason = error instanceof HostGoneError || error instanceof HostAsleepError ? error.message : String(error);
     console.log(JSON.stringify({ at: new Date().toISOString(), event: "codex-usage:skipped", key, reason }));

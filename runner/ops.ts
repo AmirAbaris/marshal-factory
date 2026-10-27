@@ -342,7 +342,7 @@ export async function watchdogFail(job: Pick<JobRow, "id" | "key" | "external_id
  */
 export async function reconcileUsage({ only }: { only?: string[] } = {}) {
   const recent = await db
-    .select({ run: runs, sandbox_id: jobs.sandbox_id, sandbox_snapshot: jobs.sandbox_snapshot })
+    .select({ run: runs, sandbox_id: jobs.sandbox_id, sandbox_snapshot: jobs.sandbox_snapshot, stage: jobs.stage })
     .from(runs)
     .leftJoin(jobs, eq(jobs.key, runs.job_key))
     .where(
@@ -353,12 +353,14 @@ export async function reconcileUsage({ only }: { only?: string[] } = {}) {
       ),
     );
   const fixed: string[] = [];
-  for (const { run, sandbox_id, sandbox_snapshot } of recent) {
+  for (const { run, sandbox_id, sandbox_snapshot, stage } of recent) {
     // A hibernated job's transcripts are in its snapshot; its thread is settled, so nothing is behind.
     if (isHibernated({ key: run.job_key!, sandbox_id, sandbox_snapshot })) continue;
     try {
       const host = hosts.forJob({ key: run.job_key!, sandbox_id });
-      if (await (isMcpSession(run.session_id) ? recordCodexUsage(run, host) : reconcileRun(run, host))) fixed.push(run.job_key!);
+      // A merged or failed job's thread is done, so its subagents are settled.
+      const final = stage === "merged" || stage === "failed";
+      if (await (isMcpSession(run.session_id) ? recordCodexUsage(run, host, { final }) : reconcileRun(run, host))) fixed.push(run.job_key!);
     } catch (error) {
       if (!(error instanceof HostGoneError)) throw error;
       console.log(JSON.stringify({ at: new Date().toISOString(), event: "reconcile:skipped", key: run.job_key, session: run.session_id, reason: error.message }));
