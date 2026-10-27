@@ -5,7 +5,7 @@ import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { planCleanup, type BranchState } from "../lib/cleanup";
-import { attemptBranch, jobKeyFromBranch } from "../lib/factory";
+import { attemptBranch, parseBranch } from "../lib/factory";
 
 // A T3 CLI with no threads; the cleanup modules read the path when they load.
 const t3Dir = mkdtempSync(join(tmpdir(), "cleanup-t3-"));
@@ -42,10 +42,10 @@ assert.deepEqual(planCleanup({ ...merged, unpushedCommits: 1, mergedAtHead: true
 assert.equal(planCleanup({ ...merged, threadRunning: true }, now, 3).kind, "hold", "a running thread keeps its worktree");
 assert.deepEqual(planCleanup({ ...merged, worktreePath: null, localBranch: false }, now, 3), { kind: "skip", reason: "already clean" });
 
-assert.equal(jobKeyFromBranch("factory/FAC-5"), "FAC-5");
-assert.equal(jobKeyFromBranch(attemptBranch("FAC-5", 2)), "FAC-5", "a retry branch maps back to its job");
+assert.equal(parseBranch("factory/FAC-5")?.key, "FAC-5");
+assert.equal(parseBranch(attemptBranch("FAC-5", 2))?.key, "FAC-5", "a retry branch maps back to its job");
 assert.equal(attemptBranch("FAC-5", 1), "factory/FAC-5");
-assert.equal(jobKeyFromBranch("worktree-agent-abc"), undefined);
+assert.equal(parseBranch("worktree-agent-abc")?.key, undefined);
 
 // Resolved, as git reports worktree paths: tmpdir is a symlink on macOS.
 const dir = realpathSync(mkdtempSync(join(tmpdir(), "cleanup-")));

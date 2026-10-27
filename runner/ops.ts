@@ -13,6 +13,7 @@ import { checkoutRepo, cleanupRepo, cleanupSubagentWorktrees } from "../lib/work
 import { github } from "../lib/github/pulls";
 import { claimConflict, conflictMessage, unclaimedRunsWithPr } from "../lib/conflicts";
 import { attemptBranch } from "../lib/factory";
+import { attemptBranchSql } from "../lib/branch-sql";
 import { nudgeMessage, watch } from "../lib/watchdog";
 import { isTracked } from "../lib/harness";
 import { readHarnesses } from "../lib/t3-state";
@@ -249,7 +250,7 @@ export async function watchdog() {
     .select({
       job: jobs,
       // Only the current attempt's runs: an earlier attempt's thread must not keep a retry looking alive.
-      lastEventAt: sql<Date | null>`(select max(${runs.last_event_at}) from ${runs} where ${runs.job_key} = ${jobs.key} and ${runs.branch} = case when ${jobs.attempt} > 1 then 'factory/' || ${jobs.key} || '-a' || ${jobs.attempt} else 'factory/' || ${jobs.key} end)`.mapWith(
+      lastEventAt: sql<Date | null>`(select max(${runs.last_event_at}) from ${runs} where ${runs.job_key} = ${jobs.key} and ${runs.branch} = ${attemptBranchSql})`.mapWith(
         (v: string | null) => (v ? new Date(v) : null),
       ),
     })

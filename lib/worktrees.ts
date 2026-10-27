@@ -2,7 +2,7 @@ import { join } from "node:path";
 import { z } from "zod";
 import type { JobRow } from "../db/schema";
 import { planCleanup, type BranchState } from "./cleanup";
-import { attemptBranch, jobKeyFromBranch } from "./factory";
+import { attemptBranch, parseBranch } from "./factory";
 import type { RepoName } from "./github/app";
 import { github } from "./github/pulls";
 import { localHost, type JobHost } from "./host";
@@ -118,7 +118,7 @@ export async function cleanupRepo(
 
   const checkedOut = await sh(host, "git", ["branch", "--show-current"], repo);
   for (const branch of branches) {
-    const key = jobKeyFromBranch(branch);
+    const key = parseBranch(branch)?.key;
     if (!key) continue;
     // One branch failing (GitHub, git) holds just that branch; the rest of the repo is still cleaned.
     try {

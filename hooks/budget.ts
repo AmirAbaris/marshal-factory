@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { loadLimits } from "../lib/config";
-import { jobKeyFromBranch, REPORT_STAGE_TOOL } from "../lib/factory";
+import { parseBranch, REPORT_STAGE_TOOL } from "../lib/factory";
 import { currentBranch } from "../lib/git-head";
 import { readSpend, sessionBranch } from "../lib/spend-cache";
 
@@ -12,8 +12,8 @@ function verdict(): string | undefined {
   const input = JSON.parse(readFileSync(0, "utf8")) as { tool_name?: string; cwd?: string; session_id?: string };
   if (input.tool_name === REPORT_STAGE_TOOL) return undefined;
   const cwdBranch = currentBranch(input.cwd ?? process.cwd());
-  const branch = jobKeyFromBranch(cwdBranch) ? cwdBranch : sessionBranch(input.session_id);
-  const key = jobKeyFromBranch(branch);
+  const branch = parseBranch(cwdBranch) ? cwdBranch : sessionBranch(input.session_id);
+  const key = parseBranch(branch)?.key;
   if (!branch || !key) return undefined;
   const spent = readSpend(branch);
   if (!spent) return undefined;

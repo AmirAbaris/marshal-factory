@@ -1,6 +1,6 @@
 import { asc, eq } from "drizzle-orm";
 import type { Stage } from "../lib/events";
-import { attemptBranch, jobKeyFromBranch } from "../lib/factory";
+import { attemptBranch, parseBranch } from "../lib/factory";
 import { canTransition, decideStage, type StageMove, type StageRow } from "../lib/stages";
 
 // Replays every input that moves jobs.stage on the branch DATABASE_URL names (default: .env.local)
@@ -29,8 +29,10 @@ function legacyApplies(row: StageRow, move: StageMove) {
   return true;
 }
 
-const attemptOf = (key: string, branch: string | null | undefined) =>
-  branch && jobKeyFromBranch(branch) === key ? Number(/-a(\d+)$/.exec(branch)?.[1] ?? 1) : undefined;
+const attemptOf = (key: string, branch: string | null | undefined) => {
+  const parsed = parseBranch(branch ?? undefined);
+  return parsed?.key === key ? parsed.attempt : undefined;
+};
 
 type Input = StageMove & { attempt: number | undefined; refusal: string | null; direct: boolean };
 
