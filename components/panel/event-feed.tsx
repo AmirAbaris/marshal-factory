@@ -1,5 +1,6 @@
 import type { EventRow } from "@/db/schema";
 import { eventSchema } from "@/lib/events";
+import { shortSha } from "@/lib/evidence";
 import { shortId } from "./format";
 import { Time } from "./time";
 
@@ -24,6 +25,12 @@ function summarize(payload: unknown, kind: string) {
       return { who: e.stage, text: e.question ?? e.summary };
     case "session_end":
       return { who: "session", text: `ended${e.reason ? ` (${e.reason})` : ""}` };
+    case "evidence":
+      return { who: "evidence", text: `${e.checks.filter((c) => c.passed).length}/${e.checks.length} checks at ${shortSha(e.sha)}${e.clean ? "" : " (uncommitted changes)"}` };
+    default: {
+      const never: never = e;
+      throw new Error(`unknown event ${String(never)}`);
+    }
   }
 }
 

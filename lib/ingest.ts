@@ -1,8 +1,9 @@
-import { and, eq, inArray, isNotNull, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, sql } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import * as schema from "../db/schema";
-import { agents, events, jobs, runs } from "../db/schema";
+import { agents, events, jobEvidence, jobs, runs } from "../db/schema";
 import type { FactoryEvent, Usage } from "./events";
+import { summarize } from "./evidence";
 import { attemptBranchSql } from "./branch-sql";
 import { parseBranch } from "./factory";
 import { branchSpend } from "./spend";
@@ -23,6 +24,7 @@ const RUN_STATUS: Record<FactoryEvent["kind"], RunStatus | null> = {
   usage: null,
   stage: null,
   session_end: "ended",
+  evidence: null,
 };
 
 const when = (ms: number) => new Date(ms);
@@ -354,9 +356,47 @@ async function moveJob(tx: Tx, event: Extract<FactoryEvent, { kind: "stage" }>):
   return verdict;
 }
 
+/**
+ * Keeps the latest evidence per job and commit; a dirty run never replaces a clean one at the same
+ * commit. The job's summary follows its newest row for the current attempt. Evidence opens no run.
+ */
+async function applyEvidence(tx: Tx, e: Extract<FactoryEvent, { kind: "evidence" }>) {
+  const at = when(e.at);
+  await tx
+    .insert(jobEvidence)
+    .values({ job_key: e.jobKey, sha: e.sha, attempt: e.attempt, repo: e.repo, clean: e.clean, producer: e.producer, source: e.source, checks: e.checks, event_id: e.eventId, recorded_at: at })
+    .onConflictDoUpdate({
+      target: [jobEvidence.job_key, jobEvidence.sha],
+      set: {
+        attempt: sql`excluded.attempt`,
+        repo: sql`excluded.repo`,
+        clean: sql`excluded.clean`,
+        producer: sql`excluded.producer`,
+        source: sql`excluded.source`,
+        checks: sql`excluded.checks`,
+        event_id: sql`excluded.event_id`,
+        recorded_at: sql`excluded.recorded_at`,
+      },
+      setWhere: sql`excluded.recorded_at >= ${jobEvidence.recorded_at} and (excluded.clean or not ${jobEvidence.clean})`,
+    });
+  const [job] = await tx.select({ id: jobs.id, attempt: jobs.attempt }).from(jobs).where(eq(jobs.key, e.jobKey)).for("update");
+  if (!job || job.attempt !== e.attempt) return;
+  const [latest] = await tx
+    .select()
+    .from(jobEvidence)
+    .where(and(eq(jobEvidence.job_key, e.jobKey), eq(jobEvidence.attempt, e.attempt)))
+    .orderBy(desc(jobEvidence.recorded_at))
+    .limit(1);
+  if (latest) await tx.update(jobs).set({ evidence: summarize(latest, latest.recorded_at) }).where(eq(jobs.id, job.id));
+}
+
 export type StageRefusal = { eventId: string; reason: string };
 
 async function project(tx: Tx, event: FactoryEvent): Promise<StageRefusal | undefined> {
+  if (event.kind === "evidence") {
+    await applyEvidence(tx, event);
+    return;
+  }
   if (event.kind !== "stage") {
     if (event.kind === "session_start") await linkSession(tx, event);
     await upsertRun(tx, event);
@@ -418,7 +458,7 @@ export async function ingest(
           session_id: e.sessionId,
           kind: e.kind,
           at: when(e.at),
-          job_key: e.kind === "stage" ? e.jobKey : undefined,
+          job_key: e.kind === "stage" || e.kind === "evidence" ? e.jobKey : undefined,
           payload: e,
         })),
       )

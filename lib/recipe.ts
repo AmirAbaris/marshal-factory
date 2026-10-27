@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { matchesAny } from "./merge-decision";
+import { matchesAny } from "./globs";
 
 // A repo's setup recipe, committed at RECIPE_PATH: what a sandbox installs and runs so the repo's
 // checks pass. The factory builds a warm image from it, so a job's sandbox starts with the system

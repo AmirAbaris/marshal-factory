@@ -36,7 +36,7 @@ import {
 } from "../lib/recipe";
 import { recipeHash, sha256 } from "../lib/recipe-hash";
 import { builtVersions, GITHUB_TOKEN_PATH, imageProblem, REPO_DIR, type SandboxImage } from "../lib/sandbox";
-import { matchesAny } from "../lib/merge-decision";
+import { matchesAny } from "../lib/globs";
 import type { RepoPushDetail } from "../lib/webhooks";
 import { config } from "./config";
 import { thisMachine } from "./heartbeat";

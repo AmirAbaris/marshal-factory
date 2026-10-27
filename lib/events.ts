@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { assessmentSchema } from "./assessment";
+import { evidenceShape } from "./evidence";
 
 export const usageSchema = z.object({
   input: z.number().nonnegative(),
@@ -125,6 +126,12 @@ export const eventSchema = z.discriminatedUnion("kind", [
     ...base,
     kind: z.literal("session_end"),
     reason: z.string().optional(),
+  }),
+  z.object({
+    ...base,
+    // The checks run at one commit, by factory-verify or by the runner; see lib/evidence.ts.
+    kind: z.literal("evidence"),
+    ...evidenceShape,
   }),
 ]);
 export type FactoryEvent = z.infer<typeof eventSchema>;
