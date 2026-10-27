@@ -7,6 +7,12 @@ import { matchesAny } from "./globs";
 
 export const RECIPE_PATH = ".factory/setup.json";
 
+/**
+ * Where a job's sandbox holds the recipe while it is only on the onboarding PR, so main, and the
+ * job's worktree, have none; factory-verify reads it when the worktree has no RECIPE_PATH.
+ */
+export const UNMERGED_RECIPE_PATH = "/root/.config/marshal-factory/recipe.json";
+
 /** Changes to these invalidate a warm image when the recipe names no warmKey of its own. */
 export const DEFAULT_WARM_KEY = [
   "**/bun.lock",

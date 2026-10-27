@@ -413,7 +413,7 @@ try {
   const launchImage = { ...warmImage, id: "im-warm-launch" };
   fake.images.set("im-warm-launch", new Map());
   fake.images.set("im-base", new Map());
-  await insert(LAUNCH, "ready", { recipe, image: launchImage, secretsSet: ["API_KEY"] });
+  await insert(LAUNCH, "ready", { recipe, recipeSource: "committed", image: launchImage, secretsSet: ["API_KEY"] });
   await db.insert(jobs).values(jobIds.slice(0, 3).map((id, i) => linearJob(id, `ONB${i}-${stamp % 100000}`, { repo: LAUNCH })));
   const slot = { id: TEST_MACHINE_ID, repos: [LAUNCH], maxInFlight: 1000 };
   sandboxRuntime.slots = () => [slotA, slotB];
@@ -432,10 +432,19 @@ try {
   assert.ok(argvs.includes(`git -C ${REPO_DIR} checkout --quiet -B main origin/main`), "the checkout moves to origin/main");
   assert.ok(argvs.includes(`bash -c ${recipe.setup[0]}`), "and setup runs again");
   assert.match(warmBox.execs.find((e) => e.argv[2] === "start")!.input, /setup recipe is \.factory\/setup\.json/, "the thread is told about the recipe");
+  assert.equal(warmBox.files.has(recipes.UNMERGED_RECIPE_PATH), false, "a recipe on main is read from the worktree");
+  // A recipe only on the onboarding PR is not in the worktree, cut from main: the thread gets its commands, factory-verify a copy.
+  const prDetail = { recipe, recipeSource: "agent" as const, recipePr: `https://github.com/${LAUNCH}/pull/3`, image: launchImage, secretsSet: ["API_KEY"] };
+  await db.update(repoSettings).set({ onboarding_detail: prDetail }).where(eq(repoSettings.repo, LAUNCH));
   sandboxRuntime.image = () => ({ ...baseImage, builtAt: "2026-10-29T00:00:00.000Z" });
   await launchInSandboxes([entry(1)], slot, async () => {}, await registryNow());
   const [oldJob] = await db.select().from(jobs).where(eq(jobs.id, jobId("linear", jobIds[1]!)));
   const oldBox = sandboxOf(oldJob!.sandbox_id!);
+  const prMessage = oldBox.execs.find((e) => e.argv[2] === "start")!.input;
+  assert.doesNotMatch(prMessage, /setup recipe is \.factory\/setup\.json/, "the thread is not sent to a recipe its worktree lacks");
+  assert.match(prMessage, /not on main yet \(it waits in https:\/\/github\.com\/.+\/pull\/3\)/);
+  assert.ok(prMessage.includes(`    ${recipe.setup[0]}`) && prMessage.includes(`    test: ${recipe.checks!.test}`), "it gets the setup and check commands inline");
+  assert.deepEqual(JSON.parse(oldBox.files.get(recipes.UNMERGED_RECIPE_PATH)!), recipe, "and factory-verify gets the recipe in the sandbox");
   assert.equal(oldBox.spec!.imageId, "im-base", "an outdated warm image falls back to the base image");
   assert.ok(oldBox.execs.some((e) => e.argv[0] === "git" && e.argv[1] === "clone"), "which clones as before");
   assert.ok(events.some((e) => e.event === "sandbox:warm-image-outdated"));

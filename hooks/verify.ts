@@ -7,7 +7,7 @@ import { eventSchema, type FactoryEvent } from "../lib/events";
 import { combined, CHECK_TIMEOUT_MS, formatDuration, OUTPUT_KEEP_CHARS, planChecks, runChecks, SECRET_ENV, shortSha, type CheckRunner, type EvidenceCheck } from "../lib/evidence";
 import { parseBranch } from "../lib/factory";
 import { readIngestTarget, reportEvents } from "../lib/outbox";
-import { parseRecipe, RECIPE_PATH } from "../lib/recipe";
+import { parseRecipe, RECIPE_PATH, UNMERGED_RECIPE_PATH } from "../lib/recipe";
 import { mcpIdentity } from "../lib/report-identity";
 
 // factory-verify: runs the repo's checks at the current HEAD and reports what ran as evidence for
@@ -64,9 +64,11 @@ async function repoOf(top: string) {
   return match?.[1] ?? basename(top);
 }
 
+/** The worktree's recipe, else the one the launcher left in the sandbox while it is only on the onboarding PR. */
 function readRecipe(top: string) {
-  const path = join(top, RECIPE_PATH);
-  if (!existsSync(path)) return null;
+  const path = [join(top, RECIPE_PATH), UNMERGED_RECIPE_PATH].find((p) => existsSync(p));
+  if (!path) return null;
+  if (path === UNMERGED_RECIPE_PATH) say(`the worktree has no ${RECIPE_PATH}; using the recipe from the onboarding PR`);
   const parsed = parseRecipe(readFileSync(path, "utf8"));
   if (parsed.ok) return parsed.recipe;
   say(`${parsed.error} Falling back to package.json scripts.`);
