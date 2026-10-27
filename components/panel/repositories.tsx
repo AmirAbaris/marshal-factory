@@ -1,6 +1,6 @@
 "use client";
 
-import { ExternalLinkIcon, PlusIcon, XIcon } from "lucide-react";
+import { ExternalLinkIcon, XIcon } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useMemo, useRef, useState, useTransition } from "react";
@@ -15,12 +15,12 @@ import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "@/c
 import { Separator } from "@/components/ui/separator";
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "@/components/ui/tooltip";
 import type { MachineRow, RepoSettingsRow } from "@/db/schema";
 import { EXECUTIONS, type Execution } from "@/lib/execution";
 import type { Harness } from "@/lib/harness";
 import { parseInventory, rebuildText, reportedDrift, reportedHarnesses, reportedSandbox, UNKNOWN } from "@/lib/machine";
 import { AUTONOMY_LABELS, AUTONOMY_LEVELS, DEFAULT_POLICY, type Autonomy } from "@/lib/merge-decision";
+import { repoImage } from "@/lib/onboarding";
 import { displayName } from "@/lib/repo-name";
 import type { RepoStats } from "@/lib/repositories";
 import { RUNS_ON_LABELS } from "@/lib/ticket-overrides";
@@ -28,6 +28,7 @@ import { cn } from "@/lib/utils";
 import { useRowKeys } from "./row-keys";
 import { useFeed, type Feed } from "./sealed";
 import { PanelFooter, PanelHeader, type KeyHint } from "./panel-header";
+import { AddRepository, OnboardingBadge, OnboardingSection, onboardingLine, useOnboardingRefresh } from "./repo-onboarding";
 import { ShortTime, useNow } from "./time";
 
 const CLOCK_TICK_MS = 30_000;
@@ -49,19 +50,39 @@ const SETTINGS_DEFAULT = "settings-default";
 const itemHref = (repo: string) => `/repositories?${new URLSearchParams({ repo })}`;
 const githubUrl = (repo: string) => `https://github.com/${repo}`;
 
-/** Where a repo's jobs can launch: Modal clones it from GitHub, a local launch needs a runner's checkout. */
-export type Places = { modal: boolean; machines: string[]; rebuild?: string };
+/**
+ * Where a repo's jobs can launch. Modal needs a runner that can launch there and, for an onboarded
+ * repo, its warm image, or the base image while the warm one is outdated; a local launch needs a
+ * runner's checkout.
+ */
+export type Places = { modal: boolean; modalNote: string | null; machines: string[]; rebuild?: string };
 
-function placesOf(rows: readonly MachineRow[], now: number, repo: string): Places {
+function placesOf(rows: readonly MachineRow[], now: number, row: RepoSettingsRow): Places {
   const sandbox = reportedSandbox(rows, now);
   const drift = sandbox ? reportedDrift(sandbox) : [];
-  const modal = Boolean(sandbox && sandbox.modal && sandbox.image && drift.length === 0 && sandbox.codexSlots > 0);
-  const machines = rows.filter((m) => parseInventory(m.inventory)?.repos.some((r) => r.origin !== UNKNOWN && r.origin === repo)).map((m) => m.name);
-  return { modal, machines, ...(drift.length > 0 && { rebuild: rebuildText(drift) }) };
+  const runner = Boolean(sandbox && sandbox.modal && sandbox.image && drift.length === 0 && sandbox.codexSlots > 0);
+  const info = sandbox?.imageInfo;
+  const image = repoImage(row, info?.versions ? { versions: info.versions, builtAt: info.builtAt } : null);
+  const machines = rows.filter((m) => parseInventory(m.inventory)?.repos.some((r) => r.origin !== UNKNOWN && r.origin === row.repo)).map((m) => m.name);
+  const modalNote = (() => {
+    switch (image.kind) {
+      case "warm":
+        return "Warm Modal image ready";
+      case "base":
+        return image.outdated ? "Modal from the base image until the warm one is rebuilt" : "Modal sandbox image ready";
+      case "blocked":
+        return null;
+      default: {
+        const never: never = image;
+        throw new Error(`unknown image ${String(never)}`);
+      }
+    }
+  })();
+  return { modal: runner && image.kind !== "blocked", modalNote, machines, ...(drift.length > 0 && { rebuild: rebuildText(drift) }) };
 }
 
-function placesLine({ modal, machines, rebuild }: Places) {
-  const parts = [modal && "Modal sandbox image ready", rebuild, machines.length > 0 && `Local checkout on ${machines.join(", ")}`].filter(Boolean);
+function placesLine({ modal, modalNote, machines, rebuild }: Places) {
+  const parts = [modal && modalNote, rebuild, machines.length > 0 && `Local checkout on ${machines.join(", ")}`].filter(Boolean);
   return parts.length > 0 ? parts.join(" · ") : "Neither a Modal image nor a local checkout";
 }
 
@@ -101,6 +122,7 @@ function Row({ entry, open, cursor, onFocus }: { entry: Entry; open: boolean; cu
             Disabled
           </Badge>
         )}
+        {row.onboarding_state && <OnboardingBadge state={row.onboarding_state} />}
         <a
           href={githubUrl(row.repo)}
           target="_blank"
@@ -115,7 +137,14 @@ function Row({ entry, open, cursor, onFocus }: { entry: Entry; open: boolean; cu
       <span className="hidden w-12 shrink-0 text-right text-xs text-muted-foreground tabular-nums @md:block">
         {stats?.lastAt ? <ShortTime date={stats.lastAt} /> : "none"}
       </span>
-      <span className={cn("hidden w-72 shrink-0 truncate text-xs @3xl:block", nowhere ? "text-warning" : "text-muted-foreground")}>{placesLine(places)}</span>
+      <span
+        className={cn(
+          "hidden w-72 shrink-0 truncate text-xs @3xl:block",
+          nowhere || row.onboarding_state === "failed" || row.onboarding_state === "needs_input" ? "text-warning" : "text-muted-foreground",
+        )}
+      >
+        {row.onboarding_state && row.onboarding_state !== "ready" ? onboardingLine(row) : placesLine(places)}
+      </span>
       <span className="hidden w-36 shrink-0 truncate text-xs text-muted-foreground @2xl:block">Merging · {AUTONOMY_LABELS[row.autonomy]}</span>
     </div>
   );
@@ -127,7 +156,7 @@ const linesOf = (text: string) =>
     .map((l) => l.trim())
     .filter(Boolean);
 
-function Detail({ entry, harnesses }: { entry: Entry; harnesses: readonly Harness[] }) {
+function Detail({ entry, harnesses, panelTakesSecrets }: { entry: Entry; harnesses: readonly Harness[]; panelTakesSecrets: boolean }) {
   const router = useRouter();
   const { row, stats, places } = entry;
   const [name, setName] = useState(displayName(row));
@@ -210,6 +239,8 @@ function Detail({ entry, harnesses }: { entry: Entry; harnesses: readonly Harnes
           </div>
           <p className={cn("text-sm", !places.modal && places.machines.length === 0 ? "text-warning" : "text-muted-foreground")}>{placesLine(places)}</p>
         </div>
+        <Separator />
+        <OnboardingSection key={`${row.onboarding_state}-${row.onboarding_at?.toISOString()}`} row={row} panelTakesSecrets={panelTakesSecrets} />
         <Separator />
         <div className="flex flex-col gap-5 px-4.5 py-4">
           <Field>
@@ -341,37 +372,27 @@ function Detail({ entry, harnesses }: { entry: Entry; harnesses: readonly Harnes
   );
 }
 
-function AddRepository() {
-  return (
-    <Tooltip>
-      <TooltipTrigger render={<span className="inline-flex" />}>
-        <Button size="sm" disabled>
-          <PlusIcon data-icon="inline-start" />
-          Add repository
-        </Button>
-      </TooltipTrigger>
-      <TooltipPopup>Coming next: onboarding</TooltipPopup>
-    </Tooltip>
-  );
-}
-
 /** Every repository in the registry as one dense row; Enter opens its settings on the right. */
 export function Repositories({
   registry,
   stats,
   machines,
   selected,
+  panelTakesSecrets,
 }: {
   registry: readonly RepoSettingsRow[];
   stats: readonly RepoStats[];
   machines: Feed<MachineRow>;
   selected: string | undefined;
+  /** The panel holds a Modal token, so it takes secret values itself. */
+  panelTakesSecrets: boolean;
 }) {
+  useOnboardingRefresh(registry);
   const { rows, status } = useFeed(machines, "/api/live/machines");
   const now = useNow(CLOCK_TICK_MS) ?? 0;
   const harnesses = useMemo(() => (reportedHarnesses(rows, now) ?? []).filter((h) => h.enabled), [rows, now]);
   const entries = useMemo(
-    () => registry.map((row): Entry => ({ row, stats: stats.find((s) => s.repo === row.repo), places: placesOf(rows, now, row.repo) })),
+    () => registry.map((row): Entry => ({ row, stats: stats.find((s) => s.repo === row.repo), places: placesOf(rows, now, row) })),
     [registry, stats, rows, now],
   );
   const listRef = useRef<HTMLDivElement>(null);
@@ -388,7 +409,9 @@ export function Repositories({
           <Empty className="border">
             <EmptyHeader>
               <EmptyTitle>No repository is registered yet</EmptyTitle>
-              <EmptyDescription>A runner registers the checkouts in its config when it starts, and the first one becomes the default.</EmptyDescription>
+              <EmptyDescription>
+                Add one the GitHub App can reach, or start a runner: it registers the checkouts in its config, and the first one becomes the default.
+              </EmptyDescription>
             </EmptyHeader>
           </Empty>
         </div>
@@ -403,7 +426,7 @@ export function Repositories({
               ))}
             </ul>
           </div>
-          {open && <Detail key={open.row.repo} entry={open} harnesses={harnesses} />}
+          {open && <Detail key={open.row.repo} entry={open} harnesses={harnesses} panelTakesSecrets={panelTakesSecrets} />}
         </div>
       )}
       <PanelFooter

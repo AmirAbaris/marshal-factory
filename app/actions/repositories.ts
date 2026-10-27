@@ -77,8 +77,3 @@ export async function retryOnboarding(input: { repo: string }) {
 export async function rebuildRepositoryImage(input: { repo: string }) {
   return rebuild({ user, registry, request }, input);
 }
-
-/** Whether the panel can take secret values itself, or the owner uses the CLI on the runner Mac. */
-export async function panelTakesSecrets() {
-  return modalEnvConfigured();
-}
