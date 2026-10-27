@@ -38,7 +38,7 @@ export function Board({
               {STAGE_META[stage].label}
               <span className="text-xs text-muted-foreground tabular-nums">{items.length}</span>
             </div>
-            <div className="flex min-h-0 flex-1 flex-col gap-1.5 overflow-y-auto overscroll-contain p-2">
+            <div className="flex min-h-0 flex-1 flex-col gap-1.5 overflow-y-auto overscroll-y-contain p-2">
               {items.length === 0 && <p className="px-1 text-xs text-faint">None</p>}
               {items.map((card) => (
                 <StageCard
