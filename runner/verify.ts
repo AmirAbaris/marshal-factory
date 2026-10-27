@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import type { ExecError } from "../lib/exec";
 import { eventSchema, type FactoryEvent } from "../lib/events";
 import { combined, planChecks, runChecks, type CheckRunner } from "../lib/evidence";
@@ -12,7 +12,8 @@ import { REPO_DIR } from "../lib/sandbox";
 // that commit in a fresh worktree, runs the recipe's setup and checks, and posts the result as
 // evidence, so a merge never rests on the agent's word alone. It runs only when the repo merges
 // on its own (auto) and verification at the head is the one thing left before a merge, at most
-// once per head and MAX_RUNNER_VERIFICATIONS at a time. A hibernated sandbox is woken for it.
+// once per head, one per job (a new head waits for the old head's run) and MAX_RUNNER_VERIFICATIONS
+// at a time. A hibernated sandbox is woken for it.
 // Runs happen in the background; the decision stays pending until the evidence lands.
 
 export const MAX_RUNNER_VERIFICATIONS = 2;
@@ -42,10 +43,9 @@ export function runnerVerification(job: VerifyJob, sha: string, policy: RepoPoli
     return { kind: "unavailable", reason: job.execution === "modal" ? "the job has no sandbox left to run them in" : "the run isn't in a Modal sandbox, so the factory can't run them itself" };
   }
   const flight = flights.get(job.key);
-  if (flight?.sha === sha) {
-    if (flight.failed) return { kind: "failed", reason: flight.failed };
-    return flight.finished ? { kind: "failed", reason: "its run didn't prove the commit" } : { kind: "running" };
-  }
+  // A run for an older head still holds the sandbox; this head waits for it to end.
+  if (flight && !flight.finished) return { kind: "running" };
+  if (flight?.sha === sha) return { kind: "failed", reason: flight.failed ?? "its run didn't prove the commit" };
   const record = previous?.verification;
   if (record?.sha === sha) {
     if (record.state === "failed") return { kind: "failed", reason: record.reason ?? "it failed" };
@@ -78,9 +78,8 @@ const hostRunner =
 export async function verifyAtHead(host: JobHost, job: { key: string; attempt: number; repo: string }, sha: string, recipe: Recipe | null, now = Date.now): Promise<FactoryEvent> {
   const { repoDir, workDir } = verifyRuntime;
   const branch = attemptBranch(job.key, job.attempt);
-  const dir = `${workDir}/${sha.slice(0, 12)}`;
+  const dir = `${workDir}/${sha.slice(0, 12)}-${randomBytes(4).toString("hex")}`;
   await git(host, repoDir, ["fetch", "--quiet", "origin", `+refs/heads/${branch}:refs/remotes/origin/${branch}`], 180_000);
-  await git(host, repoDir, ["worktree", "remove", "--force", dir]).catch(() => undefined);
   try {
     await git(host, repoDir, ["worktree", "add", "--force", "--detach", dir, sha], 120_000);
   } catch (error) {
@@ -115,10 +114,12 @@ export async function verifyAtHead(host: JobHost, job: { key: string; attempt: n
 
 /**
  * Starts the runner's verification of `sha` in the background, waking a hibernated sandbox; false
- * when MAX_RUNNER_VERIFICATIONS are running already. `post` delivers the evidence to ingest.
+ * when the job's sandbox is running one already, at any head, or MAX_RUNNER_VERIFICATIONS are
+ * running. `post` delivers the evidence to ingest.
  */
 export function startVerification(job: VerifyJob, sha: string, recipe: Recipe | null, post: (event: FactoryEvent) => Promise<unknown>): boolean {
-  if (verifyingKeys().size >= MAX_RUNNER_VERIFICATIONS) return false;
+  const verifying = verifyingKeys();
+  if (verifying.has(job.key) || verifying.size >= MAX_RUNNER_VERIFICATIONS) return false;
   const flight: Flight = { sha, finished: false, done: Promise.resolve() };
   flight.done = (async () => {
     try {

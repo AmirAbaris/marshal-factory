@@ -22,7 +22,8 @@ const { github } = await import("../lib/github/pulls");
 const { evidenceLine, headEvidence, outputTail, parseSummary, planChecks } = await import("../lib/evidence");
 const { writeRepoAutonomy } = await import("../lib/settings");
 const { decideMerges, requiredChecks } = await import("../runner/merge-decision");
-const { forgetVerifications, startVerification, verificationsSettled, verifyingKeys, verifyRuntime } = await import("../runner/verify");
+const { forgetVerifications, runnerVerification, startVerification, verificationsSettled, verifyAtHead, verifyingKeys, verifyRuntime } = await import("../runner/verify");
+const { DEFAULT_POLICY } = await import("../lib/merge-decision");
 const { ingestClient } = await import("../runner/ops");
 const { serve } = await import("./serve");
 
@@ -341,9 +342,27 @@ try {
     "a third run waits for a free slot",
   );
   assert.deepEqual([...verifyingKeys()].sort(), ["CAP-1", "CAP-2"], "and hibernation leaves the busy sandboxes alone");
+  // A head that moves while its sandbox is verifying the old one waits for that run to end.
+  const autoPolicy = { ...DEFAULT_POLICY, autonomy: "auto" as const };
+  assert.deepEqual(runnerVerification(capJob("CAP-1"), SHA_B, autoPolicy, null, Date.now()), { kind: "running" }, "the new head waits for the old head's run");
+  assert.equal(startVerification(capJob("CAP-1"), SHA_B, null, noPost), false, "and no second run starts on the same sandbox");
   release();
   await verificationsSettled();
+  assert.deepEqual([...verifyingKeys()], [], "the old run ended");
+  assert.deepEqual(runnerVerification(capJob("CAP-1"), SHA_B, autoPolicy, null, Date.now()), { kind: "available" }, "then the new head is the runner's to verify");
   forgetVerifications();
+
+  // Two runs at the same commit each check out their own worktree; one ending leaves the other's alone.
+  const slowRecipe = { setup: [], checks: { test: "sleep 1 && test -f package.json" } };
+  const overlapping = await Promise.all([0, 300].map(async (delay) => {
+    await new Promise((resolve) => setTimeout(resolve, delay));
+    return verifyAtHead(localHost, { key: RUNNER, attempt: 1, repo: REPO }, heads.get(RUNNER)!, slowRecipe);
+  }));
+  assert.deepEqual(
+    overlapping.map((e) => (e.kind === "evidence" ? e.checks.map((c) => c.passed) : null)),
+    [[true], [true]],
+    "overlapping runs at one commit don't share a worktree",
+  );
 
   hosts.sandbox = (id) => {
     if (id === "sb-evidence-gone") return { ...localHost, run: async () => Promise.reject(Object.assign(new Error("gone"), { code: 128 })) };
