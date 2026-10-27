@@ -31,7 +31,7 @@ const manifest = {
   setup_url: `${base}/installed`,
   public: false,
   default_permissions: { metadata: "read", contents: "write", pull_requests: "write", checks: "write", issues: "write", statuses: "read" },
-  default_events: ["pull_request", "push", "issues"],
+  default_events: ["pull_request", "pull_request_review", "push", "issues"],
 };
 
 const stored = () => (existsSync(GITHUB_APP_PATH) ? readAppFile() : undefined);

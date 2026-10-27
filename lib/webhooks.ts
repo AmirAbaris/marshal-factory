@@ -1,5 +1,6 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { z } from "zod";
+import type { FeedbackDetail } from "./inbox";
 import type { JobId } from "./sources/shapes";
 
 export const hmacHex = (secret: string, body: string) => createHmac("sha256", secret).update(body).digest("hex");
@@ -22,7 +23,9 @@ export function verifyGithub(rawBody: string, signature: string | null, secret: 
 }
 
 export type IntentDraft = {
-  kind: "claim" | "stop" | "answer" | "merged" | "recheck_conflicts";
+  kind: "claim" | "stop" | "answer" | "merged" | "recheck_conflicts" | "request_changes";
+  /** Keys the intent instead of the delivery, so two deliveries about the same thing record it once. */
+  key?: string;
   jobId?: JobId;
   prUrl?: string;
   detail?: string;
@@ -37,7 +40,40 @@ const githubPushSchema = z.object({
   repository: z.object({ default_branch: z.string() }),
 });
 
-/** What a GitHub delivery means: a merged PR, or a push to the default branch that may cause conflicts. */
+const githubReviewSchema = z.object({
+  action: z.string(),
+  review: z.object({
+    id: z.number().int(),
+    state: z.string(),
+    body: z.string().nullable().optional(),
+    user: z.object({ login: z.string(), type: z.string() }).nullable(),
+  }),
+  pull_request: z.object({ html_url: z.string() }),
+});
+
+/** Reviews the factory forwards to the thread; an approval or a dismissal asks for nothing. */
+const FORWARDED_REVIEWS = new Set(["changes_requested", "commented"]);
+
+/**
+ * A person's review asking for changes, or commenting on the code. Bots, the factory's own App
+ * among them, are not reviewers here; Bugbot's findings reach the agent through its own playbook.
+ */
+function reviewIntent(body: unknown): IntentDraft | null {
+  const { action, review, pull_request } = githubReviewSchema.parse(body);
+  if (action !== "submitted" || !FORWARDED_REVIEWS.has(review.state.toLowerCase())) return null;
+  if (!review.user || review.user.type === "Bot" || review.user.login.endsWith("[bot]")) return null;
+  const detail: FeedbackDetail = {
+    from: "github",
+    id: `review:${review.id}`,
+    reviewId: review.id,
+    reviewer: review.user.login,
+    state: review.state.toLowerCase(),
+    body: review.body ?? "",
+  };
+  return { kind: "request_changes", key: detail.id, prUrl: pull_request.html_url, detail: JSON.stringify(detail) };
+}
+
+/** What a GitHub delivery means: a merged PR, a person's review to forward, or a push to the default branch that may cause conflicts. */
 export function githubIntent(event: string, body: unknown): IntentDraft | null {
   if (event === "pull_request") {
     const pr = githubPrSchema.parse(body);
@@ -45,6 +81,7 @@ export function githubIntent(event: string, body: unknown): IntentDraft | null {
       ? { kind: "merged", prUrl: pr.pull_request.html_url }
       : null;
   }
+  if (event === "pull_request_review") return reviewIntent(body);
   if (event === "push") {
     const push = githubPushSchema.parse(body);
     return push.ref === `refs/heads/${push.repository.default_branch}`
