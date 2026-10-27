@@ -201,7 +201,8 @@ export async function saveRepository(deps: RepositoryDeps, input: unknown): Prom
   if (row.is_default && !choice.enabled) return invalid("The default repository can't be disabled. Make another one the default first.");
   const taken = registry.find((r) => r.repo !== choice.repo && (same(displayName(r), choice.displayName) || same(r.repo, choice.displayName)));
   if (taken) return invalid(`${taken.repo} is already named ${choice.displayName}.`);
-  if (choice.provider) {
+  // Only a changed harness is checked: one kept from before may no longer be reported, and other edits must still save.
+  if (choice.provider && choice.provider !== row.provider) {
     const harnesses = await deps.harnesses();
     if (harnesses && !harnesses.some((h) => h.id === choice.provider && h.enabled)) return invalid(`No machine reports an enabled harness ${choice.provider}.`);
   }
