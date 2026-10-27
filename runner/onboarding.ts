@@ -150,9 +150,12 @@ async function createSandbox(repo: string, kind: OnboardingRun["kind"], imageId:
 
 /** Records the run on the row unless another one is there; false means the sandbox must go. */
 async function claimRun(repo: string, run: OnboardingRun, state?: OnboardingState) {
-  const claimed = await update(repo, (_row, detail) =>
-    detail.run ? null : { ...(state && { state }), detail: { ...detail, run, failure: undefined, ...(run.kind === "build" && { rebuild: undefined }) } },
-  );
+  const claimed = await update(repo, (_row, detail) => {
+    if (detail.run) return null;
+    // A build takes on the wanted rebuild, so one wanted while it runs is a new one.
+    const taken = run.kind === "build" && detail.rebuild ? { ...run, reason: detail.rebuild.reason } : run;
+    return { ...(state && { state }), detail: { ...detail, run: taken, failure: undefined, ...(run.kind === "build" && { rebuild: undefined }) } };
+  });
   return claimed !== null;
 }
 
@@ -198,7 +201,7 @@ export async function onboardRepo(repo: string) {
   const [row] = await db.select().from(repoSettings).where(eq(repoSettings.repo, repo));
   if (!row) return { repo, skipped: "not registered" };
   const detail = parseDetail(row.onboarding_detail);
-  if (detail.run) return { repo, skipped: `a ${detail.run.kind} run is in flight` };
+  if (detail.run) return { repo, skipped: `${detail.run.kind === "agent" ? "an agent" : "a build"} run is in flight` };
   if (row.onboarding_state !== "analyzing") await update(repo, (_r, d) => ({ state: "analyzing", detail: { ...d, failure: undefined } }));
   const committed = await onboardingRuntime.committedRecipe(repo);
   const parsed = committed === null ? null : parseRecipe(committed);

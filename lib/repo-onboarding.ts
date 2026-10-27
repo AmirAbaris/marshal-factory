@@ -6,6 +6,7 @@ import type * as schema from "@/db/schema";
 import { intents, repoSettings, type IntentKind } from "@/db/schema";
 import { isOwner, type SessionUser } from "@/lib/auth/owner";
 import type { Installable } from "@/lib/github/installation";
+import { scrubbed } from "@/lib/modal-secrets";
 import { afterRecipe, modalSecretName, parseDetail, type OnboardingState } from "@/lib/onboarding";
 import { REPO_NAME, repoName } from "@/lib/repo-name";
 import { REPOSITORY_GROUP, type Registry } from "@/lib/repositories";
@@ -147,8 +148,7 @@ export async function saveRepoSecrets(deps: SecretsDeps, input: unknown): Promis
   try {
     await deps.upsert(secret, values);
   } catch (error) {
-    // The store scrubs values from its errors; the message names only the secret.
-    return { ok: false, status: 502, message: `Modal did not save ${secret}: ${error instanceof Error ? error.message : "unknown error"}` };
+    return { ok: false, status: 502, message: `Modal did not save ${secret}: ${scrubbed(error, Object.values(values)).message}` };
   }
   try {
     await deps.recordNames(repo, names);

@@ -58,6 +58,8 @@ export const runSchema = z.object({
   tokenAt: z.string().optional(),
   /** A build of a committed recipe also runs its checks. */
   checks: z.boolean().optional(),
+  /** Why a build runs: the rebuild it took on. */
+  reason: z.string().optional(),
 });
 export type OnboardingRun = z.infer<typeof runSchema>;
 
@@ -154,7 +156,10 @@ export function stateLine(state: OnboardingState, detail: OnboardingDetail) {
     case "ready":
       return detail.image ? "Warm image ready" : "Ready";
     case "rebuilding":
-      return `Rebuilding${detail.rebuild ? `: ${detail.rebuild.reason}` : ""}; the current image serves meanwhile`;
+    {
+      const reason = detail.run?.reason ?? detail.rebuild?.reason;
+      return `Rebuilding${reason ? ` because ${reason}` : ""}; the current image serves meanwhile`;
+    }
     case "failed":
       return detail.failure?.reason ?? "Onboarding failed";
     default: {

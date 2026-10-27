@@ -175,7 +175,7 @@ export function redact(text: string, envNames: readonly string[] = [], maxLines 
   for (const name of envNames) out = out.replace(new RegExp(`(${name}\\s*[=:]\\s*)("[^"]*"|'[^']*'|\\S+)`, "g"), "$1[redacted]");
   out = out
     .replace(/((?:bearer|basic|token)\s+)[A-Za-z0-9._~+/=-]{8,}/gi, "$1[redacted]")
-    .replace(/(https?:\/\/)[^\s/@]+@/g, "$1[redacted]@")
+    .replace(/([a-z][a-z0-9+.-]*:\/\/)[^\s/@]+@/gi, "$1[redacted]@")
     .replace(/\b(?:gh[pousr]_|github_pat_|sk-|xox[abp]-)[A-Za-z0-9_-]{10,}/g, "[redacted]")
     .replace(/\b[A-Za-z0-9_+/=-]{40,}\b/g, "[redacted]");
   return out.trimEnd().split("\n").slice(-maxLines).join("\n");
