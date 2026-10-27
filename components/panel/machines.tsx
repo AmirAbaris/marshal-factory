@@ -15,7 +15,7 @@ import {
   type Known,
 } from "@/lib/machine";
 import { useFeed, type Feed } from "./sealed";
-import { PanelHeader } from "./panel-header";
+import { PanelFooter, PanelHeader } from "./panel-header";
 import { Time, useNow } from "./time";
 
 const CLOCK_TICK_MS = 30_000;
@@ -186,7 +186,7 @@ export function Machines({ machines }: { machines: Feed<MachineRow> }) {
 
   return (
     <>
-      <PanelHeader title="Machines" status={status} note={onlineMachines === null ? undefined : `${onlineMachines} online`} />
+      <PanelHeader title="Machines" />
       <div className="min-h-0 flex-1 overflow-y-auto p-5">
           {rows.length === 0 ? (
             <Empty className="border">
@@ -205,6 +205,10 @@ export function Machines({ machines }: { machines: Feed<MachineRow> }) {
             </div>
           )}
       </div>
+      <PanelFooter
+        status={status}
+        summary={`${rows.length} ${rows.length === 1 ? "machine" : "machines"}${onlineMachines === null ? "" : ` · ${onlineMachines} online`}`}
+      />
     </>
   );
 }

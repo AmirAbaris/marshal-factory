@@ -5,7 +5,7 @@ import type { AgentRow, RunRow } from "@/db/schema";
 import type { SandboxState } from "@/lib/execution";
 import type { MergeDecision } from "@/lib/merge-decision";
 import { cn } from "@/lib/utils";
-import { harnessLine, whereLine, type BoardCard } from "./cards";
+import { harnessLine, showsDecision, whereLine, type BoardCard } from "./cards";
 import { formatUsd, runCost, runTitle, shortId } from "./format";
 import { decisionLine } from "./merge-decision";
 import { ModelChip } from "./model-chip";
@@ -13,7 +13,7 @@ import { Time } from "./time";
 
 const cardClass = (selected: boolean) =>
   cn(
-    "relative flex flex-col gap-1.5 rounded-lg border bg-card p-3 text-left text-sm transition-colors hover:border-input",
+    "relative flex flex-col gap-1 rounded-lg border bg-card p-2.5 text-left text-sm transition-colors hover:border-input",
     selected && "border-primary ring-1 ring-primary",
   );
 
@@ -129,7 +129,7 @@ export function StageCard({
         </span>
       </div>
       <div className="line-clamp-2 font-medium leading-snug">{card.title}</div>
-      {((card.stage === "pr" && card.sourceLink) || card.mergeDecision?.merged) && <MergeLine decision={card.mergeDecision} />}
+      {showsDecision(card) && <MergeLine decision={card.mergeDecision} />}
       {card.nudgedAt && (
         <p className="text-xs text-warning">
           Stuck · nudged <Time date={card.nudgedAt} />

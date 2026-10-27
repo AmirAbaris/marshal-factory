@@ -20,6 +20,17 @@ export function Time({ date }: { date: Date }) {
   return <time dateTime={date.toISOString()}>{text}</time>;
 }
 
+/** A dense timestamp: the time for today, the day and month before that. */
+export function ShortTime({ date }: { date: Date }) {
+  const text = useAfterHydration(() => {
+    const today = new Date().toDateString() === date.toDateString();
+    return today
+      ? date.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", hour12: false })
+      : date.toLocaleDateString("en-GB", { day: "numeric", month: "short" });
+  }, "");
+  return <time dateTime={date.toISOString()}>{text}</time>;
+}
+
 export function useNow(intervalMs: number): number | null {
   const [store] = useState(() => createClock(intervalMs));
   return useSyncExternalStore(store.subscribe, store.read, () => null);

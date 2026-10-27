@@ -7,12 +7,14 @@ import { boardCards } from "./cards";
 import { sandboxState } from "@/lib/execution";
 import { attemptBranch } from "@/lib/factory";
 import { reportedHarnesses } from "@/lib/machine";
+import { cn } from "@/lib/utils";
 import { groupBy, spendOf } from "./format";
+import { JobList } from "./job-list";
 import { NewJobButton } from "./new-job-button";
 import { OtherActivity } from "./other-activity";
 import { RunDetail } from "./run-detail";
 import { useFeed, type Feed } from "./sealed";
-import { PanelHeader } from "./panel-header";
+import { PanelFooter, PanelHeader, type KeyHint } from "./panel-header";
 import { StatsStrip } from "./stats-strip";
 import { useAfterHydration } from "./time";
 
@@ -26,7 +28,28 @@ export type DetailProps = {
   audit: { feed: Feed<AuditRow>; path: string } | undefined;
 };
 
-export type PanelView = "board" | "activity";
+export type PanelView = "board" | "list" | "activity";
+
+const LIST_KEYS: readonly KeyHint[] = [
+  { keys: ["J", "K"], label: "move" },
+  { keys: ["↵"], label: "open" },
+  { keys: ["Esc"], label: "close" },
+];
+
+function viewMeta(view: PanelView) {
+  switch (view) {
+    case "board":
+      return { title: "Board", job: true };
+    case "list":
+      return { title: "List", job: true };
+    case "activity":
+      return { title: "Other activity", job: false };
+    default: {
+      const never: never = view;
+      throw new Error(`unknown view ${String(never)}`);
+    }
+  }
+}
 
 export function LivePanel({
   view,
@@ -73,22 +96,34 @@ export function LivePanel({
     ? jobRows.find((j) => j.key === selectedRun.job_key)
     : undefined;
 
+  const meta = viewMeta(view);
+  const active = runRows.filter((r) => r.status === "active").length;
+  const content = (() => {
+    switch (view) {
+      case "board":
+        return <Board cards={cards} agentsBySession={agentsBySession} selected={detail?.sessionId} machines={machineById} />;
+      case "list":
+        return <JobList cards={cards} agentsBySession={agentsBySession} selected={detail?.sessionId} machines={machineById} />;
+      case "activity":
+        return <OtherActivity runs={unstaged} agentsBySession={agentsBySession} selected={detail?.sessionId} />;
+      default: {
+        const never: never = view;
+        throw new Error(`unknown view ${String(never)}`);
+      }
+    }
+  })();
+
   return (
     <>
       <PanelHeader
-        title={view === "board" ? "Board" : "Other activity"}
-        status={status}
-        note={[`${runRows.filter((r) => r.status === "active").length} active`, sandboxNote].filter(Boolean).join(" · ")}
-        actions={view === "board" ? <NewJobButton harnesses={enabledHarnesses} /> : undefined}
+        title={meta.title}
+        view={view === "activity" ? undefined : view}
+        actions={meta.job ? <NewJobButton harnesses={enabledHarnesses} /> : undefined}
       />
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         <StatsStrip runs={runRows} agentsBySession={agentsBySession} startOfToday={startOfToday} />
-        <div className={`grid min-h-0 flex-1 ${selectedRun ? "grid-cols-[1fr_420px]" : "grid-cols-1"}`}>
-          {view === "board" ? (
-            <Board cards={cards} agentsBySession={agentsBySession} selected={detail?.sessionId} machines={machineById} />
-          ) : (
-            <OtherActivity runs={unstaged} agentsBySession={agentsBySession} selected={detail?.sessionId} />
-          )}
+        <div className={cn("grid min-h-0 flex-1", selectedRun ? "grid-cols-[1fr_420px]" : "grid-cols-1")}>
+          {content}
           {selectedRun && detail && (
             <RunDetail
               key={detail.sessionId}
@@ -117,6 +152,12 @@ export function LivePanel({
           )}
         </div>
       </div>
+      <PanelFooter
+        status={status}
+        note={[`${active} active`, sandboxNote].filter(Boolean).join(" · ")}
+        summary={meta.job ? `${cards.length} ${cards.length === 1 ? "job" : "jobs"}` : `${unstaged.length} ${unstaged.length === 1 ? "session" : "sessions"}`}
+        keys={view === "list" ? LIST_KEYS : undefined}
+      />
     </>
   );
 }

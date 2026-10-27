@@ -34,6 +34,8 @@ export type BoardCard = {
   runsOn: RunsOn | null;
   /** The runner's merge decision while the job is in pr, or once the factory merged it. */
   mergeDecision: MergeDecision | null;
+  /** The newest change to the job or any of its runs. */
+  updatedAt: Date;
 };
 
 /** Untracked harnesses report no stages or cost, so the card says so. */
@@ -61,6 +63,10 @@ export function whereLine(where: RunsOn, machineName: string | null) {
 }
 
 export const harnessLine = (harness: CardHarness) => (harness.tracked ? harness.name : `${harness.name} · not tracked`);
+
+/** A tracked job in pr waits on a merge decision; a merged one shows the factory's watch on main. */
+export const showsDecision = (card: Pick<BoardCard, "stage" | "sourceLink" | "mergeDecision">) =>
+  (card.stage === "pr" && card.sourceLink !== null) || card.mergeDecision?.merged !== undefined;
 
 /** The decision a job shows: while in pr, and after a merge the factory made, for its watch on main. */
 export function shownDecision(job: Pick<JobRow, "stage" | "merge_decision">): MergeDecision | null {
@@ -106,6 +112,7 @@ export function boardCards(jobs: readonly JobRow[], runs: readonly RunRow[], har
       harness: job.provider ? harnessOf(job.provider) : null,
       runsOn: runsOn(job),
       mergeDecision: shownDecision(job),
+      updatedAt: new Date(Math.max(job.updated_at.getTime(), ...jobRuns.map((r) => r.last_event_at.getTime()))),
     };
   });
 
@@ -138,6 +145,7 @@ export function boardCards(jobs: readonly JobRow[], runs: readonly RunRow[], har
         harness: null,
         runsOn: null,
         mergeDecision: null,
+        updatedAt: new Date(Math.max(...sorted.map((r) => r.last_event_at.getTime()))),
       };
     },
   );
