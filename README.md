@@ -187,9 +187,24 @@ It merges with any settings the repo already has, adds `.claude/**` to the ESLin
 
 Commit those files and push them to `main`. Every thread starts from a fresh worktree of `origin/main`, so a thread can only see the playbook and hooks once they're on `main`.
 
-Then restart the runner so it loads the new repo: `bun scripts/install-runner.ts --uninstall && bun scripts/install-runner.ts`.
+Then restart the runner so it loads the new repo: `bun scripts/install-runner.ts --uninstall && bun scripts/install-runner.ts`. At startup the runner adds each checkout in `factory.repos` to the panel's **Repositories** page, and the first one becomes the default repo when there is none yet.
 
-New jobs go to the first repo in `factory.repos`. For now, a single runner works one target repo.
+## Repositories
+
+The factory can work in several repos. **Repositories** in the panel lists each one with its open jobs, its last job, where its jobs can run (Modal, a runner's local checkout, or neither yet) and how far the factory may merge there. Open a repo to change its display name, make it the default, disable it, give it a default harness and place, or set merging, protected paths and the size limit.
+
+An issue picks its repo with a child of the **Repository** label group in Linear, named by the repo's display name (`factory-demo` for `ski043/factory-demo` unless you rename it). An issue without one goes to the default repo. A label that names an unknown or disabled repo also goes to the default, and the issue gets one comment saying so. **New job** has a Repository select and always files the issue with its Repository label.
+
+Per repo, a default harness and place apply when the ticket has no Harness or Runs on label: the ticket's label beats the repo default, which beats Settings. A local run needs the runner's checkout of the repo; without one the job runs in a Modal sandbox when Modal is ready, and otherwise stays queued.
+
+Until onboarding from the panel exists, add a repo by hand:
+
+1. Give the GitHub App access to it: GitHub → Settings → Applications → your factory app → **Configure**, then add the repo.
+2. For local runs, clone it on the runner's Mac and run `bun scripts/install-target.ts <path>` ([Add your repo](#add-your-repo)), then restart the runner. It registers the checkout at startup. A Modal-only repo needs no checkout, but its `main` still needs the playbook and hooks that `install-target.ts` writes.
+3. For a repo without a checkout, add its registry row in the Neon SQL editor: `insert into repo_settings (repo, updated_at, updated_by) values ('owner/name', now(), 'you');`
+4. Run `bun scripts/sync-linear-labels.ts` to create its Repository label. Run it again after renaming a repo.
+
+The Jobs page and the Inbox have a repository filter in the header. It is kept in `?repo=owner/name` and remembered for the next visit. Cards and rows show their repo once more than one repo has jobs.
 
 ## Use it
 
@@ -198,7 +213,7 @@ New jobs go to the first repo in `factory.repos`. For now, a single runner works
 - In Linear, add the `factory` label to an issue in Todo.
 - In the panel, click **New job**, then write a title, a description, and optionally paste or drop images. The panel files the issue in Linear for you.
 
-To run one issue on another harness or place than Settings, add a child of the **Harness** or **Runs on** label group; `bun scripts/sync-linear-labels.ts` creates the groups ([Per-ticket overrides](docs/operations.md#per-ticket-overrides)).
+To run one issue on another harness or place than Settings, add a child of the **Harness** or **Runs on** label group, and to send it to another repo than the default, a child of **Repository**; `bun scripts/sync-linear-labels.ts` creates the groups ([Per-ticket overrides](docs/operations.md#per-ticket-overrides), [Repositories](#repositories)).
 
 Within seconds the issue moves to In Progress, a comment says the factory took it, and a card appears on the board. Write the issue the way you would for a colleague who can't ask questions: what's wrong or what you want, and how you'll know it's done. Images on the issue are downloaded and given to the thread.
 
@@ -258,7 +273,7 @@ When the panel is deployed from your repo, Vercel runs the new migrations itself
 ## Troubleshooting
 
 - **Start with the runner log**: `~/Library/Logs/marshal-factory/runner.log`. Each line is one JSON event. Errors name the step that failed.
-- **An issue isn't picked up.** Check that it is in your team (`teamKey`), has the label, and is in an unstarted state such as Todo. Also check that `factory.repos` isn't empty, and that the Linear webhook exists under Linear → Settings → API. The runner also polls every 90 seconds, so a missed webhook only delays the job.
+- **An issue isn't picked up.** Check that it is in your team (`teamKey`), has the label, and is in an unstarted state such as Todo. Also check that **Repositories** lists at least one repo or `factory.repos` isn't empty, and that the Linear webhook exists under Linear → Settings → API. The runner also polls every 90 seconds, so a missed webhook only delays the job.
 - **Machine shows offline.** The runner isn't sending heartbeats. Check `launchctl list | grep marshal-factory`, then the log. Run `bun runner/index.ts --once` in the live checkout to do one pass by hand and see its output.
 - **The board has no live updates.** Check the three Realtime variables in Vercel. Previews never subscribe to live updates; only production does.
 - **A run has no stages or costs.** The target repo's hooks aren't reaching ingest. Check that the files from `install-target` are on the repo's `main`, and that `secret` in your config equals `FACTORY_INGEST_SECRET` in the Function.
