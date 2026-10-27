@@ -23,8 +23,8 @@ assert.equal(verifyGithub("{}", `sha256=${sign("{}")}`, secret).ok, true);
 assert.equal(verifyGithub("{}", sign("{}"), secret).ok, false, "GitHub signatures need the sha256= prefix");
 assert.equal(verifyGithub("{}", `sha256=${createHmac("sha256", "").update("{}").digest("hex")}`, "").ok, false, "an empty secret verifies nothing");
 
-const opts = { teamKey: "FAC", label: "factory" };
-const linearIntent = (body: unknown, scope: typeof opts) => webhook.intent(body, scope);
+const opts = { FACTORY_TEAM_KEY: "FAC", FACTORY_LABEL: "factory" };
+const linearIntent = (body: unknown, env: typeof opts) => webhook.intent(body, env);
 const issue = (over: Record<string, unknown> = {}, updatedFrom?: Record<string, unknown>) => ({
   action: "update",
   type: "Issue",

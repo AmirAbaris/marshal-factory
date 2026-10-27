@@ -9,13 +9,13 @@ import type { Harness } from "@/lib/harness";
 import { autonomySchema } from "@/lib/merge-decision";
 import { displayName, REPO_NAME, repoName } from "@/lib/repo-name";
 import type { EffectiveHarness, SettingsOutcome } from "@/lib/settings";
-import type { TicketLabel } from "@/lib/ticket-overrides";
+import { OVERRIDE_GROUPS, type SourceOverrides } from "@/lib/ticket-overrides";
 
 // The repositories the factory works in. An issue picks one with a child of the Repository label
 // group, named by the repo's display name; without one it goes to the default repo. Per repo, a
 // default harness and place sit between the ticket's labels and Settings.
 
-export const REPOSITORY_GROUP = "Repository";
+export const REPOSITORY_GROUP = OVERRIDE_GROUPS.repository;
 
 type Db = NodePgDatabase<typeof schema>;
 export type Registry = readonly RepoSettingsRow[];
@@ -35,17 +35,17 @@ export function repoForLabel(registry: Registry, name: string) {
 
 export type RepoRoute = { repo: string | null; problem?: string };
 
-/** The repo an issue's labels pick; a label that cannot apply goes to the default and says why. Null only with no default. */
-export function routeRepo(labels: readonly TicketLabel[], registry: Registry): RepoRoute {
+/** The repo a ticket's overrides pick; one that cannot apply goes to the default and says why. Null only with no default. */
+export function routeRepo(asked: Pick<SourceOverrides, "repository">, registry: Registry): RepoRoute {
   const fallback = defaultRepo(registry);
   const repo = fallback?.repo ?? null;
   const to = fallback ? `the default repository ${fallback.repo}` : "the runner's first repository";
-  const picked = labels.filter((l) => l.group !== null && same(l.group, REPOSITORY_GROUP));
+  const picked = asked.repository;
   if (picked.length === 0) return { repo };
   if (picked.length > 1) {
-    return { repo, problem: `The issue has more than one ${REPOSITORY_GROUP} label (${picked.map((l) => `"${l.name}"`).join(", ")}), so it runs in ${to}.` };
+    return { repo, problem: `The issue has more than one ${REPOSITORY_GROUP} label (${picked.map((name) => `"${name}"`).join(", ")}), so it runs in ${to}.` };
   }
-  const { name } = picked[0]!;
+  const name = picked[0]!;
   const match = repoForLabel(registry, name);
   if (!match) return { repo, problem: `The ${REPOSITORY_GROUP} label "${name}" names no repository the factory knows, so it runs in ${to}.` };
   if (!match.enabled) return { repo, problem: `The ${REPOSITORY_GROUP} label "${name}" names ${match.repo}, which is disabled, so it runs in ${to}.` };

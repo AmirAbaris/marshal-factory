@@ -2,42 +2,34 @@ import { z } from "zod";
 import { EXECUTIONS, executionSchema, type Execution } from "./execution";
 import type { Harness } from "./harness";
 
-// A ticket can pick its lead harness and where it runs with two Linear label groups. Linear lets
-// an issue carry one child label per group; anything outside these groups is not an override.
+// A ticket can pick its lead harness, where it runs and its repository. Each source reads these
+// from its own representation (Linear: a child label of the Harness, Runs on and Repository label
+// groups) into SourceOverrides; everything below works on that and never sees a source.
 
-export const HARNESS_GROUP = "Harness";
-export const RUNS_ON_GROUP = "Runs on";
+export const OVERRIDE_GROUPS = { harness: "Harness", runsOn: "Runs on", repository: "Repository" } as const;
+export const HARNESS_GROUP = OVERRIDE_GROUPS.harness;
+export const RUNS_ON_GROUP = OVERRIDE_GROUPS.runsOn;
 export const RUNS_ON_LABELS: Record<Execution, string> = { local: "Local", modal: "Modal" };
 
-/** A label as stored on a job; a row stored before groups were read has no group for any label. */
-export type TicketLabel = { name: string; group: string | null };
-
-export const labelGroupSchema = z.object({ name: z.string(), group: z.string() });
-
-export function ticketLabels(state: { labels: readonly string[]; labelGroups?: readonly { name: string; group: string }[] }): TicketLabel[] {
-  const grouped = state.labelGroups ?? [];
-  return [
-    ...grouped.map(({ name, group }) => ({ name, group })),
-    ...state.labels.filter((name) => !grouped.some((g) => g.name === name)).map((name) => ({ name, group: null })),
-  ];
-}
+/** What a ticket asks for, field by field, by the names it shows; more than one value in a field is a conflict. */
+export type SourceOverrides = { [F in keyof typeof OVERRIDE_GROUPS]: string[] };
+export const NO_OVERRIDES: SourceOverrides = { harness: [], runsOn: [], repository: [] };
 
 export type TicketOverrides = { provider?: string; execution?: Execution; problems: string[] };
 
 const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
-const quoted = (labels: readonly TicketLabel[]) => labels.map((l) => `"${l.name}"`).join(", ");
+const quoted = (names: readonly string[]) => names.map((name) => `"${name}"`).join(", ");
 
-/** What the ticket's labels ask for, by group and child name; a label that cannot apply is a problem and falls back to Settings. */
-export function ticketOverrides(labels: readonly TicketLabel[], harnesses: readonly Harness[] | null): TicketOverrides {
+/** What the ticket asks for, by harness and place name; a value that cannot apply is a problem and falls back to Settings. */
+export function ticketOverrides(asked: SourceOverrides, harnesses: readonly Harness[] | null): TicketOverrides {
   const problems: string[] = [];
-  const inGroup = (group: string) => labels.filter((l) => l.group !== null && same(l.group, group));
   const result: TicketOverrides = { problems };
 
-  const harnessLabels = inGroup(HARNESS_GROUP);
+  const harnessLabels = asked.harness;
   if (harnessLabels.length > 1) {
     problems.push(`The issue has more than one ${HARNESS_GROUP} label (${quoted(harnessLabels)}), so it runs on the Settings harness.`);
   } else if (harnessLabels.length === 1) {
-    const { name } = harnessLabels[0]!;
+    const name = harnessLabels[0]!;
     const matches = (harnesses ?? []).filter((h) => same(h.name, name));
     const enabled = matches.find((h) => h.enabled);
     if (enabled) result.provider = enabled.id;
@@ -45,11 +37,11 @@ export function ticketOverrides(labels: readonly TicketLabel[], harnesses: reado
     else problems.push(`The ${HARNESS_GROUP} label "${name}" matches no harness a runner reports, so it runs on the Settings harness.`);
   }
 
-  const runsOnLabels = inGroup(RUNS_ON_GROUP);
+  const runsOnLabels = asked.runsOn;
   if (runsOnLabels.length > 1) {
     problems.push(`The issue has more than one ${RUNS_ON_GROUP} label (${quoted(runsOnLabels)}), so it runs where Settings say.`);
   } else if (runsOnLabels.length === 1) {
-    const { name } = runsOnLabels[0]!;
+    const name = runsOnLabels[0]!;
     const execution = EXECUTIONS.find((e) => same(RUNS_ON_LABELS[e], name));
     if (execution) result.execution = execution;
     else problems.push(`The ${RUNS_ON_GROUP} label "${name}" is neither ${Object.values(RUNS_ON_LABELS).join(" nor ")}, so it runs where Settings say.`);

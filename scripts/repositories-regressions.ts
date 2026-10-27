@@ -6,14 +6,14 @@ const { db } = await import("../db/client");
 const { auditLog, jobs, repoSettings } = await import("../db/schema");
 type RepoRow = typeof repoSettings.$inferSelect;
 const { jobId, parseJob } = await import("../lib/sources");
-const { createLinearAdapter } = await import("../lib/sources/linear");
+const { createLinearAdapter, linearOverrides } = await import("../lib/sources/linear");
 const { factorySchema } = await import("../lib/config");
 const repos = await import("../lib/repositories");
 const { repoFilter } = await import("../lib/repo-filter");
 const { createJob } = await import("../lib/new-job");
-const { announceFallbacks, overrideRuntime, planLaunch, syncLinearLabels } = await import("../runner/overrides");
+const { announceFallbacks, overrideRuntime, planLaunch, syncOverrideLabels } = await import("../runner/overrides");
 const ops = await import("../runner/ops");
-type Adapter = NonNullable<NonNullable<Parameters<typeof ops.claim>[0]>["source"]>;
+type Adapter = NonNullable<NonNullable<Parameters<typeof ops.claim>[0]>["sources"]>[number];
 
 const OWNER = "owner@example.com";
 process.env.FACTORY_OWNER_EMAILS = OWNER;
@@ -44,6 +44,8 @@ const row = (repo: string, over: Partial<RepoRow> = {}): RepoRow => ({
 });
 const registry = [row(A, { is_default: true }), row(B, { display_name: "Shop app", provider: "codex", execution: "modal" }), row(OFF, { enabled: false })];
 const L = (name: string, group: string | null = null) => ({ name, group });
+const asked = (labels: ReturnType<typeof L>[]) =>
+  linearOverrides({ state: "Todo", labels: labels.map((l) => l.name), labelGroups: labels.flatMap((l) => (l.group ? [{ name: l.name, group: l.group }] : [])) });
 
 // Routing: the Repository label picks the repo, else the default; one that cannot apply goes to the default and says why.
 const routes: { name: string; labels: ReturnType<typeof L>[]; want: ReturnType<typeof repos.routeRepo> }[] = [
@@ -68,8 +70,8 @@ const routes: { name: string; labels: ReturnType<typeof L>[]; want: ReturnType<t
     want: { repo: A, problem: `The issue has more than one Repository label ("shop", "factory-demo"), so it runs in the default repository ${A}.` },
   },
 ];
-for (const c of routes) assert.deepEqual(repos.routeRepo(c.labels, registry), c.want, c.name);
-assert.deepEqual(repos.routeRepo([], []), { repo: null }, "an empty registry routes nowhere; the claim falls back to the first checkout");
+for (const c of routes) assert.deepEqual(repos.routeRepo(asked(c.labels), registry), c.want, c.name);
+assert.deepEqual(repos.routeRepo(asked([]), []), { repo: null }, "an empty registry routes nowhere; the claim falls back to the first checkout");
 assert.deepEqual(repos.desiredRepositoryGroup(registry), { group: "Repository", children: ["factory-demo", "Shop app"] }, "one child per enabled repo, by display name");
 
 // Precedence: ticket label > repo default > Settings, field by field.
@@ -78,7 +80,7 @@ const harnesses = [harness("claudeAgent", "Claude Code", ["claude-opus-5-5"]), h
 const settings = { harness: { provider: "claudeAgent", model: "claude-opus-5-5", from: "settings" as const }, execution: "local" as const };
 const can = { local: true, checkout: true, modal: null as string | null, claude: true, driverOf: (p: string) => p, codexModel: "gpt-6-astra" };
 const launch = (labels: ReturnType<typeof L>[], repo: RepoRow | undefined, over: Partial<typeof can> = {}) =>
-  planLaunch(labels, repos.withRepoDefaults(settings, repo, harnesses).defaults, harnesses, { ...can, ...over });
+  planLaunch(asked(labels), repos.withRepoDefaults(settings, repo, harnesses).defaults, harnesses, { ...can, ...over });
 const shop = registry[1]!;
 const picked = (p: ReturnType<typeof launch>) => (p.kind === "launch" ? [p.harness.provider, p.execution] : [p.kind]);
 assert.deepEqual(picked(launch([], undefined)), ["claudeAgent", "local"], "no repo default: Settings");
@@ -189,12 +191,12 @@ const real = { harnesses: overrideRuntime.harnesses, registry: overrideRuntime.r
 overrideRuntime.harnesses = async () => null;
 overrideRuntime.registry = async () => registry;
 try {
-  assert.deepEqual(await syncLinearLabels(syncer), { team: "FAC", created: ["Repository / factory-demo", "Repository / Shop app"], problems: [] }, "before harnesses are reported, the Repository group still syncs");
-  assert.deepEqual(await syncLinearLabels(syncer), { team: "FAC", created: [], problems: [] }, "a second sync creates nothing");
+  assert.deepEqual(await syncOverrideLabels([syncer]), { synced: { linear: { team: "FAC", created: ["Repository / factory-demo", "Repository / Shop app"], problems: [] } } }, "before harnesses are reported, the Repository group still syncs");
+  assert.deepEqual(await syncOverrideLabels([syncer]), { synced: { linear: { team: "FAC", created: [], problems: [] } } }, "a second sync creates nothing");
   assert.ok(labels.some((l) => l.name === "Old name"), "a child for a renamed repo stays; nothing is renamed or deleted");
   assert.ok(creates.every((c) => c.teamId === "team-1"));
   overrideRuntime.registry = async () => [];
-  assert.deepEqual(await syncLinearLabels(syncer), { skipped: "no machine reports its harnesses yet" });
+  assert.deepEqual(await syncOverrideLabels([syncer]), { skipped: "no machine reports its harnesses yet" });
 } finally {
   overrideRuntime.harnesses = real.harnesses;
   overrideRuntime.registry = real.registry;
@@ -231,7 +233,7 @@ try {
   const known = await repos.readRegistry(db);
   const draft = (id: string, groups: { name: string; group: string }[]) => ({
     externalId: `${OWNER_NS}-${id}`,
-    key: `${OWNER_NS}-${id}`,
+    key: `${OWNER_NS}-${id}-1`,
     title: id,
     url: "u",
     description: null,
@@ -239,19 +241,19 @@ try {
     sourceState: { state: "Todo", labels: ["factory", ...groups.map((g) => g.name)], labelGroups: groups },
   });
   let drafts = [draft("plain", []), draft("shop", [{ name: "Shop", group: "Repository" }]), draft("legacy", [{ name: "legacy", group: "Repository" }])];
-  const source = { source: "linear", ready: async () => drafts } as unknown as Adapter;
-  await ops.claim({ source, repos: async () => [A], registry: async () => known });
-  const repoOf = async (id: string) => (await db.select().from(jobs).where(eq(jobs.key, `${OWNER_NS}-${id}`)))[0]?.repo;
+  const source = { source: "linear", ready: async () => drafts, overrides: linearOverrides } as unknown as Adapter;
+  await ops.claim({ sources: [source], repos: async () => [A], registry: async () => known });
+  const repoOf = async (id: string) => (await db.select().from(jobs).where(eq(jobs.key, `${OWNER_NS}-${id}-1`)))[0]?.repo;
   assert.deepEqual(
     [await repoOf("plain"), await repoOf("shop"), await repoOf("legacy")],
     [`${OWNER_NS}/fresh`, B, `${OWNER_NS}/fresh`],
     "no label: the default; a label: its repo; a disabled repo's label: the default",
   );
-  await db.update(jobs).set({ stage: "failed", stage_summary: "earlier failure" }).where(eq(jobs.key, `${OWNER_NS}-plain`));
+  await db.update(jobs).set({ stage: "failed", stage_summary: "earlier failure" }).where(eq(jobs.key, `${OWNER_NS}-plain-1`));
   drafts = [draft("plain", [{ name: "shop", group: "Repository" }])];
-  await ops.claim({ source, repos: async () => [A], registry: async () => known });
+  await ops.claim({ sources: [source], repos: async () => [A], registry: async () => known });
   assert.equal(await repoOf("plain"), B, "a retry routes from the labels the issue has now");
-  await ops.claim({ source: { source: "linear", ready: async () => [draft("empty", [])] } as unknown as Adapter, repos: async () => [A], registry: async () => [] });
+  await ops.claim({ sources: [{ ...source, ready: async () => [draft("empty", [])] }], repos: async () => [A], registry: async () => [] });
   assert.equal(await repoOf("empty"), A, "with an empty registry the job goes to this machine's first checkout");
 
   // A Repository label that cannot apply is told once per attempt, like any override fallback.
@@ -264,7 +266,7 @@ try {
   overrideRuntime.note = (job, key, body) => noting.note(job as never, key, body);
   const jid = jobId("linear", `${OWNER_NS}-legacy`);
   const legacy = async () => parseJob((await db.select().from(jobs).where(eq(jobs.id, jid)))[0]!);
-  const problem = repos.routeRepo([L("legacy", "Repository")], known).problem!;
+  const problem = repos.routeRepo(asked([L("legacy", "Repository")]), known).problem!;
   assert.match(problem, /which is disabled, so it runs in the default repository/);
   await announceFallbacks(await legacy(), { notes: [problem] });
   await announceFallbacks(await legacy(), { notes: [problem] });

@@ -18,7 +18,7 @@ import type { MergeAssessment } from "../lib/assessment";
 import { DEFAULT_EXECUTION, type Execution } from "../lib/execution";
 import type { Autonomy, MergeDecision } from "../lib/merge-decision";
 import { ONBOARDING_STATES, type OnboardingDetail } from "../lib/onboarding";
-import { JOB_SOURCES, type JobId } from "../lib/sources/shapes";
+import type { JobId, JobSource } from "../lib/sources/shapes";
 import type { StopRecord } from "../lib/stop";
 import type { TicketRecord } from "../lib/ticket-overrides";
 
@@ -27,7 +27,6 @@ import type { TicketRecord } from "../lib/ticket-overrides";
 
 export const runStatus = pgEnum("run_status", ["active", "idle", "ended"]);
 export const runStage = pgEnum("run_stage", STAGES);
-export const jobSource = pgEnum("job_source", JOB_SOURCES);
 export const agentStatus = pgEnum("agent_status", [
   "running",
   "completed",
@@ -112,7 +111,8 @@ export const jobs = pgTable(
   "jobs",
   {
     id: text("id").primaryKey().$type<JobId>(),
-    source: jobSource("source").notNull().default("linear"),
+    /** A key of SOURCES (lib/sources); text, so a new source needs no enum migration. */
+    source: text("source").$type<JobSource>().notNull().default("linear"),
     external_id: text("external_id").notNull(),
     key: text("key").notNull().unique(),
     title: text("title").notNull(),

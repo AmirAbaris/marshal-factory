@@ -14,7 +14,8 @@ import type { Execution } from "../lib/execution";
 import type { HarnessChoice } from "../lib/settings";
 import type { RepoSettingsRow } from "../db/schema";
 import { routeRepo, withRepoDefaults, type Registry } from "../lib/repositories";
-import { ticketLabels, type TicketRecord } from "../lib/ticket-overrides";
+import type { TicketRecord } from "../lib/ticket-overrides";
+import { sourceFor } from "../lib/sources";
 import {
   bindThread,
   claimLaunch,
@@ -241,17 +242,17 @@ export async function launchQueued(onWorktree: (check: Record<string, unknown>) 
   const waiting: { key: string; reason: string }[] = [];
   const repoDefaults: { repo: string; problems: string[] }[] = [];
   for (const { job, ...entry } of queued) {
-    const labels = ticketLabels(job.source_state);
+    const asked = sourceFor(job.source).overrides(job.source_state);
     const { defaults, problems } = withRepoDefaults(settings, registry.find((r) => r.repo === job.repo), harnesses);
     if (problems.length > 0 && !repoDefaults.some((d) => d.repo === job.repo)) repoDefaults.push({ repo: job.repo, problems });
     const row = registry.find((r) => r.repo === job.repo);
     const image = repoImage(row, null);
     const modal = can.modal ?? (image.kind === "blocked" ? image.reason : null);
-    const plan = planLaunch(labels, defaults, harnesses, { ...can, modal, checkout: checkouts.has(job.repo) });
+    const plan = planLaunch(asked, defaults, harnesses, { ...can, modal, checkout: checkouts.has(job.repo) });
     switch (plan.kind) {
       case "launch": {
         // The claim routed the job already; a Repository label that could not apply is told like any other fallback.
-        const routed = routeRepo(labels, registry).problem;
+        const routed = routeRepo(asked, registry).problem;
         const ticket = routed ? { ...plan.ticket, notes: [routed, ...(plan.ticket?.notes ?? [])] } : plan.ticket;
         planned.push({ ...entry, harness: plan.harness, ticket, execution: plan.execution });
         break;

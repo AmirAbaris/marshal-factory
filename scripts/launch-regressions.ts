@@ -136,19 +136,21 @@ try {
   for (const c of cases) {
     await working();
     stops.length = 0;
-    const result = await reconcileStops({ source: sourceReading(c.fetch), stop: recordStop, only: [jid] });
+    const result = await reconcileStops({ sources: [sourceReading(c.fetch)], stop: recordStop, only: [jid] });
     assert.deepEqual(stops, c.stop ? [c.stop] : [], `${c.name}: ${JSON.stringify(result)}`);
     if (c.stop) {
-      await reconcileStops({ source: sourceReading(c.fetch), stop: recordStop, only: [jid] });
+      await reconcileStops({ sources: [sourceReading(c.fetch)], stop: recordStop, only: [jid] });
       assert.equal(stops.length, 1, `${c.name}: a repeat tick records no second stop`);
     }
   }
   await working();
   stops.length = 0;
   const linearDown = await reconcileStops({
-    source: sourceReading(async () => {
-      throw new Error("Linear is down");
-    }),
+    sources: [
+      sourceReading(async () => {
+        throw new Error("Linear is down");
+      }),
+    ],
     stop: recordStop,
     only: [jid],
   });

@@ -6,10 +6,10 @@ const { db } = await import("../db/client");
 const { auditLog, jobs } = await import("../db/schema");
 const { linearJob } = await import("./fixtures");
 const { jobId, parseJob } = await import("../lib/sources");
-const { createLinearAdapter, linearFiler } = await import("../lib/sources/linear");
+const { createLinearAdapter, linearFiler, linearOverrides } = await import("../lib/sources/linear");
 const { factorySchema, TEST_MACHINE_ID } = await import("../lib/config");
-const { desiredLabelGroups, ticketLabels, ticketOverrides } = await import("../lib/ticket-overrides");
-const { announceFallbacks, fallbackComment, overrideRuntime, planLaunch, splitByExecution, syncLinearLabels } = await import("../runner/overrides");
+const { desiredLabelGroups, ticketOverrides } = await import("../lib/ticket-overrides");
+const { announceFallbacks, fallbackComment, overrideRuntime, planLaunch, splitByExecution, syncOverrideLabels } = await import("../runner/overrides");
 const { claimLaunch, releaseLaunch } = await import("../runner/ops");
 const { createJob } = await import("../lib/new-job");
 const { boardCards, harnessLine, runsOn, whereLine } = await import("../components/panel/cards");
@@ -32,6 +32,9 @@ const harnesses = [
   harness("codexNoModels", "Codex Lab", "codex", []),
 ];
 const L = (name: string, group: string | null = null) => ({ name, group });
+// The Linear adapter turns label groups into the normalized overrides the runner reads.
+const asked = (labels: ReturnType<typeof L>[]) =>
+  linearOverrides({ state: "Todo", labels: labels.map((l) => l.name), labelGroups: labels.flatMap((l) => (l.group ? [{ name: l.name, group: l.group }] : [])) });
 
 // ticketOverrides: groups and children by name, case-insensitive; labels outside the groups are not overrides.
 const table: { name: string; labels: ReturnType<typeof L>[]; want: ReturnType<typeof ticketOverrides> }[] = [
@@ -62,18 +65,18 @@ const table: { name: string; labels: ReturnType<typeof L>[]; want: ReturnType<ty
     want: { problems: ['The Runs on label "Cloud" is neither Local nor Modal, so it runs where Settings say.'] },
   },
 ];
-for (const c of table) assert.deepEqual(ticketOverrides(c.labels, harnesses), c.want, c.name);
-assert.deepEqual(ticketOverrides([L("Codex", "Harness")], null).problems.length, 1, "with no reported harnesses a Harness label cannot apply");
+for (const c of table) assert.deepEqual(ticketOverrides(asked(c.labels), harnesses), c.want, c.name);
+assert.deepEqual(ticketOverrides(asked([L("Codex", "Harness")]), null).problems.length, 1, "with no reported harnesses a Harness label cannot apply");
 
 assert.deepEqual(
-  ticketLabels({ labels: ["factory", "Codex"] }),
-  [L("factory"), L("Codex")],
+  linearOverrides({ state: null, labels: ["factory", "Codex", "Modal"] }),
+  { harness: [], runsOn: [], repository: [] },
   "a row stored before groups were read has no groups, so it has no overrides",
 );
-assert.deepEqual(ticketOverrides(ticketLabels({ labels: ["factory", "Codex", "Modal"] }), harnesses), { problems: [] });
 assert.deepEqual(
-  ticketLabels({ labels: ["factory", "Codex"], labelGroups: [{ name: "Codex", group: "Harness" }] }),
-  [L("Codex", "Harness"), L("factory")],
+  linearOverrides({ state: null, labels: ["factory", "Codex", "shop"], labelGroups: [{ name: "Codex", group: "harness" }, { name: "shop", group: "Repository" }, { name: "x", group: "Team" }] }),
+  { harness: ["Codex"], runsOn: [], repository: ["shop"] },
+  "each group's children by name, case-insensitive; other groups are not overrides",
 );
 
 assert.deepEqual(desiredLabelGroups([...harnesses, harness("codex2", "codex", "codex", [])]), [
@@ -85,7 +88,7 @@ assert.deepEqual(desiredLabelGroups([...harnesses, harness("codex2", "codex", "c
 const settings = { harness: { provider: "claudeAgent", model: "claude-sonnet-5-5", from: "settings" as const }, execution: "local" as const };
 const can = { local: true, checkout: true, modal: null as string | null, claude: true, driverOf: (p: string) => harnesses.find((h) => h.id === p)?.driver ?? p, codexModel: "gpt-6-astra" };
 const plan = (labels: ReturnType<typeof L>[], over: Partial<typeof can> = {}, s: typeof settings | (Omit<typeof settings, "execution"> & { execution: "modal" }) = settings) =>
-  planLaunch(labels, s, harnesses, { ...can, ...over });
+  planLaunch(asked(labels), s, harnesses, { ...can, ...over });
 
 assert.deepEqual(plan([L("factory")]), { kind: "launch", execution: "local", harness: { provider: "claudeAgent", model: "claude-sonnet-5-5" }, ticket: null }, "no overrides: Settings");
 assert.deepEqual(
@@ -252,16 +255,17 @@ const realHarnesses = overrideRuntime.harnesses;
 const realRegistry = overrideRuntime.registry;
 overrideRuntime.harnesses = async () => harnesses;
 overrideRuntime.registry = async () => [];
-const synced = await syncLinearLabels(syncer);
+const result = await syncOverrideLabels([syncer]);
+const synced = result.synced?.linear;
 assert.deepEqual(synced, {
   team: "FAC",
   created: ["Harness / Claude Code", "Harness / Cursor", "Harness / Codex Lab"],
   problems: ['A label named "Local" exists outside the Runs on group; move it into the group in Linear.'],
 }, "the sync adds what is missing, reports a name taken elsewhere, and never renames or moves it");
-assert.deepEqual(await syncLinearLabels(syncer), { team: "FAC", created: [], problems: synced.problems }, "a second sync creates nothing");
+assert.deepEqual(await syncOverrideLabels([syncer]), { synced: { linear: { team: "FAC", created: [], problems: synced!.problems } } }, "a second sync creates nothing");
 assert.ok(creates.every((c) => c.teamId === "team-1"), "every label is created in the configured team");
 overrideRuntime.harnesses = async () => null;
-assert.deepEqual(await syncLinearLabels(syncer), { skipped: "no machine reports its harnesses yet" });
+assert.deepEqual(await syncOverrideLabels([syncer]), { skipped: "no machine reports its harnesses yet" });
 overrideRuntime.harnesses = realHarnesses;
 overrideRuntime.registry = realRegistry;
 

@@ -12,14 +12,17 @@ import type { Stage } from "../events";
 import { attemptBranch } from "../factory";
 import { commentId, linearClient, type LinearClient, type LinearOptions } from "../linear";
 import { forbidInTest } from "../test-mode";
+import { OVERRIDE_GROUPS, type SourceOverrides } from "../ticket-overrides";
 import { hmacHex, sameHex, type IntentDraft, type Verdict } from "../webhooks";
-import { jobId } from "./shapes";
+import { jobId, type SourceStateDraftOf } from "./shapes";
 import type { Job as AnyJob, FileDraft, FiledJob, ImageFile, LabelGroupSpec, Reply, ResumePlan, SourceAdapter, SourceWebhook } from "./types";
 
 type Job = AnyJob<"linear">;
 
 /** Linear asks receivers to reject a webhookTimestamp more than a minute away from now. */
 const LINEAR_MAX_SKEW_MS = 60_000;
+
+const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
 
 /** The stop detail for a deleted issue; there is nothing left in Linear to double-check. */
 const DELETED = "the issue was deleted in Linear";
@@ -86,7 +89,7 @@ const webhook: SourceWebhook = {
   deliveryHeader: "Linear-Delivery",
   eventHeader: "Linear-Event",
   verify: (raw, headers, secret, now) => verifyLinear(raw, headers.get("linear-signature"), secret, now),
-  intent: linearIntent,
+  intent: (body, env) => linearIntent(body, { teamKey: env.FACTORY_TEAM_KEY ?? "FAC", label: env.FACTORY_LABEL ?? "factory" }),
 };
 
 /** Linear state types that end an issue; a waiting run on one of them never resumes. */
@@ -148,6 +151,15 @@ function stopReason(node: IssueNode | undefined, label: string) {
     return `the ${label} label was removed in Linear`;
   }
   return undefined;
+}
+
+/**
+ * An override is a child label of a Harness, Runs on or Repository label group; Linear allows one
+ * child per group. A row stored before groups were read has none, so it has no overrides.
+ */
+export function linearOverrides(state: SourceStateDraftOf<"linear">): SourceOverrides {
+  const inGroup = (group: string) => (state.labelGroups ?? []).filter((l) => same(l.group, group)).map((l) => l.name);
+  return { harness: inGroup(OVERRIDE_GROUPS.harness), runsOn: inGroup(OVERRIDE_GROUPS.runsOn), repository: inGroup(OVERRIDE_GROUPS.repository) };
 }
 
 export type LinearDeps = {
@@ -353,6 +365,8 @@ export function createLinearAdapter(load: () => LinearDeps | Promise<LinearDeps>
       return { team: d.limits.teamKey, created, problems };
     },
 
+    overrides: linearOverrides,
+
     describe: (job) => `Linear issue ${job.key}`,
   };
 }
@@ -360,7 +374,6 @@ export function createLinearAdapter(load: () => LinearDeps | Promise<LinearDeps>
 const GROUP_COLOR = "#5e6ad2";
 const CHILD_COLOR = "#95a2b3";
 
-const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
 const labelKey = (group: string, child: string) => `${group.toLowerCase()}/${child.toLowerCase()}`;
 
 /**
@@ -469,7 +482,7 @@ export function linearLabelSyncer(apiKey: string, teamKey: string, options?: Lin
   };
 }
 
-export const syncLabelsFromEnv = (groups: readonly LabelGroupSpec[]) => {
+const syncLabelsFromEnv = (groups: readonly LabelGroupSpec[]) => {
   const key = process.env.LINEAR_API_KEY;
   if (!key) throw new Error("LINEAR_API_KEY is not set, so the panel cannot add Linear labels");
   return linearLabelSyncer(key, process.env.FACTORY_TEAM_KEY ?? "FAC")(groups);
@@ -568,4 +581,11 @@ const uploadFromEnv = (image: ImageFile) => {
   return linearUploader(key)(image);
 };
 
-export const linear: SourceAdapter<"linear"> = { ...createLinearAdapter(runtimeDeps), file: fileFromEnv, uploadImage: uploadFromEnv, reply: replyFromEnv, localizeImages };
+export const linear: SourceAdapter<"linear"> = {
+  ...createLinearAdapter(runtimeDeps),
+  file: fileFromEnv,
+  uploadImage: uploadFromEnv,
+  reply: replyFromEnv,
+  panelSyncLabelGroups: syncLabelsFromEnv,
+  localizeImages,
+};
