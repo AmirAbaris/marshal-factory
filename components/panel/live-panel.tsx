@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { startTransition, useMemo, useOptimistic } from "react";
 import { Button } from "@/components/ui/button";
-import type { AgentRow, AuditRow, EventRow, JobRow, MachineRow, RepoSettingsRow, RunRow } from "@/db/schema";
+import type { AgentRow, AuditRow, EventRow, JobEvidenceRow, JobRow, MachineRow, RepoSettingsRow, RunRow } from "@/db/schema";
 import { Board } from "./board";
 import { boardCards } from "./cards";
 import { sandboxState } from "@/lib/execution";
@@ -34,6 +34,8 @@ export type DetailProps = {
   stagesPath: string;
   /** Present when the run belongs to a job. */
   audit: { feed: Feed<AuditRow>; path: string } | undefined;
+  /** The job's evidence per commit; present when the run belongs to a job. */
+  evidence: { feed: Feed<JobEvidenceRow>; path: string } | undefined;
 };
 
 export type PanelView = "inbox" | "jobs" | "activity";
@@ -237,6 +239,7 @@ export function LivePanel({
               stages={detail.stages}
               stagesPath={detail.stagesPath}
               audit={detail.audit}
+              evidence={detail.evidence}
               closeHref={closeHref(view, jobView)}
               job={selectedJob}
               machine={selectedJob?.machine_id ? machineById.get(selectedJob.machine_id) : undefined}

@@ -18,6 +18,7 @@ import { AUTONOMY_LABELS, type ReviewSummary } from "@/lib/merge-decision";
 import { sourceLink } from "@/lib/sources/shapes";
 import { cn } from "@/lib/utils";
 import type { BoardCard } from "./cards";
+import { EvidenceSummaryList } from "./evidence";
 import { InboxActions } from "./inbox-actions";
 import { jobsHref } from "./job-view";
 import { useRowKeys } from "./row-keys";
@@ -338,6 +339,11 @@ function Detail({ item, card }: { item: Item; card: BoardCard | undefined }) {
         <Section title="Why it's here">
           <Why item={item} />
         </Section>
+        {kind === "handover" && job.stage === "pr" && (
+          <Section title="Evidence">
+            <EvidenceSummaryList job={job} />
+          </Section>
+        )}
         <Assessment job={job} />
         {wantsReview && job.pr_url && <Review loaded={loaded} prUrl={job.pr_url} />}
       </ScrollArea>

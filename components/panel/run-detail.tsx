@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
-import type { AgentRow, AuditRow, EventRow, JobRow, MachineRow, RunRow } from "@/db/schema";
+import type { AgentRow, AuditRow, EventRow, JobEvidenceRow, JobRow, MachineRow, RunRow } from "@/db/schema";
 import { sandboxState } from "@/lib/execution";
 import { harnessLabel, type Harness } from "@/lib/harness";
 import { parseInventory, t3ThreadLink, UNKNOWN } from "@/lib/machine";
@@ -17,6 +17,7 @@ import { RUNS_ON_LABELS, ticketRecordSchema } from "@/lib/ticket-overrides";
 import { runsOn } from "./cards";
 import { AgentTree } from "./agent-tree";
 import { EventFeed } from "./event-feed";
+import { EvidenceSection } from "./evidence";
 import { AuditLog } from "./audit-log";
 import { formatUsd, runCost, runTitle, shortId } from "./format";
 import { MergeButton } from "./merge-button";
@@ -109,6 +110,7 @@ export function RunDetail({
   stages,
   stagesPath,
   audit,
+  evidence,
   job,
   machine,
   harnesses,
@@ -119,6 +121,7 @@ export function RunDetail({
   /** Where the close button goes: the page the run opened on. */
   closeHref: string;
   audit: { feed: Feed<AuditRow>; path: string } | undefined;
+  evidence: { feed: Feed<JobEvidenceRow>; path: string } | undefined;
   jobSpend: { usd: number; capUsd: number; attempt: number } | undefined;
   stagesPath: string;
   job: JobRow | undefined;
@@ -242,6 +245,7 @@ export function RunDetail({
           </div>
         )}
         {job && <MergeDecisionSection job={job} />}
+        {job && evidence && <EvidenceSection feed={evidence.feed} path={evidence.path} job={job} />}
         <Separator />
         <section className="flex flex-col gap-2.5 px-4.5 py-3.5">
           <h3 className="text-sm font-medium text-muted-foreground">

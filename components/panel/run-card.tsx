@@ -9,6 +9,7 @@ import type { MergeDecision } from "@/lib/merge-decision";
 import { stopLine, type StopView } from "@/lib/stop";
 import { cn } from "@/lib/utils";
 import { harnessLine, showsDecision, whereLine, type BoardCard } from "./cards";
+import { EvidenceLine } from "./evidence";
 import { formatUsd, runCost, runTitle, shortId } from "./format";
 import { jobsHref } from "./job-view";
 import { decisionLine } from "./merge-decision";
@@ -169,6 +170,7 @@ export function StageCard({
       </div>
       <div className="line-clamp-2 font-medium leading-snug">{card.title}</div>
       {showsDecision(card) && <MergeLine decision={card.mergeDecision} />}
+      {card.evidence && <EvidenceLine line={card.evidence} />}
       {card.stop && <StopLine view={card.stop.view} t3Href={t3Href} />}
       {card.nudgedAt && (
         <p className="text-xs text-warning">

@@ -11,6 +11,7 @@ import { STAGES, type Stage } from "@/lib/events";
 import { stopLine } from "@/lib/stop";
 import { cn } from "@/lib/utils";
 import { harnessLine, showsDecision, whereLine, type BoardCard } from "./cards";
+import { EvidenceLine } from "./evidence";
 import { formatUsd, spendOf } from "./format";
 import { jobsHref } from "./job-view";
 import { decisionLine } from "./merge-decision";
@@ -64,6 +65,7 @@ function Row({
       </span>
       {repoLabels && <span className="hidden w-28 shrink-0 truncate text-xs text-muted-foreground @2xl:block">{card.repo && repoLabels.get(card.repo)}</span>}
       <span className={cn("hidden w-32 shrink-0 truncate text-xs @sm:block @xl:w-56", decision?.tone)}>{decision?.text}</span>
+      <span className="hidden w-44 shrink-0 @3xl:block">{card.evidence && <EvidenceLine line={card.evidence} />}</span>
       <span className="hidden w-44 shrink-0 truncate text-xs text-muted-foreground @4xl:block">{where}</span>
       <span className="hidden w-28 shrink-0 truncate text-xs text-muted-foreground @5xl:block">{card.harness && harnessLine(card.harness)}</span>
       <span
