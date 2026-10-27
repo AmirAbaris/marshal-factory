@@ -40,7 +40,13 @@ const githubPushSchema = z.object({
   after: z.string().optional(),
   repository: z.object({ default_branch: z.string(), full_name: z.string().optional() }),
   commits: z.array(z.object({ added: z.array(z.string()).optional(), removed: z.array(z.string()).optional(), modified: z.array(z.string()).optional() })).optional(),
+  size: z.number().int().optional(),
+  distinct_size: z.number().int().optional(),
+  forced: z.boolean().optional(),
 });
+
+/** GitHub may list only this many of a push's commits, so a push with that many may have changed paths it does not name. */
+export const PUSH_COMMITS_LISTED = 20;
 
 /** At most this many changed paths go in a push's intent; a push with more counts as touching everything. */
 export const PUSH_FILES_MAX = 2000;
@@ -49,7 +55,7 @@ export const repoPushDetailSchema = z.object({
   repo: z.string(),
   after: z.string().optional(),
   files: z.array(z.string()),
-  /** The push changed more files than the intent keeps. */
+  /** The file list may miss paths: more than the intent keeps, commits GitHub left out, or a forced push. */
   truncated: z.boolean().optional(),
 });
 export type RepoPushDetail = z.infer<typeof repoPushDetailSchema>;
@@ -93,12 +99,14 @@ export function githubPushIntent(event: string, body: unknown): IntentDraft | nu
   if (event !== "push") return null;
   const push = githubPushSchema.parse(body);
   if (push.ref !== `refs/heads/${push.repository.default_branch}` || !push.repository.full_name) return null;
-  const files = [...new Set((push.commits ?? []).flatMap((c) => [...(c.added ?? []), ...(c.removed ?? []), ...(c.modified ?? [])]))];
+  const commits = push.commits ?? [];
+  const files = [...new Set(commits.flatMap((c) => [...(c.added ?? []), ...(c.removed ?? []), ...(c.modified ?? [])]))];
+  const partial = commits.length >= PUSH_COMMITS_LISTED || Math.max(push.size ?? 0, push.distinct_size ?? 0) > commits.length || push.forced === true;
   const detail: RepoPushDetail = {
     repo: push.repository.full_name,
     ...(push.after && { after: push.after }),
     files: files.slice(0, PUSH_FILES_MAX),
-    ...(files.length > PUSH_FILES_MAX && { truncated: true }),
+    ...((partial || files.length > PUSH_FILES_MAX) && { truncated: true }),
   };
   return { kind: "repo_push", key: `repo-push:${push.repository.full_name}:${push.after ?? push.ref}`, detail: JSON.stringify(detail) };
 }

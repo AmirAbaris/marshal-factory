@@ -117,6 +117,16 @@ const push = githubPushIntent("push", {
 });
 assert.deepEqual(push && { ...push, detail: JSON.parse(push.detail!) }, { kind: "repo_push", key: "repo-push:o/r:abc", detail: { repo: "o/r", after: "abc", files: ["a", "bun.lock", ".factory/setup.json"] } });
 assert.equal(githubPushIntent("push", { ref: "refs/heads/feature", repository: { default_branch: "main", full_name: "o/r" } }), null);
+const pushFlags = (body: Record<string, unknown>) => {
+  const intent = githubPushIntent("push", { ref: "refs/heads/main", after: "def", repository: { default_branch: "main", full_name: "o/r" }, ...body });
+  return Boolean(JSON.parse(intent!.detail!).truncated);
+};
+const srcCommits = (n: number) => Array.from({ length: n }, (_, i) => ({ modified: [`src/${i}.ts`] }));
+assert.equal(pushFlags({ commits: srcCommits(19) }), false, "a push GitHub lists in full names its files");
+assert.equal(pushFlags({ commits: srcCommits(20) }), true, "a push with as many commits as GitHub lists may hide a lockfile, so it counts as touching everything");
+assert.equal(pushFlags({ commits: srcCommits(3), size: 40 }), true, "so does one whose size says commits were left out");
+assert.equal(pushFlags({ commits: srcCommits(3), distinct_size: 25 }), true);
+assert.equal(pushFlags({ commits: srcCommits(1), forced: true }), true, "and a forced push, whose commits say nothing of what it rewound");
 
 // Runner wiring, as the sandbox regressions do it.
 const events: { event: string; detail: Record<string, unknown> }[] = [];

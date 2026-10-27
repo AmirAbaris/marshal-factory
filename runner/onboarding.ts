@@ -477,7 +477,7 @@ export async function repoPushed(push: RepoPushDetail) {
     }
   }
   if (!detail.recipe) return { repo: row.repo, skipped: "no recipe yet" };
-  return requestRebuild(row.repo, recipeChanged ? "the recipe changed on main" : "dependencies changed on main");
+  return requestRebuild(row.repo, push.truncated ? "a push to main changed more than the factory can list" : recipeChanged ? "the recipe changed on main" : "dependencies changed on main");
 }
 
 /**
