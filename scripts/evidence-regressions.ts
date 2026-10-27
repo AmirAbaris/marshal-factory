@@ -11,7 +11,7 @@ import type { FactoryEvent } from "../lib/events";
 
 const { db } = await import("../db/client");
 const { auditLog, events, jobEvidence, jobs, repoSettings, runs } = await import("../db/schema");
-const { linearJob } = await import("./fixtures");
+const { linearJob, usageRun } = await import("./fixtures");
 const { jobId } = await import("../lib/sources/shapes");
 const { SOURCES } = await import("../lib/sources");
 const { TEST_MACHINE_ID } = await import("../lib/config");
@@ -38,6 +38,7 @@ async function insert(name: string, over: Partial<typeof jobs.$inferInsert> = {}
   const k = `EV${name}-${stamp}`;
   keys.push(k);
   await db.insert(jobs).values(linearJob(`evidence-regress-${k}`, k, { machine_id: TEST_MACHINE_ID, repo: REPO, provider: "claudeAgent", ...over }));
+  await db.insert(runs).values(usageRun(k));
   return k;
 }
 
@@ -431,6 +432,7 @@ try {
   if (keys.length > 0) {
     await db.delete(events).where(inArray(events.job_key, keys));
     await db.delete(jobEvidence).where(inArray(jobEvidence.job_key, keys));
+    await db.delete(runs).where(inArray(runs.job_key, keys));
   }
   await db.delete(runs).where(and(like(runs.session_id, "evidence:%")));
   await db.delete(jobs).where(like(jobs.id, `${jobId("linear", "evidence-regress-")}%`));

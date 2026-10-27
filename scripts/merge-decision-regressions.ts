@@ -8,8 +8,8 @@ const OWNER = "owner@example.com";
 process.env.FACTORY_OWNER_EMAILS = OWNER;
 
 const { db } = await import("../db/client");
-const { auditLog, events, jobEvidence, jobs, repoSettings } = await import("../db/schema");
-const { linearJob } = await import("./fixtures");
+const { auditLog, events, jobEvidence, jobs, repoSettings, runs } = await import("../db/schema");
+const { linearJob, usageRun } = await import("./fixtures");
 const { jobId } = await import("../lib/sources/shapes");
 const { SOURCES } = await import("../lib/sources");
 const { TEST_MACHINE_ID } = await import("../lib/config");
@@ -17,7 +17,7 @@ const { eventSchema, stageReportSchema } = await import("../lib/events");
 const { ingest } = await import("../lib/ingest");
 const { hosts } = await import("../lib/host");
 const { github, bugbotFindingsOf, checkStateOf, pullsClient } = await import("../lib/github/pulls");
-const { decideMerge, DEFAULT_POLICY, globToRegExp, majorBumps, matchesAny } = await import("../lib/merge-decision");
+const { COST_UNKNOWN_REASON, decideMerge, DEFAULT_POLICY, globToRegExp, majorBumps, matchesAny } = await import("../lib/merge-decision");
 const { readRepoSettings, resolvePolicy, writeRepoAutonomy } = await import("../lib/settings");
 const { decideMerges, RECHECK_MS } = await import("../runner/merge-decision");
 const { serve } = await import("./serve");
@@ -72,7 +72,7 @@ const facts = (over: Partial<PrFacts> = {}): PrFacts => ({
 });
 const input = (over: Partial<DecisionInput> = {}): DecisionInput => ({
   policy: { ...DEFAULT_POLICY, autonomy: "trial" },
-  tracked: true,
+  costKnown: true,
   assessment: assessment(),
   attempt: 1,
   spendUsd: 1,
@@ -93,10 +93,11 @@ const handsOver = (over: Partial<DecisionInput>, pattern: RegExp, why: string) =
 
 assert.deepEqual(decideMerge(input()), { outcome: "merge", reasons: [] }, "trial: everything holds, so it would merge");
 assert.deepEqual(decideMerge(input({ policy: { ...DEFAULT_POLICY, autonomy: "auto" } })), { outcome: "merge", reasons: [] }, "auto merges with no caveat");
-assert.deepEqual(decideMerge(input({ policy: DEFAULT_POLICY, pr: null, tracked: false, attempt: 3 })), { outcome: "handover", reasons: [] }, "off evaluates nothing");
+assert.deepEqual(decideMerge(input({ policy: DEFAULT_POLICY, pr: null, costKnown: false, attempt: 3 })), { outcome: "handover", reasons: [] }, "off evaluates nothing");
 assert.throws(() => decideMerge(input({ pr: null })), /needs the PR's facts/);
-handsOver({ tracked: false, assessment: null }, /^This harness doesn't report its cost, so its PRs never merge on their own\.$/, "an untracked harness");
-handsOver({ assessment: null }, /didn't report a merge assessment/, "a tracked run with no assessment");
+handsOver({ costKnown: false, assessment: null }, /^This run's cost is unknown, so it can't be held to its budget\.$/, "a run whose cost is unknown");
+assert.deepEqual(decideMerge(input({ costKnown: false })).reasons, [COST_UNKNOWN_REASON], "a merge assessment doesn't stand in for a known cost");
+handsOver({ assessment: null }, /didn't report a merge assessment/, "a run with a known cost and no assessment");
 handsOver({ assessment: assessment({ recommendation: "handover", checks: { ...assessment().checks, noTasteCalls: { ok: false, note: "The empty-state copy is a product call." } } }) }, /^No taste or product calls: The empty-state copy/, "the agent hands over, naming the check");
 handsOver({ assessment: assessment({ recommendation: "handover" }) }, /recommends handing over/, "a handover with every check ok");
 handsOver({ labels: ["factory", "Review"] }, /"review" label/, "the review label forces a handover");
@@ -301,14 +302,25 @@ try {
   const ASLEEP = await insert("ASLEEP", { stage: "pr", pr_url: prUrl(2), sandbox_id: null, sandbox_snapshot: "im-snap-merge", merge_assessment: assessment() });
   const LABELED = await insert("LABELED", { stage: "pr", pr_url: prUrl(3), merge_assessment: assessment() });
   const OFF = await insert("OFF", { stage: "pr", pr_url: prUrl(4), repo: OFF_REPO });
-  const CODEX = await insert("CODEX", { stage: "pr", pr_url: prUrl(5), provider: "codex" });
+  const CODEX = await insert("CODEX", { stage: "pr", pr_url: prUrl(5), provider: "codex", merge_assessment: assessment() });
   const WORKING = await insert("WORKING", { stage: "implementing", pr_url: prUrl(6) });
+  const UNCOUNTED = await insert("UNCOUNTED", { stage: "pr", pr_url: prUrl(7), provider: "codex", merge_assessment: assessment() });
+  const UNPRICED = await insert("UNPRICED", { stage: "pr", pr_url: prUrl(8), provider: "codex", merge_assessment: assessment() });
+  const PRICEY = await insert("PRICEY", { stage: "pr", pr_url: prUrl(9), provider: "codex", merge_assessment: assessment() });
   labels.set(LABELED, ["factory", "review"]);
-  for (const k of [GOOD, ASLEEP, LABELED, CODEX]) await verified(k, "h1");
-  const only = { only: [GOOD, ASLEEP, LABELED, OFF, CODEX, WORKING] };
+  for (const k of [GOOD, ASLEEP, LABELED, CODEX, UNCOUNTED, UNPRICED, PRICEY]) await verified(k, "h1");
+  for (const k of [GOOD, ASLEEP, LABELED]) await db.insert(runs).values(usageRun(k));
+  await db.insert(runs).values(usageRun(CODEX, "gpt-6.1-sol"));
+  await db.insert(runs).values(usageRun(UNPRICED, "gpt-9-nova"));
+  // 1M output tokens of gpt-6-astra: $50, over the $5 budget.
+  await db.insert(runs).values(usageRun(PRICEY, "gpt-6-astra", { output: 1_000_000 }));
+  const only = { only: [GOOD, ASLEEP, LABELED, OFF, CODEX, WORKING, UNCOUNTED, UNPRICED, PRICEY] };
 
   const first = await decideMerges({ ...only, now: at(0) });
-  assert.deepEqual(Array.isArray(first) ? [...first].sort() : first, [`${GOOD}:merge`, `${ASLEEP}:merge`, `${LABELED}:handover`, `${OFF}:handover`, `${CODEX}:handover`].sort());
+  assert.deepEqual(
+    Array.isArray(first) ? [...first].sort() : first,
+    [`${GOOD}:merge`, `${ASLEEP}:merge`, `${LABELED}:handover`, `${OFF}:handover`, `${CODEX}:merge`, `${UNCOUNTED}:handover`, `${UNPRICED}:handover`, `${PRICEY}:handover`].sort(),
+  );
   const good = (await row(GOOD)).merge_decision!;
   assert.deepEqual(
     { ...good, evaluatedAt: undefined, comments: undefined },
@@ -334,7 +346,10 @@ try {
   assert.deepEqual((await row(LABELED)).merge_decision!.reasons, ['The issue has the "review" label.']);
   assert.deepEqual((await row(OFF)).merge_decision, { outcome: "handover", reasons: [], autonomy: "off", headSha: null, headSeenAt: null, stageEventId: null, evaluatedAt: new Date(at(0)).toISOString() });
   assert.ok(!calls.some((c) => c.includes(prUrl(4)) || c.includes(OFF)), "an off repo asks neither GitHub nor Linear");
-  assert.deepEqual((await row(CODEX)).merge_decision!.reasons, ["This harness doesn't report its cost, so its PRs never merge on their own."]);
+  assert.deepEqual((await row(CODEX)).merge_decision!.reasons, [], "a Codex run with a known cost under budget merges like Claude");
+  assert.deepEqual((await row(UNCOUNTED)).merge_decision!.reasons, [COST_UNKNOWN_REASON], "a Codex run with no usage recorded hands over");
+  assert.deepEqual((await row(UNPRICED)).merge_decision!.reasons, [COST_UNKNOWN_REASON], "and so does one on a model with no price");
+  assert.deepEqual((await row(PRICEY)).merge_decision!.reasons, ["The run went over its budget."], "a Codex run over budget hands over");
   assert.equal((await row(WORKING)).merge_decision, null, "only jobs in pr");
   const [goodAudit] = await auditsOf(GOOD);
   assert.deepEqual([goodAudit!.action, goodAudit!.actor, goodAudit!.head_sha, goodAudit!.detail], ["merge_decided", "factory", "h1", "Would merge (trial)"]);
@@ -392,6 +407,7 @@ try {
   if (ids.length > 0) await db.delete(auditLog).where(inArray(auditLog.job_id, ids));
   if (keys.length > 0) await db.delete(events).where(inArray(events.job_key, keys));
   if (keys.length > 0) await db.delete(jobEvidence).where(inArray(jobEvidence.job_key, keys));
+  if (keys.length > 0) await db.delete(runs).where(inArray(runs.job_key, keys));
   await db.delete(jobs).where(like(jobs.id, `${jobId("linear", "merge-regress-")}%`));
   await db.delete(repoSettings).where(inArray(repoSettings.repo, [REPO, OFF_REPO]));
   process.exit(process.exitCode ?? 0);

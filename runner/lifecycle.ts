@@ -12,6 +12,7 @@ import type { JobId } from "../lib/sources/shapes";
 import { parseStop } from "../lib/stop";
 import { HIBERNATED_MESSAGE, type PairingResult } from "../lib/t3-pairing";
 import { bindingOf, PENDING, stopOwed, stopping } from "./binding";
+import { recordJobCodexUsage } from "./codex-usage";
 import { config } from "./config";
 import { thisMachine } from "./heartbeat";
 import { flushSandboxOutbox } from "./outbox";
@@ -216,7 +217,10 @@ async function verifyGone(sandboxId: string) {
  */
 export async function teardownSandbox(row: SandboxRow) {
   if (!row.sandbox_id && !row.sandbox_snapshot && !row.codex_slot) return;
-  if (row.sandbox_id) await retireSandbox(row.key, row.sandbox_id, row.codex_slot);
+  if (row.sandbox_id) {
+    await recordJobCodexUsage(row.key, modalHost(row.sandbox_id));
+    await retireSandbox(row.key, row.sandbox_id, row.codex_slot);
+  }
   const stop = stopping(row) ? parseStop(row.stop) : null;
   if (row.sandbox_id && stop) await verifyGone(row.sandbox_id);
   if (row.sandbox_snapshot) await deleteSnapshot(row.sandbox_snapshot);
@@ -288,6 +292,7 @@ export async function hibernateIdle(now = Date.now()) {
     const state = await threads.state(row.t3_thread_id, host);
     if (state === "running") return undefined;
     if (state === "gone") {
+      await recordJobCodexUsage(row.key, host);
       await retireSandbox(row.key, sandboxId, row.codex_slot);
       await db.update(jobs).set({ codex_slot: null }).where(and(eq(jobs.key, row.key), eq(jobs.sandbox_id, sandboxId)));
       return row.codex_slot ? "gone, slot freed" : undefined;
@@ -298,6 +303,8 @@ export async function hibernateIdle(now = Date.now()) {
       const [current] = await db.select({ stage: jobs.stage }).from(jobs).where(eq(jobs.key, row.key));
       if (current?.stage !== row.stage) return undefined;
     }
+    // Reconcile skips a hibernated job, so its usage so far is recorded while the sandbox runs.
+    await recordJobCodexUsage(row.key, host);
     await writeBackLogin(row.key, sandboxId, row.codex_slot);
     await stopT3(host);
     let imageId: string;

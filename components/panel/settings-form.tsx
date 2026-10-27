@@ -37,14 +37,13 @@ const describe = (harnesses: readonly Harness[], provider: string, model: string
 function UntrackedWarning({ name, tracking }: { name: string; tracking: Exclude<Tracking, "full"> }) {
   const shows =
     tracking === "stages"
-      ? `Runs on ${name} report their stages, questions and pull requests through the factory-report MCP server, but no agents or cost.`
-      : `Runs on ${name} will not show stages, agents or cost on the board yet.`;
+      ? `Runs on ${name} report their stages, questions and pull requests through the factory-report MCP server, and the runner reads their cost from ${name}'s session logs, so the budget cap applies. A run whose usage can't be read, or whose model has no price, has an unknown cost and hands its PR over instead of merging. The quiet-run watchdog does not apply to them.`
+      : `Runs on ${name} will not show stages, agents or cost on the board yet. The budget cap and the quiet-run watchdog do not apply to them, so check them in T3 directly.`;
   return (
     <div role="note" className="flex gap-2.5 rounded-lg border border-warning/40 bg-warning/10 p-3 text-sm">
       <TriangleAlertIcon className="mt-0.5 size-4 shrink-0 text-warning" />
       <p>
-        {shows} The budget cap and the quiet-run watchdog do not apply to them, so check them in T3 directly. The board still
-        shows when a run is queued and launched, and the watchdog still fails a run whose thread is gone.
+        {shows} The board still shows when a run is queued and launched, and the watchdog still fails a run whose thread is gone.
       </p>
     </div>
   );

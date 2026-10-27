@@ -4,8 +4,8 @@ import { eq, inArray, like } from "drizzle-orm";
 import type { MergeAssessment } from "../lib/assessment";
 
 const { db } = await import("../db/client");
-const { auditLog, events, jobEvidence, jobs, repoSettings } = await import("../db/schema");
-const { linearJob } = await import("./fixtures");
+const { auditLog, events, jobEvidence, jobs, repoSettings, runs } = await import("../db/schema");
+const { linearJob, usageRun } = await import("./fixtures");
 const { jobId } = await import("../lib/sources/shapes");
 const { SOURCES } = await import("../lib/sources");
 const { TEST_MACHINE_ID } = await import("../lib/config");
@@ -222,6 +222,7 @@ async function job(name: string, repo: string, n: number, pull: Partial<Pull> = 
     }),
   );
   for (const sha of pulls.get(pullKey(repo, n))!.heads) await verifiedAt(k, sha);
+  await db.insert(runs).values(usageRun(k));
   return k;
 }
 
@@ -442,6 +443,7 @@ try {
   if (ids.length > 0) await db.delete(auditLog).where(inArray(auditLog.job_id, ids));
   if (keys.length > 0) await db.delete(events).where(inArray(events.job_key, keys));
   if (keys.length > 0) await db.delete(jobEvidence).where(inArray(jobEvidence.job_key, keys));
+  if (keys.length > 0) await db.delete(runs).where(inArray(runs.job_key, keys));
   await db.delete(jobs).where(like(jobs.id, `${jobId("linear", "auto-merge-regress-")}%`));
   await db.delete(repoSettings).where(inArray(repoSettings.repo, [AUTO, MERGE_ONLY, TRIAL, OFF]));
   await server.close();

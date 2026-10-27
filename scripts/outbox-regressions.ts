@@ -194,7 +194,7 @@ try {
   job = await row(CODEX);
   assert.deepEqual([job.stage, job.pr_url, job.merge_assessment?.recommendation], ["pr", prUrl, "handover"], "the PR URL and the merge assessment land like Claude's");
   const runsOf = await db.select().from(runs).where(eq(runs.job_key, CODEX));
-  assert.equal(harnessLine(boardCards([job], runsOf)[0]!.harness!), "Codex · no cost tracking", "the card shows stages without cost");
+  assert.equal(harnessLine(boardCards([job], runsOf)[0]!.harness!), "Codex · cost unknown", "the card shows stages, and no cost before the runner reads its usage");
   await first.close();
 
   // A restarted server opens the same run once and goes on.

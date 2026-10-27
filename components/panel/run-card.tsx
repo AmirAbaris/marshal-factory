@@ -61,7 +61,7 @@ function AgentsAndCost({
 
 const TRACKING_HINT: Record<Tracking, string | undefined> = {
   full: undefined,
-  stages: "This harness reports its stages, questions and pull requests, but no agents or cost.",
+  stages: "The runner reads this harness's cost from its session logs; it shows once usage is read and the model has a price. Until then its PR hands over.",
   none: "This harness reports no stages, agents or cost; check the run in T3.",
 };
 

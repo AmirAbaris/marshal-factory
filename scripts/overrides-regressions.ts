@@ -189,7 +189,12 @@ const cardJob = { ...linearJob(`card-${stamp}`, `CARD-${stamp}`), stage: "implem
 const [card] = boardCards([cardJob as never], [], harnesses);
 assert.equal(harnessLine(card!.harness!), "Codex · not tracked", "an untracked harness says so, without its model");
 const mcpRun = { session_id: `mcp:factory/${cardJob.key}`, job_key: cardJob.key, branch: `factory/${cardJob.key}`, stage: "implementing", stage_at: new Date(), last_event_at: new Date() };
-assert.equal(harnessLine(boardCards([cardJob as never], [mcpRun as never], harnesses)[0]!.harness!), "Codex · no cost tracking", "a Codex job whose report server posted shows stages, not cost");
+const tokens = { input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0 };
+assert.equal(harnessLine(boardCards([cardJob as never], [{ ...mcpRun, ...tokens } as never], harnesses)[0]!.harness!), "Codex · cost unknown", "a Codex job whose report server posted shows stages, and no cost until usage is read");
+const pricedRun = { ...mcpRun, ...tokens, model: "gpt-6.1-sol", input_tokens: 1_000, output_tokens: 200 };
+const priced = boardCards([cardJob as never], [pricedRun as never], harnesses)[0]!.harness!;
+assert.deepEqual([harnessLine(priced), priced.tracking], ["Codex", "full"], "with priced usage recorded it shows its cost like Claude");
+assert.equal(harnessLine(boardCards([cardJob as never], [{ ...pricedRun, model: "gpt-9-nova" } as never], harnesses)[0]!.harness!), "Codex · cost unknown", "a model with no price leaves the cost unknown");
 assert.equal(harnessLine(boardCards([{ ...cardJob, provider: "claudeAgent" } as never], [], harnesses)[0]!.harness!), "Claude Code");
 
 // New job: the chosen harness and place go on the issue as the group labels.
