@@ -10,3 +10,7 @@ export function jobKeyFromBranch(branch: string | undefined) {
 
 export const attemptBranch = (key: string, attempt: number) =>
   attempt > 1 ? `factory/${key}-a${attempt}` : `factory/${key}`;
+
+/** The session the factory-report MCP server reports under for an attempt branch, where no hooks name one. */
+export const mcpSessionId = (branch: string) => `mcp:${branch}`;
+export const isMcpSession = (sessionId: string) => sessionId.startsWith("mcp:");

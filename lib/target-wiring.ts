@@ -45,8 +45,9 @@ export function withHooks(settings: Json, root: string): Json {
 
 export const reportServer = (root: string) => ({ command: "bun", args: [join(root, "mcp/factory-report.ts")] });
 
+/** Claude Code's hooks report its stages, so its server only validates. */
 export function withServer(mcp: Json, root: string): Json {
-  return { ...mcp, mcpServers: { ...((mcp.mcpServers as Json) ?? {}), [REPORT_SERVER]: reportServer(root) } };
+  return { ...mcp, mcpServers: { ...((mcp.mcpServers as Json) ?? {}), [REPORT_SERVER]: { ...reportServer(root), env: { FACTORY_REPORTER: "hook" } } } };
 }
 
 /** The factory checkouts a repo's committed wiring points at, read from its settings and .mcp.json text. */
