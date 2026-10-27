@@ -196,7 +196,6 @@ async function tick() {
     // After the PR check, so a merged or conflicting PR has already left pr.
     mergeDecisions: await isolated(() => decideMerges()),
     mainWatched: await isolated(() => watchMerges()),
-    overBudget: await isolated(ops.enforceBudget),
     // Harnesses without hooks report no stage or PR; read them from GitHub and the thread instead.
     untracked: await isolated(() => inferUntracked()),
     watched: await isolated(ops.watchdog),

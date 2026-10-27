@@ -19,7 +19,6 @@ export function linearJob(
     repo: "ski043/factory-demo",
     writeback: { kind: "linear", issueId: externalId },
     source_state: { state, labels: [], factoryCommentIds },
-    budget_usd: 5,
     claimed_at: now,
     updated_at: now,
     ...row,

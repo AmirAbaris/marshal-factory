@@ -432,7 +432,7 @@ async function applyAgentEvent(tx: Tx, event: FactoryEvent) {
 export type IngestResult = {
   received: number;
   inserted: number;
-  /** USD spent so far per factory branch (one attempt at a job) touched by the batch; the reporter caches it for the budget hook. */
+  /** USD spent so far per factory branch (one attempt at a job) touched by the batch; reporters from before the budget cap was removed still cache it. */
   spend: Record<string, number>;
   /** Stage events the transition table refused; stored, but neither the job nor the run moved. */
   refused: StageRefusal[];

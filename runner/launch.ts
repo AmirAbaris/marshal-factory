@@ -158,7 +158,6 @@ export type LaunchEntry = {
   key: string;
   sandbox_id: null;
   attempt: number;
-  budgetUsd: number;
   source: JobSource;
   repo: string;
   branch: string;
@@ -468,7 +467,7 @@ export async function launchInSandboxes(pending: readonly LaunchEntry[], slot: L
           slot: lease.slot,
           codexAuth,
           githubToken,
-          ingest: ingestConfig(config, entry.budgetUsd),
+          ingest: ingestConfig(config),
           job: { key: entry.key, attempt: entry.attempt },
           ...(start.warm && { warm: start.warm }),
         };

@@ -23,11 +23,10 @@ export type BoardCard = {
   question: string | null;
   prUrl: string | null;
   sourceLink: { label: string; href: string } | null;
-  budgetUsd: number | null;
   machineId: string | null;
   answeredAt: Date | null;
   attempt: number;
-  /** The runs of the current attempt; spend against the cap counts only these. */
+  /** The runs of the current attempt; the card's spend counts only these. */
   attemptRuns: RunRow[];
   /** Set while the watchdog's nudge for the current stage is outstanding. */
   nudgedAt: Date | null;
@@ -145,7 +144,6 @@ export function boardCards(jobs: readonly JobRow[], runs: readonly RunRow[], har
       question: job.question,
       prUrl: job.pr_url,
       sourceLink: sourceLink(job),
-      budgetUsd: job.budget_usd,
       machineId: job.machine_id,
       answeredAt: job.answered_at,
       attempt: job.attempt,
@@ -181,7 +179,6 @@ export function boardCards(jobs: readonly JobRow[], runs: readonly RunRow[], har
         question: latest.question,
         prUrl: sorted.find((r) => r.pr_url)?.pr_url ?? null,
         sourceLink: null,
-        budgetUsd: null,
         machineId: null,
         answeredAt: null,
         attempt: 1,

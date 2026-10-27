@@ -32,6 +32,7 @@ import {
 // exactly those and holds this checkout's playbooks. Rerun it after the hooks, a playbook or a pin change.
 
 const root = join(import.meta.dirname, "..");
+// hooks/budget.ts is a no-op kept for repos wired before the budget cap was removed.
 const ENTRIES = ["hooks/report.ts", "hooks/budget.ts", "hooks/verify.ts", "mcp/factory-report.ts"];
 const limits = loadLimits().sandbox;
 

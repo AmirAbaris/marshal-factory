@@ -139,9 +139,8 @@ async function pstackEnabled(host: JobHost) {
   }
 }
 
-/** Just what the hooks read: where to report and the job's budget. */
-export const ingestConfig = (config: Pick<FactoryConfig, "ingestUrl" | "secret">, budgetUsd: number) =>
-  json({ ingestUrl: config.ingestUrl, secret: config.secret, factory: { budgetUsd } });
+/** Just what the hooks read: where to report. */
+export const ingestConfig = (config: Pick<FactoryConfig, "ingestUrl" | "secret">) => json({ ingestUrl: config.ingestUrl, secret: config.secret });
 
 /** Secrets the sandbox's processes see as environment variables; never an API key that would bill per token. */
 export const sandboxSecrets = (claudeToken: string | undefined): Record<string, string> =>

@@ -123,7 +123,7 @@ export function RunDetail({
   closeHref: string;
   audit: { feed: Feed<AuditRow>; path: string } | undefined;
   evidence: { feed: Feed<JobEvidenceRow>; path: string } | undefined;
-  jobSpend: { usd: number; capUsd: number; attempt: number } | undefined;
+  jobSpend: { usd: number; attempt: number } | undefined;
   stagesPath: string;
   job: JobRow | undefined;
   machine: MachineRow | undefined;
@@ -175,9 +175,9 @@ export function RunDetail({
             )}
             <span className="font-mono text-muted-foreground">
               {jobSpend ? (
-                <span className={cn(jobSpend.usd >= jobSpend.capUsd && "text-destructive")}>
+                <span>
                   {jobSpend.attempt > 1 && `attempt ${jobSpend.attempt}: `}
-                  {formatUsd(jobSpend.usd)} of {formatUsd(jobSpend.capUsd)} cap
+                  {formatUsd(jobSpend.usd)}
                 </span>
               ) : (
                 formatUsd(runCost(run, agentRows))

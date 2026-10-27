@@ -66,9 +66,7 @@ export const factorySchema = z
     stoppedGraceMinutes: z.number().nonnegative().default(2),
     /** After a nudge, this much more quiet marks the job failed. */
     failAfterNudgeMinutes: z.number().positive().default(30),
-    /** USD one attempt at a job may spend across its runs, main sessions plus subagents; claims copy it onto the job. */
-    budgetUsd: z.number().positive().default(5),
-    /** USD per million tokens by model id, over lib/pricing.ts's defaults; null makes a model's cost unknown. The runner's budget and merge decisions use it; the panel shows the defaults. */
+    /** USD per million tokens by model id, over lib/pricing.ts's defaults; null makes a model's cost unknown. The runner's spend reconcile uses it; the panel shows the defaults. */
     pricing: pricingSchema.default({}),
     /** Days a failed job keeps its worktree for a human to look at before cleanup removes it. */
     cleanupGraceDays: z.number().nonnegative().default(3),
@@ -83,7 +81,7 @@ export const factorySchema = z
     /** The provider and model for new factory threads when the panel's settings hold none. */
     provider: z.string().default(DEFAULT_PROVIDER),
     model: z.string().default(DEFAULT_MODEL),
-    /** How often the runner's timer runs the watchdog, the cost-cap backstop and usage reconcile. */
+    /** How often the runner's timer runs the watchdog and usage reconcile. */
     tickSeconds: z.number().positive().default(90),
     /** Overrides this Mac's IOPlatformUUID as its id in the machines table, so test runners keep their own row. */
     machineId: z.string().min(1).optional(),
@@ -121,7 +119,7 @@ const configSchema = z.object({
 });
 export type FactoryConfig = z.infer<typeof configSchema>;
 
-/** Just the limits, for readers that hold no secrets, such as the budget hook. */
+/** Just the limits, for readers that hold no secrets, such as the sandbox image build. */
 export function loadLimits(): FactoryLimits {
   const raw = existsSync(/* turbopackIgnore: true */ CONFIG_PATH) ? JSON.parse(readFileSync(/* turbopackIgnore: true */ CONFIG_PATH, "utf8")).factory : undefined;
   return factorySchema.parse(raw ?? {});

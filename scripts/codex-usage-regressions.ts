@@ -20,7 +20,8 @@ const { CODEX_HOME } = await import("../lib/sandbox");
 const { codexUsage, matchRollouts, parseRollout, readRollouts, ROLLOUT_SLACK_MS } = await import("../lib/codex-usage");
 const { costKnown, costUsd, knownCostUsd, priceFor } = await import("../lib/pricing");
 const { branchCosts } = await import("../lib/spend");
-const { config, enforceBudget, ingestClient, reconcileUsage } = await import("../runner/ops");
+const ops = await import("../runner/ops");
+const { config, ingestClient, reconcileUsage } = ops;
 const { teardownSandbox } = await import("../runner/lifecycle");
 
 const FIXTURES = join(import.meta.dirname, "fixtures/codex");
@@ -190,17 +191,19 @@ try {
   await db.update(jobs).set({ sandbox_id: SANDBOX }).where(eq(jobs.key, KEY));
   assert.deepEqual(await reconcileUsage({ only: [KEY] }), [], "a gone sandbox does not abort the pass");
 
-  // The budget: a Codex attempt with a known cost over its cap fails; an unpriced one is left to the merge decision.
-  for (const k of [OVER, UNPRICED]) await db.insert(jobs).values(linearJob(`codex-usage-${k}`, k, { machine_id: TEST_MACHINE_ID, provider: "codex", stage: "implementing", budget_usd: 5 }));
+  // Spend is measured, never capped: an expensive attempt keeps working and its cost is recorded.
+  for (const k of [OVER, UNPRICED]) await db.insert(jobs).values(linearJob(`codex-usage-${k}`, k, { machine_id: TEST_MACHINE_ID, provider: "codex", stage: "implementing" }));
   await db.insert(runs).values({ ...usageRun(OVER, "gpt-6-astra", { output: 1_000_000 }), session_id: `mcp:factory/${OVER}` });
   await db.insert(runs).values({ ...usageRun(UNPRICED, "gpt-9-nova", { output: 1_000_000 }), session_id: `mcp:factory/${UNPRICED}` });
-  const over = await enforceBudget();
-  assert.ok(over.includes(OVER), `the Codex run over budget fails: ${JSON.stringify(over)}`);
-  assert.ok(!over.includes(UNPRICED), "an unpriced one isn't failed on a guess");
-  assert.equal((await jobRow(OVER)).stage, "failed");
-  assert.match((await jobRow(OVER)).stage_summary ?? "", /budget exceeded \(\$50\.15 of \$5\.00\)/);
+  assert.ok(!("enforceBudget" in ops), "the runner has no budget pass");
+  const spent = await branchCosts(db, [`factory/${OVER}`, `factory/${UNPRICED}`]);
+  assert.equal(spent[`factory/${OVER}`]?.known, true);
+  assert.equal(spent[`factory/${OVER}`]!.usd.toFixed(2), "50.15", "a $50 attempt's cost is recorded");
+  assert.equal(spent[`factory/${UNPRICED}`]?.known, false, "an unpriced model's cost is unknown");
+  assert.equal((await jobRow(OVER)).stage, "implementing", "and nothing fails it for what it spent");
+  assert.equal((await jobRow(OVER)).budget_usd, 5, "the unused budget column takes its default");
   config.factory.pricing = { "gpt-9-nova": { input: 1, output: 10, cacheRead: 0.1, cacheWrite: 1 } };
-  assert.ok((await enforceBudget()).includes(UNPRICED), "factory.pricing prices it, and then the cap holds");
+  assert.equal((await branchCosts(db, [`factory/${UNPRICED}`], config.factory.pricing))[`factory/${UNPRICED}`]?.known, true, "factory.pricing prices it");
   config.factory.pricing = {};
 
   console.log("codex usage regressions passed");

@@ -26,13 +26,11 @@ const cardClass = (selected: boolean) =>
 function AgentsAndCost({
   runs,
   agents,
-  budgetUsd,
   allRuns,
 }: {
   runs: readonly RunRow[];
   agents: readonly AgentRow[];
-  budgetUsd?: number;
-  /** Every attempt's runs, when they differ from the runs the cap counts. */
+  /** Every attempt's runs, when they differ from the current attempt's. */
   allRuns?: readonly RunRow[];
 }) {
   const running = agents.filter((a) => a.status === "running").length;
@@ -47,12 +45,8 @@ function AgentsAndCost({
           {running > 0 ? `${running}/${agents.length}` : agents.length} agents
         </span>
       )}
-      <span
-        className={cn("font-mono", budgetUsd !== undefined && cost >= budgetUsd && "text-destructive")}
-        title={budgetUsd !== undefined ? "spend of this attempt / cap per attempt" : undefined}
-      >
+      <span className="font-mono" title={total !== undefined ? "spend of this attempt" : undefined}>
         {formatUsd(cost)}
-        {budgetUsd !== undefined && ` / ${formatUsd(budgetUsd)}`}
       </span>
       {total !== undefined && <span className="font-mono text-faint">all attempts {formatUsd(total)}</span>}
     </>
@@ -61,7 +55,7 @@ function AgentsAndCost({
 
 const TRACKING_HINT: Record<Tracking, string | undefined> = {
   full: undefined,
-  stages: "The runner reads this harness's cost from its session logs; it shows once usage is read and the model has a price. Until then its PR hands over.",
+  stages: "The runner reads this harness's cost from its session logs; it shows once usage is read and the model has a price.",
   none: "This harness reports no stages, agents or cost; check the run in T3.",
 };
 
@@ -194,7 +188,7 @@ export function StageCard({
         )}
         {card.attempt > 1 && <span>attempt {card.attempt}</span>}
         {(!card.harness || card.harness.tracking === "full") && (
-          <AgentsAndCost runs={card.attemptRuns} allRuns={card.runs} agents={agents} budgetUsd={card.budgetUsd ?? undefined} />
+          <AgentsAndCost runs={card.attemptRuns} allRuns={card.runs} agents={agents} />
         )}
         {card.runsOn && (
           <span className="ml-auto flex min-w-0 items-center gap-1.5">

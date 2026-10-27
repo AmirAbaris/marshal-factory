@@ -8,7 +8,7 @@ import { stageReportSchema, type FactoryEvent, type Usage } from "../lib/events"
 import { parseBranch, REPORT_STAGE_TOOL } from "../lib/factory";
 import { localHost } from "../lib/host";
 import { readIngestTarget, reportEvents } from "../lib/outbox";
-import { rememberSessionBranch, sessionBranch, writeSpend } from "../lib/spend-cache";
+import { rememberSessionBranch, sessionBranch } from "../lib/session-branch";
 import { mainTranscript, readTranscript, subagentTranscripts, sumUsage } from "../lib/transcript";
 
 const run = promisify(execFile);
@@ -123,8 +123,8 @@ const USAGE_DIR = join(homedir(), ".cache/marshal-factory/usage");
  * A factory session's main usage only lands with turn_stop, and a factory run is one long turn.
  * So after other tool calls, including those inside subagents (the main session waits while a
  * foreground subagent works), the reporter sends a snapshot of the main session and every
- * subagent transcript, at most every 30 s per session. That keeps the job's spend, and the
- * budget hook, close to real time.
+ * subagent transcript, at most every 30 s per session. That keeps the job's spend close to real
+ * time.
  */
 async function usageSnapshot(
   input: HookInput,
@@ -241,7 +241,6 @@ async function main() {
   });
   // Every call flushes, so a backlog left by an ingest outage drains even from hooks that send nothing.
   const flushed = await reportEvents(event ? [event] : [], FLUSH_BUDGET_MS);
-  if (flushed && Object.keys(flushed.spend).length > 0) writeSpend(flushed.spend);
   if (flushed?.error && process.env.REPORT_DEBUG) console.error(flushed.error);
 }
 

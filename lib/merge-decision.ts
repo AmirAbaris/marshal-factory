@@ -156,12 +156,8 @@ export type PrFacts = {
 
 export type DecisionInput = {
   policy: RepoPolicy;
-  /** False when the attempt recorded no usage, or used a model without a price; see lib/spend.ts. */
-  costKnown: boolean;
   assessment: MergeAssessment | null;
   attempt: number;
-  spendUsd: number;
-  budgetUsd: number;
   labels: readonly string[];
   /** Null only when autonomy is off, which never asks GitHub. */
   pr: PrFacts | null;
@@ -207,7 +203,6 @@ function hardLimits(input: DecisionInput, pr: PrFacts) {
   const reasons: string[] = [];
   if (input.labels.some((l) => l.toLowerCase() === REVIEW_LABEL)) reasons.push(`The issue has the "${REVIEW_LABEL}" label.`);
   if (input.attempt !== 1) reasons.push(`This is attempt ${input.attempt}; only a first attempt merges on its own.`);
-  if (input.spendUsd >= input.budgetUsd) reasons.push("The run went over its budget.");
   if (pr.checks === "failure") reasons.push("A check failed on the latest commit.");
   if (pr.mergeable === "conflicting") reasons.push("The pull request conflicts with its base branch.");
   if (pr.behindBy > 0) reasons.push(`The branch is ${pr.behindBy} commit${pr.behindBy === 1 ? "" : "s"} behind its base.`);
@@ -226,11 +221,7 @@ function hardLimits(input: DecisionInput, pr: PrFacts) {
   return reasons;
 }
 
-export const COST_UNKNOWN_REASON = "This run's cost is unknown, so it can't be held to its budget.";
-
-function agentReasons({ costKnown, assessment }: DecisionInput) {
-  // A run whose cost is unknown can't be held to its budget, whatever it assessed.
-  if (!costKnown) return [COST_UNKNOWN_REASON];
+function agentReasons({ assessment }: DecisionInput) {
   if (!assessment) return ["The agent didn't report a merge assessment."];
   if (assessment.recommendation === "merge") return [];
   const failed = ASSESSMENT_CHECKS.filter((name) => !assessment.checks[name].ok).map((name) => `${CHECK_LABELS[name]}: ${assessment.checks[name].note}`);

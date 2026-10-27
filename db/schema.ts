@@ -136,11 +136,12 @@ export const jobs = pgTable(
     answer: text("answer"),
     /** The question and answer a relaunched thread gets when the original thread is gone. */
     resume_context: text("resume_context"),
-    /** Each retry after a failure is a new attempt on its own branch, with its own budget. */
+    /** Each retry after a failure is a new attempt on its own branch. */
     attempt: integer("attempt").notNull().default(1),
     /** Why the previous attempt failed; the next attempt's first message quotes it. */
     previous_failure: text("previous_failure"),
-    budget_usd: doublePrecision("budget_usd").notNull(),
+    /** Unused: the per-attempt cap it held was removed. Kept, with a default, for runners and ingest deployed before that. */
+    budget_usd: doublePrecision("budget_usd").notNull().default(5),
     /** When the watchdog nudged a stuck run, and in which stage; cleared once the stage moves on. */
     nudged_at: ts("nudged_at"),
     nudged_stage: runStage("nudged_stage"),

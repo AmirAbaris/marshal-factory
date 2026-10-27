@@ -1,0 +1,1 @@
+ALTER TABLE "jobs" ALTER COLUMN "budget_usd" SET DEFAULT 5;

@@ -6,7 +6,6 @@ import { allSources, jobId, parseJob, parseJobs, sourceFor } from "../lib/source
 import { parseJobId, SOURCE_SHAPES } from "../lib/sources/shapes";
 import type { Job, JobDraft, JobId, JobSource, SourceAdapter } from "../lib/sources/types";
 import { canTransition, runnerEventId } from "../lib/stages";
-import { branchSpend } from "../lib/spend";
 import { subagentTranscripts, sumUsage, transcriptPathFor } from "../lib/transcript";
 import { checkoutRepo, cleanupRepo, cleanupSubagentWorktrees } from "../lib/worktrees";
 import { github } from "../lib/github/pulls";
@@ -403,29 +402,6 @@ async function reconcileRun(run: RunRow, host: JobHost) {
   return true;
 }
 
-/** Backstop for the budget hook: a working job over its attempt's cap fails even if its thread never reports it. */
-export async function enforceBudget() {
-  const working = await db.select().from(jobs).where(and(await mine(), inArray(jobs.stage, IN_FLIGHT)));
-  const spend = await branchSpend(db, working.map((j) => attemptBranch(j.key, j.attempt)), config.factory.pricing);
-  const over: string[] = [];
-  for (const job of working) {
-    const usd = spend[attemptBranch(job.key, job.attempt)] ?? 0;
-    if (usd < job.budget_usd) continue;
-    await postEvent({
-      // Keyed on the stage it fails, so a run that reports again after this still gets failed again.
-      eventId: runnerEventId("budget", job.external_id, job.attempt, job.stage_event_id ?? job.stage),
-      sessionId: job.session_id ?? runnerEventId("budget", job.external_id),
-      at: Date.now(),
-      kind: "stage",
-      stage: "failed",
-      summary: `budget exceeded ($${usd.toFixed(2)} of $${job.budget_usd.toFixed(2)})`,
-      jobKey: job.key,
-    });
-    over.push(job.key);
-  }
-  return over;
-}
-
 /**
  * Reports each job's new stage to its source. A job no machine holds can still move, as when its PR
  * merges, so every machine writes it back; source writes are keyed on the stage event, so two
@@ -558,7 +534,6 @@ async function claimDrafts(ready: readonly { source: SourceAdapter<JobSource>; d
           repo: target,
           writeback: draft.writeback,
           source_state: draft.sourceState,
-          budget_usd: config.factory.budgetUsd,
           claimed_at: now,
           updated_at: now,
         })
@@ -599,7 +574,6 @@ async function claimDrafts(ready: readonly { source: SourceAdapter<JobSource>; d
             repo: target,
             writeback: draft.writeback,
             source_state: sql`${jobs.source_state} || excluded.source_state`,
-            budget_usd: config.factory.budgetUsd,
             claimed_at: now,
             updated_at: now,
           },
@@ -688,7 +662,6 @@ export async function toLaunch() {
     key: job.key,
     sandbox_id: null,
     attempt: job.attempt,
-    budgetUsd: job.budget_usd,
     source: job.source,
     repo: job.repo,
     branch: attemptBranch(job.key, job.attempt),

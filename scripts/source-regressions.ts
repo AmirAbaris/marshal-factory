@@ -165,8 +165,7 @@ const EXPECTED = {
         "labels": [],
         "previous_failure": null,
         "comments": 1,
-        "repo": "ski043/factory-demo",
-        "budget_usd": 5
+        "repo": "ski043/factory-demo"
       },
       {
         "key": "SRC-2",
@@ -177,8 +176,7 @@ const EXPECTED = {
         "labels": [],
         "previous_failure": null,
         "comments": 1,
-        "repo": "ski043/factory-demo",
-        "budget_usd": 5
+        "repo": "ski043/factory-demo"
       },
       {
         "key": "SRC-3",
@@ -189,8 +187,7 @@ const EXPECTED = {
         "labels": [],
         "previous_failure": null,
         "comments": 1,
-        "repo": "ski043/factory-demo",
-        "budget_usd": 5
+        "repo": "ski043/factory-demo"
       },
       {
         "key": "SRC-4",
@@ -201,8 +198,7 @@ const EXPECTED = {
         "labels": [],
         "previous_failure": null,
         "comments": 0,
-        "repo": "ski043/factory-demo",
-        "budget_usd": 5
+        "repo": "ski043/factory-demo"
       },
       {
         "key": "SRC-5",
@@ -213,8 +209,7 @@ const EXPECTED = {
         "labels": [],
         "previous_failure": null,
         "comments": 0,
-        "repo": "ski043/factory-demo",
-        "budget_usd": 5
+        "repo": "ski043/factory-demo"
       },
       {
         "key": "SRC-6",
@@ -225,8 +220,7 @@ const EXPECTED = {
         "labels": [],
         "previous_failure": null,
         "comments": 1,
-        "repo": "ski043/factory-demo",
-        "budget_usd": 5
+        "repo": "ski043/factory-demo"
       },
       {
         "key": "SRC-7",
@@ -237,8 +231,7 @@ const EXPECTED = {
         "labels": [],
         "previous_failure": null,
         "comments": 1,
-        "repo": "ski043/factory-demo",
-        "budget_usd": 5
+        "repo": "ski043/factory-demo"
       }
     ]
   },
@@ -270,8 +263,7 @@ const EXPECTED = {
         ],
         "previous_failure": null,
         "comments": 0,
-        "repo": "test-owner/claimed-repo",
-        "budget_usd": 5
+        "repo": "test-owner/claimed-repo"
       },
       {
         "key": "SRC-9",
@@ -285,8 +277,7 @@ const EXPECTED = {
         ],
         "previous_failure": "earlier failure",
         "comments": 0,
-        "repo": "test-owner/claimed-repo",
-        "budget_usd": 5
+        "repo": "test-owner/claimed-repo"
       }
     ]
   },
@@ -353,7 +344,6 @@ const snapshot = async () =>
     previous_failure: j.previous_failure,
     comments: j.source_state.factoryCommentIds.length,
     repo: j.repo,
-    budget_usd: j.budget_usd,
   }));
 
 try {

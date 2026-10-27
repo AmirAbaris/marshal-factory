@@ -37,7 +37,7 @@ const CLOCK_TICK_MS = 30_000;
 const AUTONOMY_HELP: Record<Autonomy, string> = {
   off: "Every pull request is ready for your review. The factory evaluates nothing.",
   trial: "The factory evaluates each pull request and shows whether it would merge or why it hands over, but never merges.",
-  auto: "The factory merges a pull request it is confident about and every hard limit holds: checks green, Bugbot clear, first attempt, within budget, small, and no protected paths.",
+  auto: "The factory merges a pull request it is confident about and every hard limit holds: checks green, Bugbot clear, first attempt, small, and no protected paths.",
 };
 
 const LIST_KEYS: readonly KeyHint[] = [

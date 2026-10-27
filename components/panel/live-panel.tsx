@@ -251,7 +251,6 @@ export function LivePanel({
                         runRows.filter((r) => r.branch === attemptBranch(selectedJob.key, selectedJob.attempt)),
                         agentsBySession,
                       ),
-                      capUsd: selectedJob.budget_usd,
                       attempt: selectedJob.attempt,
                     }
                   : undefined
