@@ -1,7 +1,7 @@
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { z } from "zod";
-import { jobs, slackMessages, type JobRow, type SlackMessageRow } from "@/db/schema";
+import { intents, jobs, slackMessages, type IntentKind, type JobRow, type SlackMessageRow } from "@/db/schema";
 import type { SessionUser } from "@/lib/auth/owner";
 import { attemptBranch } from "@/lib/factory";
 import { followUpHint, MAX_FEEDBACK_CHARS, MAX_FOLLOW_UP_CHARS, type InboxAction } from "@/lib/inbox";
@@ -9,6 +9,7 @@ import {
   answerQuestion,
   approveMerge,
   closeJob,
+  describeOutcome,
   dismissJob,
   fileFollowUp,
   intentOutcome,
@@ -51,13 +52,39 @@ export function ownerFromAllowlist(allowlist = process.env.FACTORY_OWNER_EMAILS)
 }
 
 /**
- * The request id one action on one event always gets, so a double click, a second modal or a
- * retry records one intent, files one issue or posts one answer; a UUID, as the inbox actions want.
+ * The request id of one attempt at one action on one event: a double click, a second modal or a
+ * Slack retry gets the same one, so it records one intent, files one issue or posts one answer; a
+ * UUID, as the inbox actions want. `after` is the request id of the attempt the runner refused.
  */
-export function slackRequestId(eventId: string, action: InboxAction) {
-  const h = createHash("sha256").update(`slack:${eventId}:${action}`).digest("hex");
+export function slackRequestId(eventId: string, action: InboxAction, after = "") {
+  const h = createHash("sha256").update(`slack:${eventId}:${action}${after && `:${after}`}`).digest("hex");
   const variant = ((parseInt(h[16]!, 16) & 0x3) | 0x8).toString(16);
   return `${h.slice(0, 8)}-${h.slice(8, 12)}-8${h.slice(13, 16)}-${variant}${h.slice(17, 20)}-${h.slice(20, 32)}`;
+}
+
+/** The intent each runner-handled action records, keyed panel:<kind>:<request id>. */
+const INTENT_KINDS = {
+  answer: "answer",
+  approve: "approve_merge",
+  request_changes: "request_changes",
+  close: "close_job",
+  retry_stop: "retry_stop",
+} as const satisfies Partial<Record<InboxAction, IntentKind>>;
+
+/**
+ * The request id for this click: the first attempt's, or the one after the last attempt the runner
+ * refused, so the action can be tried again however the message was rendered since. Clicks while
+ * an attempt is pending or done get that attempt's id and record nothing new.
+ */
+async function nextRequestId(deps: InteractionDeps, eventId: string, action: InboxAction) {
+  let id = slackRequestId(eventId, action);
+  if (!(action in INTENT_KINDS)) return id;
+  const kind = INTENT_KINDS[action as keyof typeof INTENT_KINDS];
+  for (;;) {
+    const [intent] = await deps.inbox.db.select().from(intents).where(eq(intents.id, `panel:${kind}:${id}`));
+    if (!intent?.handled_at || describeOutcome(kind, intent.result).status !== "failed") return id;
+    id = slackRequestId(eventId, action, id);
+  }
 }
 
 const MODAL_ACTIONS = ["answer", "request_changes", "follow_up", "close"] as const satisfies readonly InboxAction[];
@@ -235,7 +262,7 @@ async function act(deps: InteractionDeps, item: Item, action: InboxAction, text:
   await show(PENDING_LABELS[action]);
   let outcome: InboxOutcome;
   try {
-    outcome = await runAction(deps.inbox, action, item.job, slackRequestId(item.event.id, action), text);
+    outcome = await runAction(deps.inbox, action, item.job, await nextRequestId(deps, item.event.id, action), text);
     if (outcome.ok && outcome.intentId) outcome = await follow(deps, outcome.intentId);
   } catch (error) {
     outcome = { ok: false, message: safeMessage(deps, error) };

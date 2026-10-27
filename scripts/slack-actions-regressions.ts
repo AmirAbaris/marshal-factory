@@ -220,6 +220,32 @@ try {
   const restored = updatesOf(red.ts).at(-1)!;
   assert.deepEqual(actionIds(restored.params.blocks!).filter((id) => INBOX_IDS.includes(id)), [SLACK_ACTION_IDS.approve, SLACK_ACTION_IDS.request_changes, SLACK_ACTION_IDS.close], "the buttons are back");
 
+  // --- after a refusal the action can be tried again, still once per double click
+  const refusedId = slackRequestId(red.eventId, "approve");
+  const retryId = slackRequestId(red.eventId, "approve", refusedId);
+  const retryA = click(red.eventId, SLACK_ACTION_IDS.approve);
+  const retryB = click(red.eventId, SLACK_ACTION_IDS.approve);
+  await Promise.all([retryA.sent, retryB.sent]);
+  const merger = (async () => {
+    for (let i = 0; i < 50; i++) {
+      const [intent] = await db.select().from(intents).where(eq(intents.id, `panel:approve_merge:${retryId}`));
+      if (intent) {
+        await db.update(intents).set({ handled_at: new Date(), result: JSON.stringify({ approval: { merged: "abc1234def" } }) }).where(eq(intents.id, intent.id));
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+  })();
+  await drain();
+  await merger;
+  assert.deepEqual(
+    (await intentsFor(red.id)).map((i) => i.id).sort(),
+    [`panel:approve_merge:${refusedId}`, `panel:approve_merge:${retryId}`].sort(),
+    "the second approval is a new intent, and the double click on the restored buttons records it once",
+  );
+  assert.deepEqual([...repliesTo(retryA.response_url), ...repliesTo(retryB.response_url)], [], "merged: nothing to say, the notifier resolves it");
+  assert.match(updatesOf(red.ts).at(-1)!.params.text!, /⏳ Merging…/, "and the message stays pending");
+
   // --- request changes: a modal, then the panel's request_changes intent
   const changes = await item("C", { stage: "pr", pr_url: "https://github.com/o/r/pull/3", merge_decision: decision() });
   const opened = click(changes.eventId, SLACK_ACTION_IDS.request_changes);
