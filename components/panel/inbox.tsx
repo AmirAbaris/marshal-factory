@@ -48,11 +48,11 @@ function Row({ item, open, cursor, onFocus }: { item: Item; open: boolean; curso
     >
       {cursor && <span aria-hidden className="absolute inset-y-0 left-0 w-0.5 bg-foreground" />}
       <span className={cn("size-2 shrink-0 rounded-full", KIND_DOT[kind])} />
-      <span className="hidden w-24 shrink-0 truncate font-mono text-xs text-muted-foreground @md:block">{job.key}</span>
+      <span className="hidden w-24 shrink-0 truncate font-mono text-xs text-muted-foreground @lg:block">{job.key}</span>
       <span className="min-w-0 flex-1 truncate">{job.title}</span>
-      <span className="hidden w-72 shrink-0 truncate text-xs text-muted-foreground @2xl:block">{inboxReason(item)}</span>
-      <span className="hidden w-36 shrink-0 truncate text-xs text-muted-foreground @sm:block">{INBOX_LABELS[kind]}</span>
-      <span className="w-12 shrink-0 text-right text-xs text-muted-foreground tabular-nums">
+      <span className="hidden w-32 shrink-0 truncate text-xs text-muted-foreground @sm:block @xl:w-56 @3xl:w-72">{inboxReason(item)}</span>
+      <span className="hidden w-36 shrink-0 truncate text-xs text-muted-foreground @2xl:block">{INBOX_LABELS[kind]}</span>
+      <span className="hidden w-12 shrink-0 text-right text-xs text-muted-foreground tabular-nums @md:block">
         <ShortTime date={item.at} />
       </span>
     </Link>

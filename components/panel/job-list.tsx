@@ -49,23 +49,23 @@ function Row({
       {cursor && <span aria-hidden className="absolute inset-y-0 left-0 w-0.5 bg-foreground" />}
       <span className={cn("size-2 shrink-0 rounded-full", STAGE_META[card.stage].dot)} title={STAGE_META[card.stage].label} />
       <span className="sr-only">{STAGE_META[card.stage].label}</span>
-      <span className="hidden w-24 shrink-0 truncate font-mono text-xs text-muted-foreground @md:block">{card.jobKey ?? card.id.slice(0, 8)}</span>
+      <span className="hidden w-24 shrink-0 truncate font-mono text-xs text-muted-foreground @lg:block">{card.jobKey ?? card.id.slice(0, 8)}</span>
       <span className="flex min-w-0 flex-1 items-center gap-2">
         <span className="truncate">{card.title}</span>
         {card.latest?.status === "active" && <Spinner className="size-3 shrink-0 text-muted-foreground" />}
       </span>
-      <span className={cn("hidden w-56 shrink-0 truncate text-xs @2xl:block", decision?.tone)}>{decision?.text}</span>
+      <span className={cn("hidden w-32 shrink-0 truncate text-xs @sm:block @xl:w-56", decision?.tone)}>{decision?.text}</span>
       <span className="hidden w-44 shrink-0 truncate text-xs text-muted-foreground @4xl:block">{where}</span>
       <span className="hidden w-28 shrink-0 truncate text-xs text-muted-foreground @5xl:block">{card.harness && harnessLine(card.harness)}</span>
       <span
         className={cn(
-          "hidden w-14 shrink-0 text-right font-mono text-xs text-muted-foreground tabular-nums @lg:block",
+          "hidden w-14 shrink-0 text-right font-mono text-xs text-muted-foreground tabular-nums @3xl:block",
           card.budgetUsd !== null && cost >= card.budgetUsd && "text-destructive",
         )}
       >
         {formatUsd(cost)}
       </span>
-      <span className="w-12 shrink-0 text-right text-xs text-muted-foreground tabular-nums">
+      <span className="hidden w-12 shrink-0 text-right text-xs text-muted-foreground tabular-nums @md:block">
         <ShortTime date={card.updatedAt} />
       </span>
     </>
