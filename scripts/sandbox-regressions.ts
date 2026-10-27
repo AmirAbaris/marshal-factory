@@ -231,7 +231,7 @@ try {
   assert.ok(order("git clone") < order("t3 serve") && order("t3 serve") < order("t3 project add") && order("t3 project add") < order("t3 thread start"), "clone, serve, project, then the thread");
   const startExec = sbA.execs.find((e) => e.argv[2] === "start")!;
   assert.deepEqual(startExec.argv, ["t3", "thread", "start", REPO_DIR, "-", "--worktree", "origin/main", "--branch", `factory/${keys[0]}`, "--title", `${keys[0]} t`, "--provider", "codex", "--model", "gpt-6-astra", "--json"]);
-  assert.equal(startExec.input, `Work ${keys[0]}`);
+  assert.ok(startExec.input.startsWith(`Work ${keys[0]}\n\n## Factory playbook\n`), "the message, then the playbook the image holds");
 
   // The only slot is held now: the next job stays queued.
   const none = await launchInSandboxes([entry(keys[1]!)], slot, async (e) => void announced.push(e.key));

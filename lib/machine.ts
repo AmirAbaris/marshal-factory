@@ -32,9 +32,9 @@ export const projectsSchema = z.discriminatedUnion("source", [
 export type Projects = z.infer<typeof projectsSchema>;
 
 /** What a sandbox image holds that the config pins; any difference means rebuilding it. */
-export const IMAGE_COMPONENTS = ["t3", "claudeCode", "codex", "pstack"] as const;
+export const IMAGE_COMPONENTS = ["t3", "claudeCode", "codex", "pstack", "playbooks"] as const;
 export type ImageComponent = (typeof IMAGE_COMPONENTS)[number];
-export const imageVersionsSchema = z.object({ t3: z.string(), claudeCode: z.string(), codex: z.string(), pstack: z.string() }).partial();
+export const imageVersionsSchema = z.object({ t3: z.string(), claudeCode: z.string(), codex: z.string(), pstack: z.string(), playbooks: z.string() }).partial();
 export type ImageVersions = z.infer<typeof imageVersionsSchema>;
 
 export function componentName(component: ImageComponent) {
@@ -47,6 +47,8 @@ export function componentName(component: ImageComponent) {
       return "Codex";
     case "pstack":
       return "PStack";
+    case "playbooks":
+      return "Factory playbooks";
     default: {
       const unknown: never = component;
       throw new Error(`unknown image component ${String(unknown)}`);

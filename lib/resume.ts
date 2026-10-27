@@ -10,11 +10,11 @@ export function qaBlock(question: string, answer: string) {
 }
 
 /** The turn a resumed thread receives. */
-export function resumeMessage(subject: string, question: string, answer: string) {
+export function resumeMessage(subject: string, question: string, answer: string, playbook: string) {
   return [
     `The reporter answered your question on ${subject}.`,
     "",
-    "Continue the factory playbook (.agents/playbooks/factory.md) from Triage, on this same branch, treating the answer as the spec. Report every stage with the report_stage tool. If the answer is still not enough to write an acceptance check, report waiting with one more concrete question instead of guessing.",
+    `Continue the factory playbook (${playbook}) from Triage, on this same branch, treating the answer as the spec. Report every stage with the report_stage tool. If the answer is still not enough to write an acceptance check, report waiting with one more concrete question instead of guessing.`,
     "",
     qaBlock(question, answer),
   ].join("\n");

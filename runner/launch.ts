@@ -4,6 +4,7 @@ import type { ExecError } from "../lib/exec";
 import type { RepoName } from "../lib/github/app";
 import { HostGoneError, hosts, localHost, type JobHost } from "../lib/host";
 import { terminateSandbox } from "../lib/modal-host";
+import { withPlaybook } from "../lib/playbook";
 import { builtVersions, imageProblem, REPO_DIR } from "../lib/sandbox";
 import { modalSecretName, parseDetail, repoImage } from "../lib/onboarding";
 import { RECIPE_PATH, UNMERGED_RECIPE_PATH, type Recipe } from "../lib/recipe";
@@ -304,8 +305,12 @@ async function launchLocal(
       return true;
     },
     // After the claim, so a job another machine wins downloads nothing here.
-    start: async (entry) =>
-      startThread(hosts.forJob(entry), checkouts.get(entry.repo)!, entry.branch, entry.threadTitle, await withLocalImages(entry.source, entry.key, entry.message), entry.harness),
+    start: async (entry) => {
+      const host = hosts.forJob(entry);
+      const checkout = checkouts.get(entry.repo)!;
+      const message = await withPlaybook(await withLocalImages(entry.source, entry.key, entry.message), "local", host, checkout);
+      return startThread(host, checkout, entry.branch, entry.threadTitle, message, entry.harness);
+    },
     bind: bindThread,
     release: releaseLaunch,
     now: Date.now,
@@ -484,7 +489,8 @@ export async function launchInSandboxes(pending: readonly LaunchEntry[], slot: L
         throw new SandboxSetupError(`sandbox setup failed: ${error instanceof Error ? error.message.split("\n")[0] : String(error)}`);
       }
       // Images stay on this machine for now; the thread gets the issue text with their links.
-      return startThread(host, REPO_DIR, entry.branch, entry.threadTitle, withRecipeNote(entry.message, registry.find((r) => r.repo === entry.repo)), ran);
+      const message = await withPlaybook(withRecipeNote(entry.message, registry.find((r) => r.repo === entry.repo)), "modal", host, REPO_DIR);
+      return startThread(host, REPO_DIR, entry.branch, entry.threadTitle, message, ran);
     },
     bind: bindThread,
     release: async (key, marker) => {

@@ -14,7 +14,7 @@ const { SOURCES } = await import("../lib/sources");
 const { TEST_MACHINE_ID } = await import("../lib/config");
 const { ensureAwake, HostAsleepError, hosts } = await import("../lib/host");
 const { modal } = await import("../lib/modal-host");
-const { CODEX_AUTH, GITHUB_TOKEN_PATH, pinnedVersions, readSlotHealth, sandboxReadiness } = await import("../lib/sandbox");
+const { CODEX_AUTH, GITHUB_TOKEN_PATH, pinnedVersions, playbooksVersion, readSlotHealth, sandboxReadiness } = await import("../lib/sandbox");
 const { github } = await import("../lib/github/pulls");
 const { canReclaim, canReclaimSql } = await import("../runner/binding");
 const { checkPullRequests, config, deliverStops, reconcileUsage, resumeAnswered, sandboxesInFlight, threads, toLaunch, watchdog } = await import("../runner/ops");
@@ -202,7 +202,7 @@ try {
   const reported = sandboxReadiness({ codexSlots: [], ...pins, maxParallel: 3 }, process.env, [], image);
   assert.deepEqual(
     [reported.image, reported.imageInfo, reported.pinnedT3Version, reported.pinnedVersions, reported.maxParallel],
-    [true, { t3Version: "0.1.3", factoryCommit: "abc1234", builtAt: image.builtAt, versions }, "0.1.4", { t3: "0.1.4", claudeCode: "2.1.311", codex: "0.164.0", pstack: "0.9.70@aaaaaaaaaaaa" }, 3],
+    [true, { t3Version: "0.1.3", factoryCommit: "abc1234", builtAt: image.builtAt, versions }, "0.1.4", { t3: "0.1.4", claudeCode: "2.1.311", codex: "0.164.0", pstack: "0.9.70@aaaaaaaaaaaa", playbooks: playbooksVersion() }, 3],
     "the inventory reports the image's versions, build time and commit, every pin and the cap",
   );
   const beforePins = { ...image, versions: undefined };
@@ -247,6 +247,9 @@ try {
   const sbL = sandboxes.get(lf.sandbox_id!)!;
   assert.equal(JSON.parse(sbL.files.get("/root/.t3/userdata/settings.json")!).defaultModelSelection.instanceId, "codex");
   assert.ok(sbL.execs.some((e) => e.argv.join(" ").includes(`--provider codex --model ${limits.codexModel}`)));
+  const launched = sbL.execs.find((e) => e.argv[0] === "t3" && e.argv[2] === "start")!.input;
+  assert.ok(launched.startsWith(`Work ${L}\n`) && launched.includes("The factory playbook is /opt/marshal-factory/playbooks/factory.md."), "a sandbox thread follows the image's playbook");
+  assert.ok(launched.includes("This repository also has .agents/playbooks/factory.md. The factory playbook at /opt/marshal-factory/playbooks/factory.md is authoritative"), "over the repo's own copy");
   assert.ok(events.some((e) => e.event === "sandbox:harness-fallback" && e.detail.key === L));
   claudeOk = true;
   claudeToken = undefined;
