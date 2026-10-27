@@ -10,10 +10,11 @@ import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle }
 import { Field, FieldDescription, FieldLabel } from "@/components/ui/field";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
-import type { MachineRow, SettingsRow } from "@/db/schema";
+import type { MachineRow, NotificationSettingsRow, SettingsRow } from "@/db/schema";
 import { DEFAULT_EXECUTION, EXECUTIONS, type Execution } from "@/lib/execution";
 import { DEFAULT_MODEL, DEFAULT_PROVIDER, harnessLabel, trackingOf, type Harness, type Tracking } from "@/lib/harness";
-import { componentName, IMAGE_COMPONENTS, rebuildText, reportedDrift, reportedHarnesses, reportedSandbox, type SandboxReadiness } from "@/lib/machine";
+import { componentName, IMAGE_COMPONENTS, rebuildText, reportedDrift, reportedHarnesses, reportedSandbox, reportedSlack, type SandboxReadiness } from "@/lib/machine";
+import { NotificationsCard } from "./notifications-card";
 import { useFeed, type Feed } from "./sealed";
 import { PanelFooter, PanelHeader } from "./panel-header";
 import { useAfterHydration, useNow } from "./time";
@@ -201,13 +202,14 @@ function Current({ saved, harnesses }: { saved: SettingsRow | null; harnesses: r
   );
 }
 
-export function SettingsForm({ machines, saved }: { machines: Feed<MachineRow>; saved: SettingsRow | null }) {
+export function SettingsForm({ machines, saved, notifications }: { machines: Feed<MachineRow>; saved: SettingsRow | null; notifications: NotificationSettingsRow | null }) {
   const router = useRouter();
   const { rows, status } = useFeed(machines, "/api/live/machines");
   const now = useNow(CLOCK_TICK_MS);
   const reported = reportedHarnesses(rows, now ?? 0);
   const harnesses = reported?.filter((h) => h.enabled) ?? [];
   const readiness = reportedSandbox(rows, now ?? 0);
+  const slack = now === null ? null : reportedSlack(rows, now);
 
   const [provider, setProvider] = useState(saved?.provider ?? DEFAULT_PROVIDER);
   const [model, setModel] = useState(saved?.model ?? DEFAULT_MODEL);
@@ -245,7 +247,7 @@ export function SettingsForm({ machines, saved }: { machines: Feed<MachineRow>; 
   return (
     <>
       <PanelHeader title="Settings" />
-      <div className="min-h-0 flex-1 overflow-y-auto p-5">
+      <div className="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto p-5">
         <Card className="max-w-3xl">
           <CardHeader>
             <CardTitle>Harness and model</CardTitle>
@@ -357,6 +359,7 @@ export function SettingsForm({ machines, saved }: { machines: Feed<MachineRow>; 
             </CardFooter>
           )}
         </Card>
+        <NotificationsCard saved={notifications} slack={slack} />
       </div>
       <PanelFooter status={status} />
     </>
