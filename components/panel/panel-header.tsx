@@ -25,7 +25,7 @@ type ViewSwitchProps = { current: JobView; onChange: (view: JobView) => void };
 
 function ViewSwitch({ current, onChange }: ViewSwitchProps) {
   return (
-    <div role="radiogroup" aria-label="Layout" className="hidden items-center rounded-md border p-0.5 sm:flex">
+    <div role="radiogroup" aria-label="Layout" className="flex shrink-0 items-center rounded-md border p-0.5">
       {JOB_VIEWS.map(({ view, label }) => (
         <button
           key={view}
