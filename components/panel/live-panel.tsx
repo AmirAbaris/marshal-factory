@@ -2,7 +2,8 @@
 
 import { InboxIcon } from "lucide-react";
 import Link from "next/link";
-import { useMemo } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { startTransition, useMemo, useOptimistic } from "react";
 import { Button } from "@/components/ui/button";
 import type { AgentRow, AuditRow, EventRow, JobRow, MachineRow, RunRow } from "@/db/schema";
 import { Board } from "./board";
@@ -15,6 +16,7 @@ import { cn } from "@/lib/utils";
 import { groupBy, spendOf } from "./format";
 import { Inbox } from "./inbox";
 import { JobList } from "./job-list";
+import { JOB_VIEW_COOKIE, jobsHref, type JobView } from "./job-view";
 import { NewJobButton } from "./new-job-button";
 import { OtherActivity } from "./other-activity";
 import { RunDetail } from "./run-detail";
@@ -33,7 +35,7 @@ export type DetailProps = {
   audit: { feed: Feed<AuditRow>; path: string } | undefined;
 };
 
-export type PanelView = "inbox" | "board" | "list" | "activity";
+export type PanelView = "inbox" | "jobs" | "activity";
 
 const LIST_KEYS: readonly KeyHint[] = [
   { keys: ["J", "K"], label: "move" },
@@ -45,10 +47,8 @@ function viewMeta(view: PanelView) {
   switch (view) {
     case "inbox":
       return { title: "Inbox", job: false };
-    case "board":
-      return { title: "Board", job: true };
-    case "list":
-      return { title: "List", job: true };
+    case "jobs":
+      return { title: "Jobs", job: true };
     case "activity":
       return { title: "Other activity", job: false };
     default: {
@@ -64,8 +64,7 @@ function footerSummary(view: PanelView, counts: { jobs: number; sessions: number
   switch (view) {
     case "inbox":
       return counts.inbox === 0 ? "Nothing waiting" : `${plural(counts.inbox, "item", "items")} waiting on you`;
-    case "board":
-    case "list":
+    case "jobs":
       return plural(counts.jobs, "job", "jobs");
     case "activity":
       return plural(counts.sessions, "session", "sessions");
@@ -76,8 +75,42 @@ function footerSummary(view: PanelView, counts: { jobs: number; sessions: number
   }
 }
 
+/** Where closing the run detail goes: the same page, in the same layout. */
+function closeHref(view: PanelView, jobView: JobView) {
+  switch (view) {
+    case "inbox":
+      return "/inbox";
+    case "jobs":
+      return jobsHref(jobView);
+    case "activity":
+      return "/activity";
+    default: {
+      const never: never = view;
+      throw new Error(`unknown view ${String(never)}`);
+    }
+  }
+}
+
+/** The jobs page's board or list. Switching keeps the page mounted, so the live feeds stay subscribed. */
+function useJobView(current: JobView) {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const [jobView, setOptimistic] = useOptimistic(current);
+  const switchTo = (next: JobView) => {
+    document.cookie = `${JOB_VIEW_COOKIE}=${next}; path=/; max-age=${60 * 60 * 24 * 365}`;
+    const params = new URLSearchParams(searchParams);
+    params.set("view", next);
+    startTransition(() => {
+      setOptimistic(next);
+      router.replace(`/?${params}`, { scroll: false });
+    });
+  };
+  return [jobView, switchTo] as const;
+}
+
 export function LivePanel({
   view,
+  jobView: currentJobView,
   jobs,
   runs,
   agents,
@@ -86,6 +119,8 @@ export function LivePanel({
   inboxKey,
 }: {
   view: PanelView;
+  /** The jobs page's layout, from ?view or the remembered one. */
+  jobView: JobView;
   /** The inbox item open on the right, by job key. */
   inboxKey: string | undefined;
   jobs: Feed<JobRow>;
@@ -125,6 +160,7 @@ export function LivePanel({
     : undefined;
 
   const inboxCount = useMemo(() => inboxItems(jobRows).length, [jobRows]);
+  const [jobView, switchJobView] = useJobView(currentJobView);
 
   const meta = viewMeta(view);
   const active = runRows.filter((r) => r.status === "active").length;
@@ -132,10 +168,12 @@ export function LivePanel({
     switch (view) {
       case "inbox":
         return <Inbox jobs={jobRows} cards={cards} selected={inboxKey} />;
-      case "board":
-        return <Board cards={cards} agentsBySession={agentsBySession} selected={detail?.sessionId} machines={machineById} />;
-      case "list":
-        return <JobList cards={cards} agentsBySession={agentsBySession} selected={detail?.sessionId} machines={machineById} />;
+      case "jobs":
+        return jobView === "board" ? (
+          <Board cards={cards} agentsBySession={agentsBySession} selected={detail?.sessionId} machines={machineById} />
+        ) : (
+          <JobList cards={cards} agentsBySession={agentsBySession} selected={detail?.sessionId} machines={machineById} />
+        );
       case "activity":
         return <OtherActivity runs={unstaged} agentsBySession={agentsBySession} selected={detail?.sessionId} />;
       default: {
@@ -149,7 +187,7 @@ export function LivePanel({
     <>
       <PanelHeader
         title={meta.title}
-        view={view === "board" || view === "list" ? view : undefined}
+        jobView={view === "jobs" ? { current: jobView, onChange: switchJobView } : undefined}
         actions={
           meta.job ? (
             <>
@@ -177,6 +215,7 @@ export function LivePanel({
               stages={detail.stages}
               stagesPath={detail.stagesPath}
               audit={detail.audit}
+              closeHref={closeHref(view, jobView)}
               job={selectedJob}
               machine={selectedJob?.machine_id ? machineById.get(selectedJob.machine_id) : undefined}
               harnesses={harnesses}
@@ -200,7 +239,7 @@ export function LivePanel({
         status={status}
         note={[`${active} active`, sandboxNote].filter(Boolean).join(" · ")}
         summary={footerSummary(view, { jobs: cards.length, sessions: unstaged.length, inbox: inboxCount })}
-        keys={view === "list" || view === "inbox" ? LIST_KEYS : undefined}
+        keys={(view === "jobs" && jobView === "list") || view === "inbox" ? LIST_KEYS : undefined}
       />
     </>
   );

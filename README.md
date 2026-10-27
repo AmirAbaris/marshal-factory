@@ -8,7 +8,7 @@ You label an issue in Linear, or file one from the panel. A runner on your Mac p
 
 The pieces:
 
-- **Panel** (`app/`, `components/`): a Next.js app on Vercel. It shows the board and each run's timeline and cost, and lets you file jobs and merge PRs. Only the owner can sign in.
+- **Panel** (`app/`, `components/`): a Next.js app on Vercel. Its **Jobs** page shows every job as a board or a list (the header's Board/List switch; the panel remembers your pick), with each run's timeline and cost, and lets you file jobs and merge PRs. Only the owner can sign in.
 - **Ingest Function** (`functions/ingest/`): a Neon Function that receives the Linear and GitHub webhooks and the reporter's events, and writes them to Postgres.
 - **Runner** (`runner/`): a Bun daemon on your Mac, run by launchd. It is the only part that touches T3, git and the GitHub API.
 - **Reporter** (`hooks/`, `mcp/`): Claude Code hooks and a small MCP server, installed into each target repo. They send the run's progress to the ingest Function.

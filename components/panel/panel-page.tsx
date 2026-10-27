@@ -1,4 +1,6 @@
+import { cookies } from "next/headers";
 import { Suspense } from "react";
+import { JOB_VIEW_COOKIE, parseJobView } from "@/components/panel/job-view";
 import { LivePanel, type DetailProps, type PanelView } from "@/components/panel/live-panel";
 import {
   agentsOverviewQuery,
@@ -34,17 +36,20 @@ async function loadDetail(raw: string | undefined): Promise<DetailProps | undefi
 }
 
 async function Panel({ view, searchParams }: { view: PanelView; searchParams: Promise<Record<string, string | string[] | undefined>> }) {
-  const { run, job } = await searchParams;
-  const [jobs, runs, agents, machines, detail] = await Promise.all([
+  const { run, job, view: rawView } = await searchParams;
+  const [jobs, runs, agents, machines, detail, jar] = await Promise.all([
     load(jobsQuery()),
     load(runsQuery()),
     load(agentsOverviewQuery()),
     load(machinesQuery()),
     loadDetail(typeof run === "string" ? run : undefined),
+    cookies(),
   ]);
+  const jobView = parseJobView(rawView) ?? parseJobView(jar.get(JOB_VIEW_COOKIE)?.value) ?? "board";
   return (
     <LivePanel
       view={view}
+      jobView={jobView}
       jobs={jobs}
       runs={runs}
       agents={agents}
@@ -55,7 +60,7 @@ async function Panel({ view, searchParams }: { view: PanelView; searchParams: Pr
   );
 }
 
-/** The inbox, the board, the list and the other-activity page share their data, their live feeds and run detail. */
+/** The inbox, the jobs page (board or list) and the other-activity page share their data, their live feeds and run detail. */
 export function PanelPage({ view, searchParams }: { view: PanelView; searchParams: Promise<Record<string, string | string[] | undefined>> }) {
   return (
     <Suspense fallback={<div className="h-full" />}>

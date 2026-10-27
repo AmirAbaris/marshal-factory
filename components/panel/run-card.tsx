@@ -7,6 +7,7 @@ import type { MergeDecision } from "@/lib/merge-decision";
 import { cn } from "@/lib/utils";
 import { harnessLine, showsDecision, whereLine, type BoardCard } from "./cards";
 import { formatUsd, runCost, runTitle, shortId } from "./format";
+import { jobsHref } from "./job-view";
 import { decisionLine } from "./merge-decision";
 import { ModelChip } from "./model-chip";
 import { Time } from "./time";
@@ -106,7 +107,7 @@ export function StageCard({
     <div data-card={card.id} className={cardClass(selected)}>
       {latest && (
         <Link
-          href={`/?run=${latest.session_id}`}
+          href={jobsHref("board", latest.session_id)}
           scroll={false}
           aria-label={`Open ${card.jobKey ?? card.title}`}
           className="absolute inset-0 rounded-lg"

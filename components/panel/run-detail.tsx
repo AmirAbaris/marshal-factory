@@ -2,7 +2,6 @@
 
 import { ExternalLinkIcon, XIcon } from "lucide-react";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -72,8 +71,11 @@ export function RunDetail({
   machine,
   harnesses,
   jobSpend,
+  closeHref,
 }: {
   harnesses: readonly Harness[];
+  /** Where the close button goes: the page the run opened on. */
+  closeHref: string;
   audit: { feed: Feed<AuditRow>; path: string } | undefined;
   jobSpend: { usd: number; capUsd: number; attempt: number } | undefined;
   stagesPath: string;
@@ -84,7 +86,6 @@ export function RunDetail({
   events: Feed<EventRow>;
   stages: Feed<EventRow>;
 }) {
-  const pathname = usePathname();
   const base = `/api/live/runs/${encodeURIComponent(run.session_id)}`;
   const { rows: agentRows } = useFeed(agents, `${base}/agents`);
   const { rows: eventRows } = useFeed(events, `${base}/events`);
@@ -106,7 +107,7 @@ export function RunDetail({
               {run.job_key ?? shortId(run.session_id)}
               {run.branch ? ` · ${run.branch}` : ""}
             </span>
-            <Button render={<Link href={pathname} scroll={false} />} variant="ghost" size="icon-sm" aria-label="Close run">
+            <Button render={<Link href={closeHref} scroll={false} />} variant="ghost" size="icon-sm" aria-label="Close run">
               <XIcon />
             </Button>
           </div>

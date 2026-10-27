@@ -18,6 +18,7 @@ import { sourceLink } from "@/lib/sources/shapes";
 import { cn } from "@/lib/utils";
 import type { BoardCard } from "./cards";
 import { InboxActions } from "./inbox-actions";
+import { jobsHref } from "./job-view";
 import { useRowKeys } from "./row-keys";
 import { ShortTime } from "./time";
 
@@ -282,7 +283,7 @@ function Detail({ item, card }: { item: Item; card: BoardCard | undefined }) {
             <span className="text-muted-foreground">{job.repo}</span>
             <span className="ml-auto flex flex-wrap gap-2">
               {card?.latest && (
-                <Button render={<Link href={`/list?run=${card.latest.session_id}`} scroll={false} />} variant="ghost" size="sm">
+                <Button render={<Link href={jobsHref("list", card.latest.session_id)} scroll={false} />} variant="ghost" size="sm">
                   Run
                 </Button>
               )}
