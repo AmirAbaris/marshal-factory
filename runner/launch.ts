@@ -9,6 +9,7 @@ import { thisMachine } from "./heartbeat";
 import type { JobSource } from "../lib/sources/types";
 import type { Execution } from "../lib/execution";
 import type { HarnessChoice } from "../lib/settings";
+import { routeRepo, withRepoDefaults } from "../lib/repositories";
 import { ticketLabels, type TicketRecord } from "../lib/ticket-overrides";
 import {
   bindThread,
@@ -134,9 +135,10 @@ async function recoverSandbox(p: PendingLaunch) {
 const markedAt = (marker: string) => Number(marker.slice(PENDING.length));
 
 export async function recoverPending(checkouts: ReadonlyMap<string, string>) {
-  // A pending launch whose repo left this machine's config has no project to look in; it waits for the repo to come back.
+  // A local pending launch whose repo left this machine's config has no project to look in; it waits for the repo to come back.
+  // A sandbox launch looks in its sandbox, so it needs no checkout here.
   const stale = (await pendingLaunches()).filter(
-    (p) => checkouts.has(p.repo) && Date.now() - markedAt(p.marker) > (inSandbox(p) ? SANDBOX_PENDING_STALE_MS : PENDING_STALE_MS),
+    (p) => (inSandbox(p) || checkouts.has(p.repo)) && Date.now() - markedAt(p.marker) > (inSandbox(p) ? SANDBOX_PENDING_STALE_MS : PENDING_STALE_MS),
   );
   type Branches = Awaited<ReturnType<typeof threadBranches>>;
   const branchesByHost = new Map<JobHost, Map<string, Branches>>();
@@ -231,25 +233,35 @@ export async function launchEntries(entries: readonly LaunchEntry[], deps: Launc
  * start a second one on the same branch, and another machine can never start the same job.
  */
 export async function launchQueued(onWorktree: (check: Record<string, unknown>) => void = () => {}) {
-  const checkouts = await factoryCheckouts();
-  if (checkouts.size === 0) return [];
+  const [checkouts, registry] = await Promise.all([factoryCheckouts(), overrideRuntime.registry()]);
+  // A registered repo without a checkout here can still launch in a Modal sandbox, which clones it from GitHub.
+  const repos = [...new Set([...checkouts.keys(), ...registry.map((r) => r.repo)])];
+  if (repos.length === 0) return [];
   const recovered = await recoverPending(checkouts);
   const machine = await thisMachine();
   if ((await machineInFlight(machine.id)) >= config.factory.maxInFlight) return recovered;
-  const queued = (await toLaunch()).filter((entry) => checkouts.has(entry.repo));
+  const queued = (await toLaunch()).filter((entry) => repos.includes(entry.repo));
   if (queued.length === 0) return recovered;
-  const slot = { id: machine.id, repos: [...checkouts.keys()], maxInFlight: config.factory.maxInFlight };
+  const slot = { id: machine.id, repos, maxInFlight: config.factory.maxInFlight };
   const settings = await launchSettings();
   const harnesses = await overrideRuntime.harnesses();
   const can = capabilities();
   const planned: (LaunchEntry & { execution: Execution })[] = [];
   const waiting: { key: string; reason: string }[] = [];
+  const repoDefaults: { repo: string; problems: string[] }[] = [];
   for (const { job, ...entry } of queued) {
-    const plan = planLaunch(ticketLabels(job.source_state), settings, harnesses, can);
+    const labels = ticketLabels(job.source_state);
+    const { defaults, problems } = withRepoDefaults(settings, registry.find((r) => r.repo === job.repo), harnesses);
+    if (problems.length > 0 && !repoDefaults.some((d) => d.repo === job.repo)) repoDefaults.push({ repo: job.repo, problems });
+    const plan = planLaunch(labels, defaults, harnesses, { ...can, checkout: checkouts.has(job.repo) });
     switch (plan.kind) {
-      case "launch":
-        planned.push({ ...entry, harness: plan.harness, ticket: plan.ticket, execution: plan.execution });
+      case "launch": {
+        // The claim routed the job already; a Repository label that could not apply is told like any other fallback.
+        const routed = routeRepo(labels, registry).problem;
+        const ticket = routed ? { ...plan.ticket, notes: [routed, ...(plan.ticket?.notes ?? [])] } : plan.ticket;
+        planned.push({ ...entry, harness: plan.harness, ticket, execution: plan.execution });
         break;
+      }
       case "wait":
         waiting.push({ key: entry.key, reason: plan.reason });
         break;
@@ -260,6 +272,9 @@ export async function launchQueued(onWorktree: (check: Record<string, unknown>) 
     }
   }
   if (waiting.length > 0) overrideRuntime.log("override:waiting", { waiting });
+  if (repoDefaults.length > 0) overrideRuntime.log("repo:default-skipped", { repos: repoDefaults });
+  const noCheckout = planned.filter((p) => p.execution === "modal" && !checkouts.has(p.repo) && !p.ticket?.execution).map((p) => p.key);
+  if (noCheckout.length > 0) overrideRuntime.log("repo:no-checkout", { modal: noCheckout });
   const jobs = new Map(queued.map((q) => [q.key, q.job]));
   const claimed: Claimed = (entry) => announceFallbacks(jobs.get(entry.key)!, entry.ticket);
   const { local, modal } = splitByExecution(planned);

@@ -6,7 +6,7 @@ import { repoSettings, settings, type RepoSettingsRow, type SettingsRow } from "
 import { isOwner, type SessionUser } from "@/lib/auth/owner";
 import { DEFAULT_EXECUTION, executionSchema, type Execution } from "@/lib/execution";
 import type { Harness } from "@/lib/harness";
-import { autonomySchema, DEFAULT_POLICY, type RepoPolicy } from "@/lib/merge-decision";
+import { autonomySchema, DEFAULT_POLICY, type Autonomy, type RepoPolicy } from "@/lib/merge-decision";
 
 // The panel's factory settings: which T3 provider instance and model new threads start on, and
 // where. The runner reads them on every launch pass and falls back to its config when none are saved.
@@ -24,7 +24,8 @@ export const settingsInputSchema = z.object({
 export type SettingsInput = z.input<typeof settingsInputSchema>;
 
 export type HarnessChoice = { provider: string; model: string };
-export type EffectiveHarness = HarnessChoice & { from: "settings" | "config" };
+/** Where the harness came from: the panel's Settings, the runner config, or the job's repo default. */
+export type EffectiveHarness = HarnessChoice & { from: "settings" | "config" | "repo" };
 export type SettingsChoice = HarnessChoice & { execution?: Execution };
 
 export async function readSettings(database: Db): Promise<SettingsRow | null> {
@@ -60,14 +61,6 @@ export type SettingsDeps = {
 
 export type SettingsOutcome = { ok: true } | { ok: false; status: 400 | 403 | 502; message: string };
 
-const REPO_NAME = /^[\w.-]+\/[\w.-]+$/;
-
-export const repoAutonomyInputSchema = z.object({
-  repo: z.string().regex(REPO_NAME, "Name the repo as owner/name."),
-  autonomy: autonomySchema,
-});
-export type RepoAutonomyInput = z.input<typeof repoAutonomyInputSchema>;
-
 export const readRepoSettings = (database: Db): Promise<RepoSettingsRow[]> => database.select().from(repoSettings);
 
 /** The repo's merge policy: its saved row over the defaults. */
@@ -81,29 +74,12 @@ export function resolvePolicy(rows: readonly RepoSettingsRow[], repo: string): R
   };
 }
 
-export async function writeRepoAutonomy(database: Db, { repo, autonomy }: z.output<typeof repoAutonomyInputSchema>, by: string, at: Date) {
+/** Sets a repo's autonomy, adding its row if it has none; the panel edits it with the rest of the repo in lib/repositories.ts. */
+export async function writeRepoAutonomy(database: Db, { repo, autonomy }: { repo: string; autonomy: Autonomy }, by: string, at: Date) {
   await database
     .insert(repoSettings)
     .values({ repo, autonomy, updated_at: at, updated_by: by })
     .onConflictDoUpdate({ target: repoSettings.repo, set: { autonomy, updated_at: at, updated_by: by } });
-}
-
-export type RepoAutonomyDeps = {
-  user: () => Promise<SessionUser | null | undefined>;
-  save: (input: z.output<typeof repoAutonomyInputSchema>, by: string) => Promise<void>;
-};
-
-export async function saveRepoAutonomy(deps: RepoAutonomyDeps, input: unknown): Promise<SettingsOutcome> {
-  const user = await deps.user();
-  if (!user || !isOwner(user)) return { ok: false, status: 403, message: "Only the factory owner can change settings." };
-  const parsed = repoAutonomyInputSchema.safeParse(input);
-  if (!parsed.success) return { ok: false, status: 400, message: parsed.error.issues[0]?.message ?? "The setting is not valid." };
-  try {
-    await deps.save(parsed.data, user.email);
-    return { ok: true };
-  } catch (error) {
-    return { ok: false, status: 502, message: `Could not save the setting: ${error instanceof Error ? error.message : String(error)}` };
-  }
 }
 
 export async function saveSettings(deps: SettingsDeps, input: unknown): Promise<SettingsOutcome> {

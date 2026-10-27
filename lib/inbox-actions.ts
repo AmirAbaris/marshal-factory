@@ -113,7 +113,9 @@ export async function fileFollowUp(deps: InboxDeps, jobId: JobId, requestId: str
   const overrides = job.ticket_overrides;
   // A harness turned off since the original ran falls back to Settings rather than blocking the fix.
   const provider = overrides?.provider && (await deps.newJob.harnesses())?.some((h) => h.id === overrides.provider && h.enabled) ? overrides.provider : undefined;
-  const filed = await createJob(deps.newJob, { ...issue, requestId, provider, execution: overrides?.execution });
+  // The fix goes to main of the same repo; a repo disabled since then sends it to the default.
+  const repo = (await deps.newJob.registry()).some((r) => r.repo === job.repo && r.enabled) ? job.repo : undefined;
+  const filed = await createJob(deps.newJob, { ...issue, requestId, provider, execution: overrides?.execution, repo });
   if (!filed.ok) return { ok: false, message: filed.message };
   const now = (deps.now ?? (() => new Date()))();
   await deps.db.update(jobs).set({ dismissed_at: now }).where(eq(jobs.id, job.id));

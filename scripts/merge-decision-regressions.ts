@@ -18,7 +18,7 @@ const { ingest } = await import("../lib/ingest");
 const { hosts } = await import("../lib/host");
 const { github, bugbotFindingsOf, checkStateOf, pullsClient } = await import("../lib/github/pulls");
 const { decideMerge, DEFAULT_POLICY, globToRegExp, majorBumps, matchesAny } = await import("../lib/merge-decision");
-const { readRepoSettings, resolvePolicy, saveRepoAutonomy, writeRepoAutonomy } = await import("../lib/settings");
+const { readRepoSettings, resolvePolicy, writeRepoAutonomy } = await import("../lib/settings");
 const { decideMerges, RECHECK_MS } = await import("../runner/merge-decision");
 const { serve } = await import("./serve");
 
@@ -221,18 +221,9 @@ async function insert(name: string, over: Partial<typeof jobs.$inferInsert>) {
 const auditsOf = async (k: string) => db.select().from(auditLog).where(eq(auditLog.job_id, (await row(k)).id));
 
 try {
-  // Settings: owner only, validated, defaults when unset.
-  const owner = async () => ({ email: OWNER, emailVerified: true });
-  const save = (choice: Parameters<typeof writeRepoAutonomy>[1], by: string) => writeRepoAutonomy(db, choice, by, new Date());
-  assert.deepEqual(await saveRepoAutonomy({ user: async () => ({ email: "x@example.com", emailVerified: true }), save }, { repo: REPO, autonomy: "trial" }), {
-    ok: false,
-    status: 403,
-    message: "Only the factory owner can change settings.",
-  });
-  assert.equal((await saveRepoAutonomy({ user: owner, save }, { repo: "not a repo", autonomy: "trial" })).ok, false);
-  assert.equal((await saveRepoAutonomy({ user: owner, save }, { repo: REPO, autonomy: "always" })).ok, false);
+  // Policy: defaults when unset; owner checks and validation live in repositories-regressions.
   assert.deepEqual(resolvePolicy(await readRepoSettings(db), REPO), DEFAULT_POLICY, "an unset repo is off with the defaults");
-  assert.deepEqual(await saveRepoAutonomy({ user: owner, save }, { repo: REPO, autonomy: "trial" }), { ok: true });
+  await writeRepoAutonomy(db, { repo: REPO, autonomy: "trial" }, OWNER, new Date());
   assert.deepEqual(resolvePolicy(await readRepoSettings(db), REPO), { ...DEFAULT_POLICY, autonomy: "trial" });
 
   // Ingest: the pr report's assessment lands on the job and stays in the event.

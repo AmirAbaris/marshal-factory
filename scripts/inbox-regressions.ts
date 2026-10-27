@@ -272,6 +272,7 @@ const deps = (user: typeof owner | null = owner) => ({
   newJob: {
     user: async () => user,
     harnesses: async () => harnesses,
+    registry: async () => [],
     file: async (draft: FileDraft) => (filed.push(draft), { key: `FAC-${filed.length}`, url: `https://linear.app/x/issue/FAC-${filed.length}` }),
   },
 });

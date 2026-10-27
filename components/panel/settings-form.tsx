@@ -1,6 +1,7 @@
 "use client";
 
 import { CheckIcon, TriangleAlertIcon, XIcon } from "lucide-react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState, useTransition, type ReactNode } from "react";
 import { saveSettings } from "@/app/actions/settings";
@@ -13,7 +14,6 @@ import type { MachineRow, SettingsRow } from "@/db/schema";
 import { DEFAULT_EXECUTION, EXECUTIONS, type Execution } from "@/lib/execution";
 import { DEFAULT_MODEL, DEFAULT_PROVIDER, harnessLabel, isTracked, type Harness } from "@/lib/harness";
 import { imageOutdated, reportedHarnesses, reportedSandbox, type SandboxReadiness } from "@/lib/machine";
-import { MergingSettings, type RepoMerging } from "./merging-settings";
 import { useFeed, type Feed } from "./sealed";
 import { PanelFooter, PanelHeader } from "./panel-header";
 import { useAfterHydration, useNow } from "./time";
@@ -197,7 +197,7 @@ function Current({ saved, harnesses }: { saved: SettingsRow | null; harnesses: r
   );
 }
 
-export function SettingsForm({ machines, saved, merging }: { machines: Feed<MachineRow>; saved: SettingsRow | null; merging: readonly RepoMerging[] }) {
+export function SettingsForm({ machines, saved }: { machines: Feed<MachineRow>; saved: SettingsRow | null }) {
   const router = useRouter();
   const { rows, status } = useFeed(machines, "/api/live/machines");
   const now = useNow(CLOCK_TICK_MS);
@@ -241,12 +241,17 @@ export function SettingsForm({ machines, saved, merging }: { machines: Feed<Mach
   return (
     <>
       <PanelHeader title="Settings" />
-      <div className="grid min-h-0 flex-1 content-start items-start gap-5 overflow-y-auto p-5 xl:grid-cols-2">
-        <Card>
+      <div className="min-h-0 flex-1 overflow-y-auto p-5">
+        <Card className="max-w-3xl">
           <CardHeader>
             <CardTitle>Harness and model</CardTitle>
             <CardDescription>
-              The T3 provider and model every runner starts new factory threads on. Threads already running keep theirs.
+              The T3 provider and model every runner starts new factory threads on. Threads already running keep theirs. A
+              repository can override these, and sets how far the factory merges, on{" "}
+              <Link href="/repositories" className="underline underline-offset-2">
+                Repositories
+              </Link>
+              .
             </CardDescription>
           </CardHeader>
           <CardContent className="flex flex-col gap-6">
@@ -348,7 +353,6 @@ export function SettingsForm({ machines, saved, merging }: { machines: Feed<Mach
             </CardFooter>
           )}
         </Card>
-        <MergingSettings repos={merging} />
       </div>
       <PanelFooter status={status} />
     </>

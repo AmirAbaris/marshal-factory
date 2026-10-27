@@ -13,6 +13,8 @@ export const newJobSchema = z.object({
   provider: z.string().trim().min(1).optional(),
   /** Unset files the issue without a Runs on label. */
   execution: executionSchema.optional(),
+  /** The repo's full name; unset means the default repo. Either way the issue gets its Repository label. */
+  repo: z.string().trim().min(1).optional(),
 });
 export type NewJob = z.infer<typeof newJobSchema>;
 

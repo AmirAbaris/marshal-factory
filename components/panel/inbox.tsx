@@ -33,7 +33,19 @@ const itemHref = (key: string) => `/inbox?job=${encodeURIComponent(key)}`;
 
 type Item = InboxItem<JobRow>;
 
-function Row({ item, open, cursor, onFocus }: { item: Item; open: boolean; cursor: boolean; onFocus: () => void }) {
+function Row({
+  item,
+  open,
+  cursor,
+  onFocus,
+  repoLabels,
+}: {
+  item: Item;
+  open: boolean;
+  cursor: boolean;
+  onFocus: () => void;
+  repoLabels: ReadonlyMap<string, string> | undefined;
+}) {
   const { job, kind } = item;
   return (
     <Link
@@ -51,6 +63,7 @@ function Row({ item, open, cursor, onFocus }: { item: Item; open: boolean; curso
       <span className={cn("size-2 shrink-0 rounded-full", KIND_DOT[kind])} />
       <span className="hidden w-24 shrink-0 truncate font-mono text-xs text-muted-foreground @lg:block">{job.key}</span>
       <span className="min-w-0 flex-1 truncate">{job.title}</span>
+      {repoLabels && <span className="hidden w-28 shrink-0 truncate text-xs text-muted-foreground @2xl:block">{repoLabels.get(job.repo)}</span>}
       <span className="hidden w-32 shrink-0 truncate text-xs text-muted-foreground @sm:block @xl:w-56 @3xl:w-72">{inboxReason(item)}</span>
       <span className="hidden w-36 shrink-0 truncate text-xs text-muted-foreground @2xl:block">{INBOX_LABELS[kind]}</span>
       <span className="hidden w-12 shrink-0 text-right text-xs text-muted-foreground tabular-nums @md:block">
@@ -314,7 +327,18 @@ function Detail({ item, card }: { item: Item; card: BoardCard | undefined }) {
 }
 
 /** Everything waiting on the owner as one dense list; Enter opens an item's detail and actions on the right. */
-export function Inbox({ jobs, cards, selected }: { jobs: readonly JobRow[]; cards: readonly BoardCard[]; selected: string | undefined }) {
+export function Inbox({
+  jobs,
+  cards,
+  selected,
+  repoLabels,
+}: {
+  jobs: readonly JobRow[];
+  cards: readonly BoardCard[];
+  selected: string | undefined;
+  /** Each repo's short name, while more than one repo has jobs; undefined shows no repo. */
+  repoLabels?: ReadonlyMap<string, string>;
+}) {
   const items = useMemo(() => inboxItems(jobs), [jobs]);
   const listRef = useRef<HTMLDivElement>(null);
   const [cursor, setCursor] = useState<string | null>(selected ?? null);
@@ -340,7 +364,7 @@ export function Inbox({ jobs, cards, selected }: { jobs: readonly JobRow[]; card
         <ul aria-label="Needs you">
           {items.map((item) => (
             <li key={item.job.key} className="border-b">
-              <Row item={item} open={item === open} cursor={cursor === item.job.key} onFocus={() => setCursor(item.job.key)} />
+              <Row item={item} open={item === open} cursor={cursor === item.job.key} onFocus={() => setCursor(item.job.key)} repoLabels={repoLabels} />
             </li>
           ))}
         </ul>

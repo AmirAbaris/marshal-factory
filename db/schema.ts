@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 import {
+  boolean,
   check,
   doublePrecision,
   index,
@@ -264,18 +265,38 @@ export const settings = pgTable("settings", {
   updated_by: text("updated_by").notNull(),
 });
 
-/** Per-repo merge policy the panel edits; a repo with no row is off with the default limits. */
-export const repoSettings = pgTable("repo_settings", {
-  /** The GitHub full name, owner/name. */
-  repo: text("repo").primaryKey(),
-  autonomy: text("autonomy").$type<Autonomy>().notNull().default("off"),
-  /** Globs a PR may not touch to merge on its own; null means the defaults. */
-  protected_paths: jsonb("protected_paths").$type<string[]>(),
-  /** Most additions plus deletions a PR may have to merge on its own; null means the default. */
-  max_changed_lines: integer("max_changed_lines"),
-  updated_at: ts("updated_at").notNull(),
-  updated_by: text("updated_by").notNull(),
-});
+/**
+ * The repositories the factory works in, and per repo its merge policy and launch defaults; see
+ * lib/repositories.ts. A repo with no row merges nothing and runs on Settings.
+ */
+export const repoSettings = pgTable(
+  "repo_settings",
+  {
+    /** The GitHub full name, owner/name. */
+    repo: text("repo").primaryKey(),
+    /** The name the panel and the Repository label show; null means the name part of repo. */
+    display_name: text("display_name"),
+    /** Where an issue without a Repository label goes; at most one row, and it must be enabled. */
+    is_default: boolean("is_default").notNull().default(false),
+    /** A disabled repo takes no new jobs; a Repository label naming it goes to the default. */
+    enabled: boolean("enabled").notNull().default(true),
+    /** The T3 provider instance this repo's jobs start on without a Harness label; null means Settings. */
+    provider: text("provider"),
+    /** Where this repo's jobs run without a Runs on label; null means Settings. */
+    execution: text("execution").$type<Execution>(),
+    autonomy: text("autonomy").$type<Autonomy>().notNull().default("off"),
+    /** Globs a PR may not touch to merge on its own; null means the defaults. */
+    protected_paths: jsonb("protected_paths").$type<string[]>(),
+    /** Most additions plus deletions a PR may have to merge on its own; null means the default. */
+    max_changed_lines: integer("max_changed_lines"),
+    updated_at: ts("updated_at").notNull(),
+    updated_by: text("updated_by").notNull(),
+  },
+  (t) => [
+    uniqueIndex("repo_settings_one_default_idx").on(t.is_default).where(sql`${t.is_default}`),
+    check("repo_settings_default_enabled_check", sql`not ${t.is_default} or ${t.enabled}`),
+  ],
+);
 
 export const auditAction = pgEnum("audit_action", ["merge_requested", "merge_succeeded", "merge_failed", "sandbox_login_failed", "merge_decided", "override_fallback", "follow_up_filed", "review_dropped"]);
 export const auditResult = pgEnum("audit_result", ["ok", "head_moved", "not_mergeable", "refused", "error"]);

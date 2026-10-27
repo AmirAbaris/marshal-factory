@@ -28,9 +28,11 @@ function Row({
   open,
   cursor,
   onFocus,
+  repoLabels,
 }: {
   card: BoardCard;
   machineName: string | null;
+  repoLabels: ReadonlyMap<string, string> | undefined;
   agentsBySession: Map<string, AgentRow[]>;
   open: boolean;
   cursor: boolean;
@@ -55,6 +57,7 @@ function Row({
         <span className="truncate">{card.title}</span>
         {card.latest?.status === "active" && <Spinner className="size-3 shrink-0 text-muted-foreground" />}
       </span>
+      {repoLabels && <span className="hidden w-28 shrink-0 truncate text-xs text-muted-foreground @2xl:block">{card.repo && repoLabels.get(card.repo)}</span>}
       <span className={cn("hidden w-32 shrink-0 truncate text-xs @sm:block @xl:w-56", decision?.tone)}>{decision?.text}</span>
       <span className="hidden w-44 shrink-0 truncate text-xs text-muted-foreground @4xl:block">{where}</span>
       <span className="hidden w-28 shrink-0 truncate text-xs text-muted-foreground @5xl:block">{card.harness && harnessLine(card.harness)}</span>
@@ -89,11 +92,14 @@ export function JobList({
   agentsBySession,
   selected,
   machines,
+  repoLabels,
 }: {
   cards: readonly BoardCard[];
   agentsBySession: Map<string, AgentRow[]>;
   selected: string | undefined;
   machines: ReadonlyMap<string, MachineRow>;
+  /** Each repo's short name, while more than one repo has jobs; undefined shows no repo. */
+  repoLabels?: ReadonlyMap<string, string>;
 }) {
   const listRef = useRef<HTMLDivElement>(null);
   const [closed, setClosed] = useState<readonly Stage[]>([]);
@@ -163,6 +169,7 @@ export function JobList({
                           open={isOpen(card)}
                           cursor={cursor === card.id}
                           onFocus={() => setCursor(card.id)}
+                          repoLabels={repoLabels}
                         />
                       </motion.li>
                     ))}
