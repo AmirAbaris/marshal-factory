@@ -24,7 +24,7 @@ const { ingest } = await import("../lib/ingest");
 const { hosts, localHost } = await import("../lib/host");
 const { github, pullsClient } = await import("../lib/github/pulls");
 const { writeRepoAutonomy } = await import("../lib/settings");
-const { allows, changesMessage, feedbackDetailSchema, followUpHint, followUpIssue, inboxItems, inboxKind, isDismissed } = await import("../lib/inbox");
+const { allows, approveDetailSchema, changesMessage, feedbackDetailSchema, followUpHint, followUpIssue, inboxItems, inboxKind, isDismissed } = await import("../lib/inbox");
 const { approvalBlockers, reviewSummary } = await import("../lib/merge-decision");
 const { githubIntent } = await import("../lib/webhooks");
 const inbox = await import("../lib/inbox-actions");
@@ -306,11 +306,11 @@ try {
   assert.deepEqual(approval, { ok: true, intentId: `panel:approve_merge:${id1}` });
   assert.deepEqual(await inbox.approveMerge(deps(), handId, id1, "h1"), approval, "a double submit records one intent");
   const [approveIntent] = await intentRows(HAND);
-  assert.deepEqual([approveIntent!.kind, JSON.parse(approveIntent!.detail!)], ["approve_merge", { actor: OWNER, headSha: "h1" }]);
+  assert.deepEqual([approveIntent!.kind, JSON.parse(approveIntent!.detail!)], ["approve_merge", { actor: OWNER, headSha: "h1", via: "inbox" }]);
   assert.deepEqual(await inbox.intentOutcome(deps(), approveIntent!.id), { status: "pending" });
 
   // --- approve: the auto-merge path, blocked only by facts
-  const approved = await approveMerge(handId, { actor: OWNER, headSha: "h1" });
+  const approved = await approveMerge(handId, { actor: OWNER, headSha: "h1", via: "inbox" });
   assert.deepEqual(approved, { merged: "merge-1" }, "the agent's handover, a protected path and the size limit do not block the owner");
   assert.deepEqual(putsTo(1).map((w) => [w.body.sha, w.body.merge_method]), [["h1", "squash"]], "one merge, pinned to the reviewed head");
   const merged1 = await row(HAND);
@@ -319,29 +319,81 @@ try {
   assert.equal(merged1.merge_decision!.watch!.state, "watching", "and the post-merge watch starts");
   assert.equal(merged1.merge_decision!.approvedBy, OWNER);
   const audits = await db.select().from(auditLog).where(eq(auditLog.job_id, handId));
-  assert.deepEqual(audits.map((a) => [a.action, a.actor]).sort(), [["merge_requested", OWNER], ["merge_succeeded", "factory"]]);
-  assert.match(audits.find((a) => a.action === "merge_succeeded")!.detail!, /Approved in the inbox by owner@example\.com/);
-  assert.deepEqual(await approveMerge(handId, { actor: OWNER, headSha: "h1" }), { merged: "merge-1" }, "a replay finds the merge recorded");
+  assert.deepEqual(audits.map((a) => [a.action, a.actor]).sort(), [["merge_requested", OWNER], ["merge_succeeded", OWNER]], "the owner who approved is the merge's actor");
+  assert.match(audits.find((a) => a.action === "merge_succeeded")!.detail!, /^Merged by the factory as merge-1 \(squash\) via inbox · Approved in the inbox by owner@example\.com/);
+  assert.equal(merged1.merge_decision!.merged!.via, "inbox");
+  assert.deepEqual(await approveMerge(handId, { actor: OWNER, headSha: "h1", via: "inbox" }), { merged: "merge-1" }, "a replay finds the merge recorded");
   assert.equal(putsTo(1).length, 1, "and never merges twice");
   await db.update(intents).set({ handled_at: new Date(), result: JSON.stringify({ approval: approved }) }).where(eq(intents.id, approveIntent!.id));
   assert.deepEqual(await inbox.intentOutcome(deps(), approveIntent!.id), { status: "done", message: "Merged as merge-1. The factory now watches main." });
 
   const RED = await job("RED", {}, { number: 2, checks: "failure", behind: 3 });
-  assert.deepEqual(await approveMerge((await row(RED)).id, { actor: OWNER, headSha: null }), {
+  assert.deepEqual(await approveMerge((await row(RED)).id, { actor: OWNER, headSha: null, via: "inbox" }), {
     blocked: "A check failed on the latest commit. The branch is 3 commits behind its base.",
   });
   assert.equal(putsTo(2).length, 0, "facts block before GitHub is asked to merge");
   const MOVED = await job("MOVED", {}, { number: 3 });
-  assert.deepEqual(await approveMerge((await row(MOVED)).id, { actor: OWNER, headSha: "old" }), {
+  assert.deepEqual(await approveMerge((await row(MOVED)).id, { actor: OWNER, headSha: "old", via: "inbox" }), {
     refused: "The pull request moved to h3 since you reviewed old. Review the new commit first.",
   });
   assert.equal(putsTo(3).length, 0);
   const DENIED = await job("DENIED", {}, { number: 4, merge: { status: 403, body: { message: "Resource not accessible by integration" } } });
-  assert.deepEqual(await approveMerge((await row(DENIED)).id, { actor: OWNER, headSha: "h4" }), {
+  assert.deepEqual(await approveMerge((await row(DENIED)).id, { actor: OWNER, headSha: "h4", via: "inbox" }), {
     blocked: "The factory's GitHub App can't merge in this repo: Resource not accessible by integration",
   });
   assert.equal((await row(DENIED)).merge_decision!.blocked, "Resource not accessible by integration", "a refusal is recorded like auto-merge's");
   assert.equal((await row(DENIED)).stage, "pr");
+
+  // --- run detail's Merge: the inbox's approve_merge intent, merged by the runner's service
+  const mergePuts = () => writes.filter((w) => w.method === "PUT" && w.path.endsWith("/merge")).length;
+  const putsBeforePanel = mergePuts();
+  const DETAIL = await job("DETAIL", {}, { number: 20, files: [{ filename: "drizzle/0100_y.sql", additions: 500, deletions: 0 }] });
+  const detailId = (await row(DETAIL)).id;
+  const id5 = crypto.randomUUID();
+  for (const user of [null, stranger, { ...owner, emailVerified: false }]) {
+    assert.deepEqual(await inbox.approveFromRunDetail(deps(user), detailId, id5, "h20"), { ok: false, message: "Only the factory owner can act on the inbox." });
+    assert.equal(await inbox.mergeTarget({ ...deps(user), pulls: github }, detailId), null, "a non-owner gets no merge target");
+  }
+  assert.equal((await intentRows(DETAIL)).length, 0, "a non-owner records nothing from run detail");
+  assert.deepEqual(await inbox.approveFromRunDetail(deps(), detailId, "not-a-uuid", "h20"), { ok: false, message: "The request is not valid." });
+  assert.deepEqual(await inbox.approveFromRunDetail(deps(), detailId, id5, ""), { ok: false, message: "The request is not valid." }, "run detail always pins a head");
+  assert.deepEqual(await inbox.mergeTarget({ ...deps(), pulls: github }, detailId), { title: "Title 20", headSha: "h20", repo: REPO, mergeable: "mergeable" }, "the dialog gets the head it pins");
+  const detailApproval = await inbox.approveFromRunDetail(deps(), detailId, id5, "h20");
+  assert.deepEqual(detailApproval, { ok: true, intentId: `panel:approve_merge:${id5}` }, "the same intent kind as the inbox's Approve");
+  assert.deepEqual(await inbox.approveFromRunDetail(deps(), detailId, id5, "h20"), detailApproval, "a double submit records one intent");
+  const detailIntents = await intentRows(DETAIL);
+  assert.equal(detailIntents.length, 1);
+  assert.deepEqual([detailIntents[0]!.kind, JSON.parse(detailIntents[0]!.detail!)], ["approve_merge", { actor: OWNER, headSha: "h20", via: "run_detail" }]);
+  assert.deepEqual(approveDetailSchema.parse({ actor: OWNER, headSha: null }), { actor: OWNER, headSha: null, via: "inbox" }, "an approval recorded before run detail used it is the inbox's");
+  const NOTPR = await job("NOTPR", { stage: "implementing" });
+  assert.deepEqual(await inbox.approveFromRunDetail(deps(), (await row(NOTPR)).id, crypto.randomUUID(), "h"), { ok: false, message: "The job is no longer waiting on a pull request." });
+  const INFLIGHT = await job("INFLIGHT", { merge_decision: decision({ outcome: "merge", headSha: "h21", merging: { headSha: "h21", method: "squash", at: T(0).toISOString(), via: "auto" } }) }, { number: 21 });
+  assert.deepEqual(await inbox.approveFromRunDetail(deps(), (await row(INFLIGHT)).id, crypto.randomUUID(), "h21"), { ok: false, message: "The factory is already merging this pull request." });
+  assert.equal(await inbox.mergeTarget({ ...deps(), pulls: github }, (await row(INFLIGHT)).id), null, "nor offers a merge in flight");
+  assert.equal(mergePuts(), putsBeforePanel, "the panel's actions never call GitHub's merge endpoint");
+
+  const viaDetail = await approveMerge(detailId, approveDetailSchema.parse(JSON.parse(detailIntents[0]!.detail!)));
+  assert.deepEqual(viaDetail, { merged: "merge-20" }, "the runner merges it through the merge service, the agent's limits overruled");
+  assert.deepEqual(putsTo(20).map((w) => w.body.sha), ["h20"], "pinned to the head the dialog showed");
+  const detailMerged = await row(DETAIL);
+  assert.equal(detailMerged.stage, "merged");
+  assert.deepEqual([detailMerged.merge_decision!.merged!.via, detailMerged.merge_decision!.watch!.state, detailMerged.merge_decision!.merging], ["run_detail", "watching", undefined], "the post-merge watch starts");
+  assert.deepEqual(detailMerged.merge_decision!.reasons, ["Approved in run detail by owner@example.com."]);
+  assert.ok(detailMerged.merge_decision!.comments?.pr && detailMerged.merge_decision!.comments.source, "the decision comment and the source note are posted");
+  const detailAudits = await db.select().from(auditLog).where(eq(auditLog.job_id, detailId));
+  assert.deepEqual(detailAudits.map((a) => [a.action, a.actor]).sort(), [["merge_requested", OWNER], ["merge_succeeded", OWNER]]);
+  assert.match(detailAudits.find((a) => a.action === "merge_requested")!.detail!, /^Approved in run detail · via run_detail$/);
+  assert.match(detailAudits.find((a) => a.action === "merge_succeeded")!.detail!, /via run_detail/);
+
+  const STALE = await job("STALE", {}, { number: 22 });
+  const staleId = (await row(STALE)).id;
+  assert.equal((await inbox.approveFromRunDetail(deps(), staleId, crypto.randomUUID(), "seen-earlier")).ok, true);
+  assert.deepEqual(await approveMerge(staleId, { actor: OWNER, headSha: "seen-earlier", via: "run_detail" }), {
+    refused: "The pull request moved to h22 since you reviewed seen-ea. Review the new commit first.",
+  });
+  assert.equal(putsTo(22).length, 0, "a push after the dialog opened stops the merge before GitHub is asked");
+  const staleAudits = await db.select().from(auditLog).where(eq(auditLog.job_id, staleId));
+  assert.deepEqual(staleAudits.map((a) => [a.action, a.actor, a.result, a.head_sha]), [["merge_failed", OWNER, "head_moved", "seen-earlier"]], "and the refusal is audited for the owner");
 
   // --- request changes: wake, move back, send once
   const CHANGE = await job("CHANGE", { sandbox_snapshot: "im-snapshot" }, { number: 5 });

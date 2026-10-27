@@ -36,6 +36,10 @@ export type MergeOutcome = (typeof MERGE_OUTCOMES)[number];
 export const MERGE_METHODS = ["squash", "merge", "rebase"] as const;
 export type MergeMethod = (typeof MERGE_METHODS)[number];
 
+/** Where a factory merge started: the timer's own decision, or the owner's approval in the inbox or in run detail. */
+export const MERGE_VIAS = ["auto", "inbox", "run_detail"] as const;
+export type MergeVia = (typeof MERGE_VIAS)[number];
+
 export const WATCH_STATES = ["watching", "green", "expired", "reverted", "revert_failed"] as const;
 export type WatchState = (typeof WATCH_STATES)[number];
 
@@ -48,6 +52,8 @@ export const factoryMergeSchema = z.object({
   title: z.string(),
   /** The PR's commit count; a rebase merge put that many commits on the base. */
   commits: z.number().int().positive(),
+  /** Absent on merges recorded before the entry point was kept. */
+  via: z.enum(MERGE_VIAS).optional(),
 });
 export type FactoryMerge = z.infer<typeof factoryMergeSchema>;
 
@@ -95,14 +101,14 @@ export const mergeDecisionSchema = z.object({
   /** Why GitHub refused the factory's merge of this head; it is not tried again until the head moves. */
   blocked: z.string().optional(),
   /** Written right before the factory asks GitHub to merge, so a crash after the merge is recorded on a later pass. */
-  merging: z.object({ headSha: z.string(), method: z.enum(MERGE_METHODS), at: z.string() }).optional(),
+  merging: z.object({ headSha: z.string(), method: z.enum(MERGE_METHODS), at: z.string(), via: z.enum(MERGE_VIAS).optional() }).optional(),
   merged: factoryMergeSchema.optional(),
   watch: watchSchema.optional(),
   /** Fingerprints of the decision comments last posted on the PR and in the source. */
   comments: z.object({ pr: z.string().optional(), source: z.string().optional() }).optional(),
   /** The facts the decision read, for the inbox; absent when autonomy is off, which reads none. */
   review: reviewSchema.optional(),
-  /** Set when the owner approved this head in the inbox; the merge then skips the agent's and the policy's reasons. */
+  /** Set when the owner approved this head in the inbox or run detail; the merge then skips the agent's and the policy's reasons. */
   approvedBy: z.string().optional(),
 });
 export type MergeDecision = z.infer<typeof mergeDecisionSchema>;

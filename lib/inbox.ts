@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { JobRow } from "../db/schema";
-import { mergeDecisionSchema, type MergeDecision } from "./merge-decision";
+import { MERGE_VIAS, mergeDecisionSchema, type MergeDecision } from "./merge-decision";
 
 // The "Needs you" inbox: every job waiting on the owner, in one list. Pure, so the panel, its
 // nav badge, the runner and the regressions share the rules.
@@ -122,8 +122,15 @@ export const MAX_FEEDBACK_CHARS = 20_000;
 /** A follow-up's text goes into a new issue, whose description holds 10,000 characters with the failure's facts. */
 export const MAX_FOLLOW_UP_CHARS = 8_000;
 
-/** An approve_merge intent: the owner, and the head they reviewed; null when they saw no head. */
-export const approveDetailSchema = z.object({ actor: z.string(), headSha: z.string().nullable() });
+/**
+ * An approve_merge intent: the owner, the head they reviewed (null when they saw no head) and
+ * where they approved it. Intents recorded before run detail approved through here are the inbox's.
+ */
+export const approveDetailSchema = z.object({
+  actor: z.string(),
+  headSha: z.string().nullable(),
+  via: z.enum(MERGE_VIAS).exclude(["auto"]).default("inbox"),
+});
 export type ApproveDetail = z.infer<typeof approveDetailSchema>;
 
 /** A request_changes intent. `id` is the replay key: one per panel request or GitHub review. */

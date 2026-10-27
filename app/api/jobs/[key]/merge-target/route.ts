@@ -4,7 +4,7 @@ import { jobs } from "@/db/schema";
 import { auth } from "@/lib/auth/server";
 import { github } from "@/lib/github/pulls";
 import { parseJobKey } from "@/lib/live-queries";
-import { mergeTarget } from "@/lib/merge";
+import { mergeTarget } from "@/lib/inbox-actions";
 
 /** What the merge dialog shows. A read, so a route and not a server action, which Next runs one at a time. */
 export async function GET(_request: Request, { params }: RouteContext<"/api/jobs/[key]/merge-target">) {

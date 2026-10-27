@@ -4,6 +4,7 @@ import { db } from "@/db/client";
 import { auth } from "@/lib/auth/server";
 import {
   answerQuestion as answer,
+  approveFromRunDetail as approveInRunDetail,
   approveMerge as approve,
   closeJob as close,
   dismissJob as dismiss,
@@ -29,6 +30,10 @@ const deps: InboxDeps = {
 
 export async function approveMerge(jobId: JobId, requestId: string, headSha: string | null) {
   return approve(deps, jobId, requestId, headSha);
+}
+
+export async function approveFromRunDetail(jobId: JobId, requestId: string, headSha: string) {
+  return approveInRunDetail(deps, jobId, requestId, headSha);
 }
 
 export async function requestChanges(jobId: JobId, requestId: string, body: string) {

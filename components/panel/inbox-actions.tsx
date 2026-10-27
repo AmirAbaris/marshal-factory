@@ -36,9 +36,10 @@ type Busy = { action: InboxAction; slow: boolean };
 
 /**
  * Runs one inbox action at a time: records it, then follows the runner's intent until it is
- * handled. Success is a toast; a refusal stays inline until the next try.
+ * handled. Success is a toast; a refusal stays inline until the next try. Run detail's Merge
+ * follows its approval the same way.
  */
-function useInboxAction() {
+export function useInboxAction() {
   const [busy, setBusy] = useState<Busy | null>(null);
   const [error, setError] = useState<string | null>(null);
   // A second click can land before React re-renders the disabled button.
@@ -102,7 +103,7 @@ function useInboxAction() {
   return { busy, error, run };
 }
 
-function Waiting({ busy }: { busy: Busy | null }) {
+export function Waiting({ busy }: { busy: Busy | null }) {
   if (!busy) return null;
   return (
     <p className="flex items-center gap-2 text-xs text-muted-foreground" aria-live="polite">
