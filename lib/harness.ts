@@ -18,7 +18,16 @@ export type Harness = z.infer<typeof harnessSchema>;
 /** Drivers whose sessions run the factory's hooks and MCP reporter, so stages, cost and the budget cap work. */
 export const TRACKED_DRIVERS: readonly string[] = ["claudeAgent"];
 
+/** Drivers without hooks whose factory-report MCP server posts their stages: stages, questions, PRs and assessments, but no cost. */
+export const STAGE_REPORTING_DRIVERS: readonly string[] = ["codex"];
+
+/** Usage, cost and the budget cap need `full`; `stages` is the board without cost. */
+export type Tracking = "full" | "stages" | "none";
+
 export const isTracked = (providerOrDriver: string) => TRACKED_DRIVERS.includes(providerOrDriver);
+
+export const trackingOf = (providerOrDriver: string): Tracking =>
+  isTracked(providerOrDriver) ? "full" : STAGE_REPORTING_DRIVERS.includes(providerOrDriver) ? "stages" : "none";
 
 const DRIVER_LABELS: Record<string, string> = {
   claudeAgent: "Claude Code",

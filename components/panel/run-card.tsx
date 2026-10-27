@@ -3,6 +3,7 @@ import { Badge } from "@/components/ui/badge";
 import { Spinner } from "@/components/ui/spinner";
 import type { AgentRow, RunRow } from "@/db/schema";
 import type { SandboxState } from "@/lib/execution";
+import type { Tracking } from "@/lib/harness";
 import type { MergeDecision } from "@/lib/merge-decision";
 import { cn } from "@/lib/utils";
 import { harnessLine, showsDecision, whereLine, type BoardCard } from "./cards";
@@ -53,6 +54,12 @@ function AgentsAndCost({
     </>
   );
 }
+
+const TRACKING_HINT: Record<Tracking, string | undefined> = {
+  full: undefined,
+  stages: "This harness reports its stages, questions and pull requests, but no agents or cost.",
+  none: "This harness reports no stages, agents or cost; check the run in T3.",
+};
 
 const SANDBOX_HINT: Record<SandboxState, string> = {
   running: "Runs in its own Modal sandbox",
@@ -152,10 +159,12 @@ export function StageCard({
       )}
       <div className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
         {card.harness && (
-          <span title={card.harness.tracked ? undefined : "This harness reports no stages, agents or cost; check the run in T3."}>{harnessLine(card.harness)}</span>
+          <span title={TRACKING_HINT[card.harness.tracking]}>{harnessLine(card.harness)}</span>
         )}
         {card.attempt > 1 && <span>attempt {card.attempt}</span>}
-        <AgentsAndCost runs={card.attemptRuns} allRuns={card.runs} agents={agents} budgetUsd={card.budgetUsd ?? undefined} />
+        {(!card.harness || card.harness.tracking === "full") && (
+          <AgentsAndCost runs={card.attemptRuns} allRuns={card.runs} agents={agents} budgetUsd={card.budgetUsd ?? undefined} />
+        )}
         {card.runsOn && (
           <span className="ml-auto flex min-w-0 items-center gap-1.5">
             <span className="truncate">{whereLine(card.runsOn, machineName)}</span>

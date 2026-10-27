@@ -8,13 +8,14 @@ import { github } from "../lib/github/pulls";
 import { hosts, isHibernated } from "../lib/host";
 import { parseJobs } from "../lib/sources";
 import type { Job } from "../lib/sources/types";
-import { runnerEventId } from "../lib/stages";
+import { causeOf, runnerEventId } from "../lib/stages";
 import { bindingOf } from "./binding";
 import { thisMachine } from "./heartbeat";
 import { config, harnessDrivers, IN_FLIGHT, jobTracked, postEvent, postMerged, threads, watchdogFail } from "./ops";
 
-// A harness that runs no factory hooks (Codex, Cursor, ...) never reports a stage, so the runner
-// reads what it left behind instead: a PR on the attempt branch moves the job to pr (or merged),
+// A harness that runs no factory hooks (Codex, Cursor, ...) reports no usage, and stages only
+// through the factory-report MCP server where it has one, so the runner fills the gaps from what it
+// left behind: a PR on the attempt branch moves the job to pr (or merged),
 // and a thread that settled without one moves it to waiting with its last message as the question.
 // A job sent back for a conflict already has its PR; once its thread settles it is back in pr.
 // Every event id names the stage it leaves, so a repeated pass posts nothing new.
@@ -50,7 +51,12 @@ async function post(job: Job, stage: Extract<Stage, "pr" | "waiting">, fields: {
 }
 
 async function inferJob(job: Job, now: number): Promise<string | undefined> {
-  if (!job.pr_url) {
+  // A thread that was just launched, resumed or sent back may not have started its run yet.
+  const quiet = now - (job.stage_at ?? job.updated_at).getTime() >= config.factory.stoppedGraceMinutes * 60_000;
+  // A stage the agent reported itself (Codex through the factory-report server) stands until the
+  // run has been quiet past the grace, so its own pr report, with its assessment, comes first.
+  const reported = job.stage_event_id !== null && causeOf(job.stage_event_id) === "report";
+  if (!job.pr_url && (quiet || !reported)) {
     const pr = await github.pullRequestForBranch(job.repo as RepoName, attemptBranch(job.key, job.attempt));
     if (pr?.state === "merged") {
       await postMerged(job.key, pr.url, job.session_id ?? runnerEventId("merged", job.external_id));
@@ -61,9 +67,7 @@ async function inferJob(job: Job, now: number): Promise<string | undefined> {
       return "pr";
     }
   }
-  // A thread that was just launched, resumed or sent back may not have started its run yet.
-  const quietSince = (job.stage_at ?? job.updated_at).getTime();
-  if (now - quietSince < config.factory.stoppedGraceMinutes * 60_000) return undefined;
+  if (!quiet) return undefined;
   const thread = await threads.read(job.t3_thread_id, hosts.forJob(job));
   // A gone thread is the watchdog's to fail.
   if (thread.state !== "stopped") return undefined;
