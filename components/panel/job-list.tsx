@@ -3,8 +3,7 @@
 import { ChevronRightIcon } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "@/components/ui/empty";
 import { Spinner } from "@/components/ui/spinner";
 import type { AgentRow, MachineRow } from "@/db/schema";
@@ -13,7 +12,7 @@ import { cn } from "@/lib/utils";
 import { harnessLine, showsDecision, whereLine, type BoardCard } from "./cards";
 import { formatUsd, spendOf } from "./format";
 import { decisionLine } from "./merge-decision";
-import { isTyping } from "./panel-shell";
+import { useRowKeys } from "./row-keys";
 import { STAGE_META } from "./stages";
 import { ShortTime } from "./time";
 
@@ -50,23 +49,23 @@ function Row({
       {cursor && <span aria-hidden className="absolute inset-y-0 left-0 w-0.5 bg-foreground" />}
       <span className={cn("size-2 shrink-0 rounded-full", STAGE_META[card.stage].dot)} title={STAGE_META[card.stage].label} />
       <span className="sr-only">{STAGE_META[card.stage].label}</span>
-      <span className="hidden w-24 shrink-0 truncate font-mono text-xs text-muted-foreground @md:block">{card.jobKey ?? card.id.slice(0, 8)}</span>
+      <span className="hidden w-24 shrink-0 truncate font-mono text-xs text-muted-foreground @lg:block">{card.jobKey ?? card.id.slice(0, 8)}</span>
       <span className="flex min-w-0 flex-1 items-center gap-2">
         <span className="truncate">{card.title}</span>
         {card.latest?.status === "active" && <Spinner className="size-3 shrink-0 text-muted-foreground" />}
       </span>
-      <span className={cn("hidden w-56 shrink-0 truncate text-xs @2xl:block", decision?.tone)}>{decision?.text}</span>
+      <span className={cn("hidden w-32 shrink-0 truncate text-xs @sm:block @xl:w-56", decision?.tone)}>{decision?.text}</span>
       <span className="hidden w-44 shrink-0 truncate text-xs text-muted-foreground @4xl:block">{where}</span>
       <span className="hidden w-28 shrink-0 truncate text-xs text-muted-foreground @5xl:block">{card.harness && harnessLine(card.harness)}</span>
       <span
         className={cn(
-          "hidden w-14 shrink-0 text-right font-mono text-xs text-muted-foreground tabular-nums @lg:block",
+          "hidden w-14 shrink-0 text-right font-mono text-xs text-muted-foreground tabular-nums @3xl:block",
           card.budgetUsd !== null && cost >= card.budgetUsd && "text-destructive",
         )}
       >
         {formatUsd(cost)}
       </span>
-      <span className="w-12 shrink-0 text-right text-xs text-muted-foreground tabular-nums">
+      <span className="hidden w-12 shrink-0 text-right text-xs text-muted-foreground tabular-nums @md:block">
         <ShortTime date={card.updatedAt} />
       </span>
     </>
@@ -95,54 +94,19 @@ export function JobList({
   selected: string | undefined;
   machines: ReadonlyMap<string, MachineRow>;
 }) {
-  const router = useRouter();
   const listRef = useRef<HTMLDivElement>(null);
   const [closed, setClosed] = useState<readonly Stage[]>([]);
   const isOpen = (card: BoardCard) => card.runs.some((r) => r.session_id === selected);
   const [cursor, setCursor] = useState<string | null>(() => cards.find(isOpen)?.id ?? null);
-
-  // The handler reads these on each key press, so it never needs to re-subscribe.
-  const latest = useRef({ cards, cursor, selected });
-  useEffect(() => {
-    latest.current = { cards, cursor, selected };
+  useRowKeys(listRef, {
+    cursor,
+    setCursor,
+    hrefOf: (id) => {
+      const card = cards.find((c) => c.id === id);
+      return card ? openHref(card) : null;
+    },
+    closeHref: selected ? "/list" : null,
   });
-
-  useEffect(() => {
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.metaKey || e.ctrlKey || e.altKey || isTyping(e.target)) return;
-      // Keys pressed inside a dialog, a menu or the run detail belong to them.
-      if (e.target !== document.body && !(e.target instanceof Node && listRef.current?.contains(e.target))) return;
-      const { cards, cursor, selected } = latest.current;
-      switch (e.key) {
-        case "j":
-        case "k":
-        case "ArrowDown":
-        case "ArrowUp": {
-          const rows = Array.from(listRef.current?.querySelectorAll<HTMLElement>("[data-row]") ?? []);
-          const at = rows.findIndex((row) => row.dataset.row === cursor);
-          const down = e.key === "j" || e.key === "ArrowDown";
-          const next = rows[at === -1 ? 0 : down ? Math.min(rows.length - 1, at + 1) : Math.max(0, at - 1)];
-          next?.focus();
-          setCursor(next?.dataset.row ?? null);
-          e.preventDefault();
-          return;
-        }
-        case "Enter": {
-          // A focused row is a link and opens itself.
-          if (e.target !== document.body) return;
-          const card = cards.find((c) => c.id === cursor);
-          const href = card && openHref(card);
-          if (href) router.push(href, { scroll: false });
-          return;
-        }
-        case "Escape":
-          if (selected) router.push("/list", { scroll: false });
-          return;
-      }
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [router]);
 
   if (cards.length === 0) {
     return (

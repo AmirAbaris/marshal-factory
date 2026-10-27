@@ -62,6 +62,25 @@ export const watchSchema = z.object({
 });
 export type MergeWatch = z.infer<typeof watchSchema>;
 
+/** The most changed files a review summary lists; fileCount still counts them all. */
+export const REVIEW_FILE_LIMIT = 100;
+
+/** What the owner reviews in the inbox: the PR's changed files and Bugbot's findings at one head. */
+export const reviewSchema = z.object({
+  headSha: z.string(),
+  files: z.array(z.object({ path: z.string(), additions: z.number(), deletions: z.number() })),
+  fileCount: z.number().int(),
+  bugbot: z.object({
+    state: z.enum(["pending", "reviewed", "failed"]),
+    /** Unresolved findings by severity. */
+    high: z.number().int(),
+    medium: z.number().int(),
+    low: z.number().int(),
+    resolved: z.number().int(),
+  }),
+});
+export type ReviewSummary = z.infer<typeof reviewSchema>;
+
 export const mergeDecisionSchema = z.object({
   outcome: z.enum(MERGE_OUTCOMES),
   reasons: z.array(z.string()),
@@ -81,6 +100,10 @@ export const mergeDecisionSchema = z.object({
   watch: watchSchema.optional(),
   /** Fingerprints of the decision comments last posted on the PR and in the source. */
   comments: z.object({ pr: z.string().optional(), source: z.string().optional() }).optional(),
+  /** The facts the decision read, for the inbox; absent when autonomy is off, which reads none. */
+  review: reviewSchema.optional(),
+  /** Set when the owner approved this head in the inbox; the merge then skips the agent's and the policy's reasons. */
+  approvedBy: z.string().optional(),
 });
 export type MergeDecision = z.infer<typeof mergeDecisionSchema>;
 
@@ -219,6 +242,31 @@ export function decideMerge(input: DecisionInput): Decision {
     return { outcome: "handover", reasons: [`${waiting.join(", ")} didn't finish within ${minutes(timeout)} minutes.`.replace(/^./, (c) => c.toUpperCase())] };
   }
   return { outcome: "merge", reasons: [] };
+}
+
+export function reviewSummary(pr: Pick<PrFacts, "headSha" | "files" | "bugbot">): ReviewSummary {
+  const open = pr.bugbot.findings.filter((f) => !f.resolved);
+  const count = (severity: BugbotFinding["severity"]) => open.filter((f) => f.severity === severity).length;
+  return {
+    headSha: pr.headSha,
+    files: pr.files.slice(0, REVIEW_FILE_LIMIT).map(({ path, additions, deletions }) => ({ path, additions, deletions })),
+    fileCount: pr.files.length,
+    bugbot: { state: pr.bugbot.review.state, high: count("high"), medium: count("medium"), low: count("low"), resolved: pr.bugbot.findings.length - open.length },
+  };
+}
+
+/**
+ * What still stops a merge the owner approved. Only facts about the PR count: the agent's
+ * reasons, the policy's limits and Bugbot's findings are the owner's to overrule.
+ */
+export function approvalBlockers(pr: Pick<PrFacts, "checks" | "mergeable" | "behindBy">): string[] {
+  const reasons: string[] = [];
+  if (pr.checks === "failure") reasons.push("A check failed on the latest commit.");
+  if (pr.checks === "pending") reasons.push("Checks are still running on the latest commit.");
+  if (pr.mergeable === "conflicting") reasons.push("The pull request conflicts with its base branch.");
+  if (pr.mergeable === "unknown") reasons.push("GitHub is still checking whether the pull request merges cleanly.");
+  if (pr.behindBy > 0) reasons.push(`The branch is ${pr.behindBy} commit${pr.behindBy === 1 ? "" : "s"} behind its base.`);
+  return reasons;
 }
 
 /** The reason a decision hands over when GitHub refuses the factory's merge. */

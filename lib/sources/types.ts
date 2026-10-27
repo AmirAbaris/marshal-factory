@@ -75,6 +75,8 @@ export interface SourceAdapter<S extends JobSource> {
    * since the agent cannot fetch them. Returns the text unchanged when it has none.
    */
   localizeImages?(job: Pick<Job<S>, "key">, text: string): Promise<string>;
+  /** Posts the owner's answer to a waiting job as a person would; the runner then reads it as a reply. */
+  reply?(job: Job<S>, requestId: string, body: string): Promise<void>;
   /** Files a new job in the source as a person would; the source's own intake then claims it. */
   file?(draft: FileDraft): Promise<FiledJob>;
   /** Creates the label groups and children the source is missing; it never renames or deletes one. */

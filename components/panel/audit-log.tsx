@@ -10,6 +10,8 @@ const ACTION: Record<AuditRow["action"], { label: string; tone: string }> = {
   sandbox_login_failed: { label: "Sandbox login failed", tone: "text-destructive" },
   merge_decided: { label: "Merge decision", tone: "text-foreground" },
   override_fallback: { label: "Ticket override not applied", tone: "text-warning" },
+  follow_up_filed: { label: "Follow-up filed", tone: "text-foreground" },
+  review_dropped: { label: "Review not forwarded", tone: "text-warning" },
 };
 
 const RESULT: Record<NonNullable<AuditRow["result"]>, string> = {
@@ -42,6 +44,14 @@ export function AuditLog({ rows }: { rows: readonly AuditRow[] }) {
               <div className="text-xs text-muted-foreground">
                 {row.actor}
                 {row.detail && ` · ${row.detail}`}
+                {row.action === "follow_up_filed" && (
+                  <>
+                    {" · "}
+                    <a href={row.target} target="_blank" rel="noreferrer" className="underline underline-offset-2">
+                      Open the issue
+                    </a>
+                  </>
+                )}
               </div>
             </li>
           ))}

@@ -38,13 +38,13 @@ async function record(source: string, deliveryId: string, event: string, payload
         ? await tx.select({ id: schema.jobs.id }).from(schema.jobs).where(eq(schema.jobs.pr_url, intent.prUrl))
         : [];
       await tx.insert(schema.intents).values({
-        id: `${source}:${deliveryId}`,
+        id: `${source}:${intent.key ?? deliveryId}`,
         kind: intent.kind,
         job_id: intent.jobId ?? byPr?.id,
         pr_url: intent.prUrl,
         detail: intent.detail,
         created_at: now,
-      });
+      }).onConflictDoNothing();
     }
     return { duplicate: false, intent: intent?.kind ?? null };
   });

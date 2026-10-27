@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { ReviewComment } from "../inbox";
 import type { BugbotFinding, BugbotReview, ChangedFile, CheckState, MergeMethod } from "../merge-decision";
 import { GITHUB_API, GitHubError, githubRequest, installationTokens, type RepoName, type TokenSource } from "./app";
 
@@ -354,6 +355,22 @@ export function pullsClient({ api, tokens }: { api: string; tokens: TokenSource 
       }
       await request(repo, "POST", `/repos/${repo}/issues/${number}/comments`, { body: { body } });
       return "created";
+    },
+
+    /** Closes the PR unmerged; closing one already closed changes nothing. */
+    async closePull(url: string): Promise<void> {
+      const { repo, number } = parsePullUrl(url);
+      await request(repo, "PATCH", `/repos/${repo}/pulls/${number}`, { body: { state: "closed" } });
+    },
+
+    /** The inline comments of one review, in the order GitHub lists them. */
+    async reviewComments(url: string, reviewId: number): Promise<ReviewComment[]> {
+      const { repo, number } = parsePullUrl(url);
+      const { json } = await request(repo, "GET", `/repos/${repo}/pulls/${number}/reviews/${reviewId}/comments?per_page=100`);
+      return z
+        .array(z.object({ path: z.string(), line: z.number().nullable().optional(), original_line: z.number().nullable().optional(), body: z.string() }))
+        .parse(json)
+        .map((c) => ({ path: c.path, line: c.line ?? c.original_line ?? null, body: c.body }));
     },
 
     /** Opens a PR, or returns the open one GitHub already has for the branch. */

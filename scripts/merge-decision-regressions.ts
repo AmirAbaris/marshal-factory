@@ -288,7 +288,22 @@ try {
   const good = (await row(GOOD)).merge_decision!;
   assert.deepEqual(
     { ...good, evaluatedAt: undefined, comments: undefined },
-    { comments: undefined, outcome: "merge", reasons: [], autonomy: "trial", headSha: "h1", headSeenAt: new Date(at(0)).toISOString(), stageEventId: prEvent("GOOD"), evaluatedAt: undefined },
+    {
+      comments: undefined,
+      outcome: "merge",
+      reasons: [],
+      autonomy: "trial",
+      headSha: "h1",
+      headSeenAt: new Date(at(0)).toISOString(),
+      stageEventId: prEvent("GOOD"),
+      evaluatedAt: undefined,
+      review: {
+        headSha: "h1",
+        fileCount: 1,
+        files: [{ path: "src/list.tsx", additions: 5, deletions: 1 }],
+        bugbot: { state: "reviewed", high: 0, medium: 0, low: 0, resolved: 0 },
+      },
+    },
   );
   assert.deepEqual((await row(ASLEEP)).sandbox_snapshot, "im-snap-merge", "a hibernated job is decided on GitHub alone and stays asleep");
   assert.deepEqual((await row(LABELED)).merge_decision!.reasons, ['The issue has the "review" label.']);

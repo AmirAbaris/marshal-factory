@@ -166,6 +166,10 @@ export const jobs = pgTable(
     merge_assessment: jsonb("merge_assessment").$type<MergeAssessment>(),
     /** The runner's latest merge decision while the job sits in pr; see lib/merge-decision.ts. */
     merge_decision: jsonb("merge_decision").$type<MergeDecision>(),
+    /** When the owner dismissed the job from the inbox; a failure newer than this shows again. */
+    dismissed_at: ts("dismissed_at"),
+    /** Review feedback already handed to the thread, from the panel or GitHub; the replay guard for request_changes. */
+    delivered_feedback_ids: jsonb("delivered_feedback_ids").$type<string[]>().notNull().default([]),
     claimed_at: ts("claimed_at").notNull(),
     updated_at: ts("updated_at").notNull(),
   },
@@ -185,13 +189,24 @@ export const webhookDeliveries = pgTable("webhook_deliveries", {
   payload: jsonb("payload").notNull(),
 });
 
-export const intentKind = pgEnum("intent_kind", ["claim", "stop", "answer", "merged", "recheck_conflicts", "open_t3"]);
+export const intentKind = pgEnum("intent_kind", [
+  "claim",
+  "stop",
+  "answer",
+  "merged",
+  "recheck_conflicts",
+  "open_t3",
+  "approve_merge",
+  "request_changes",
+  "close_job",
+]);
 
 /**
  * What a webhook asks the runner to do. Webhooks only record these; the runner acts on each one
  * through the same idempotent code its timer and startup reconcile use, then sets handled_at.
  * The panel records open_t3 itself; its result holds a one-time T3 pairing link until the panel
- * shows it or it expires.
+ * shows it or it expires. The inbox records approve_merge, request_changes and close_job; a
+ * human's GitHub review records request_changes too. Their detail is JSON; see lib/inbox.ts.
  */
 export const intents = pgTable(
   "intents",
@@ -262,7 +277,7 @@ export const repoSettings = pgTable("repo_settings", {
   updated_by: text("updated_by").notNull(),
 });
 
-export const auditAction = pgEnum("audit_action", ["merge_requested", "merge_succeeded", "merge_failed", "sandbox_login_failed", "merge_decided", "override_fallback"]);
+export const auditAction = pgEnum("audit_action", ["merge_requested", "merge_succeeded", "merge_failed", "sandbox_login_failed", "merge_decided", "override_fallback", "follow_up_filed", "review_dropped"]);
 export const auditResult = pgEnum("audit_result", ["ok", "head_moved", "not_mergeable", "refused", "error"]);
 
 /** Who asked the factory to change something outside it, and what happened. */

@@ -460,6 +460,24 @@ const fileFromEnv = (draft: FileDraft) => {
   return linearFiler(key, process.env.FACTORY_TEAM_KEY ?? "FAC", process.env.FACTORY_LABEL ?? "factory")(draft);
 };
 
+/**
+ * Posts the owner's answer from the panel as a comment on the waiting issue. It is not recorded as
+ * the factory's own, so the runner reads it as a reply like one typed in Linear. The id comes from
+ * the request, so a retry finds the comment already posted.
+ */
+export function linearReplier(apiKey: string, options?: LinearOptions) {
+  const client = linearClient(apiKey, options);
+  return async (issueId: string, requestId: string, body: string) => {
+    await client.comment(issueId, commentId(issueId, "panel-answer", requestId), body);
+  };
+}
+
+const replyFromEnv = (job: Job, requestId: string, body: string) => {
+  const key = process.env.LINEAR_API_KEY;
+  if (!key) throw new Error("LINEAR_API_KEY is not set, so the panel cannot answer in Linear");
+  return linearReplier(key)(job.writeback.issueId, requestId, body);
+};
+
 // Images pasted into Linear live on its upload host behind the API key, which the agent does not have.
 const UPLOAD_IMAGE = /!\[([^\]]*)\]\((https:\/\/uploads\.linear\.app\/[^\s)]+)\)/g;
 const IMAGE_TYPES: Record<string, string> = { "image/png": "png", "image/jpeg": "jpg", "image/webp": "webp", "image/gif": "gif" };
@@ -535,4 +553,4 @@ const uploadFromEnv = (image: ImageFile) => {
   return linearUploader(key)(image);
 };
 
-export const linear: SourceAdapter<"linear"> = { ...createLinearAdapter(runtimeDeps), file: fileFromEnv, uploadImage: uploadFromEnv, localizeImages };
+export const linear: SourceAdapter<"linear"> = { ...createLinearAdapter(runtimeDeps), file: fileFromEnv, uploadImage: uploadFromEnv, reply: replyFromEnv, localizeImages };

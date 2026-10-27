@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { Controller, useForm } from "react-hook-form";
 import { z } from "zod";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Field, FieldError, FieldLabel } from "@/components/ui/field";
@@ -97,7 +98,12 @@ export function CredentialsForm({ mode }: { mode: keyof typeof MODES }) {
                 </Field>
               )}
             />
-            {form.formState.errors.root && <FieldError match>{form.formState.errors.root.message}</FieldError>}
+            {form.formState.errors.root && (
+              <Alert variant="error">
+                <AlertTitle>{config.submit} failed</AlertTitle>
+                <AlertDescription>{form.formState.errors.root.message}</AlertDescription>
+              </Alert>
+            )}
             <Button type="submit" disabled={form.formState.isSubmitting}>
               {form.formState.isSubmitting ? config.pending : config.submit}
             </Button>

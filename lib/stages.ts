@@ -3,7 +3,8 @@ import type { Stage } from "./events";
 import { attemptBranch } from "./factory";
 
 // inferred: the runner reads a harness that never reports stages (its PR on GitHub, its settled thread).
-export const RUNNER_CAUSES = ["resume", "conflict", "merged", "watchdog", "budget", "stop", "closed", "reclaim", "inferred"] as const;
+// changes: the owner asked for changes on the PR, in the inbox or in a GitHub review.
+export const RUNNER_CAUSES = ["resume", "conflict", "merged", "watchdog", "budget", "stop", "closed", "reclaim", "inferred", "changes"] as const;
 export type RunnerCause = (typeof RUNNER_CAUSES)[number];
 export type Cause = "report" | RunnerCause;
 
@@ -23,7 +24,7 @@ export const STAGE_TRANSITIONS: { readonly [From in Stage]: { readonly [C in Cau
   investigating: FROM_WORKING,
   implementing: FROM_WORKING,
   verifying: FROM_WORKING,
-  pr: { report: REPORTED, conflict: ["implementing", "failed"], stop: ["failed"], merged: ["merged"] },
+  pr: { report: REPORTED, conflict: ["implementing", "failed"], changes: ["implementing"], stop: ["failed"], merged: ["merged"] },
   waiting: { report: REPORTED, resume: ["queued"], closed: ["failed"], stop: ["failed"], merged: ["merged"] },
   merged: {},
   failed: { reclaim: ["queued"], merged: ["merged"] },

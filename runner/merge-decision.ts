@@ -3,10 +3,12 @@ import { and, eq, inArray, isNotNull, sql } from "drizzle-orm";
 import { db } from "../db/client";
 import { auditLog, jobs, type AuditRow } from "../db/schema";
 import { attemptBranch } from "../lib/factory";
+import type { ApproveDetail } from "../lib/inbox";
 import type { RepoName } from "../lib/github/app";
 import { github, type MergeCandidate } from "../lib/github/pulls";
 import { DECISION_MARKER, fingerprint, prCommentBody, sourceCommentBody } from "../lib/merge-comments";
 import {
+  approvalBlockers,
   blockedReason,
   decideMerge,
   mergeDecisionSchema,
@@ -16,10 +18,12 @@ import {
   type MergeMethod,
   type PrFacts,
   type RepoPolicy,
+  type ReviewSummary,
+  reviewSummary,
 } from "../lib/merge-decision";
 import { readRepoSettings, resolvePolicy } from "../lib/settings";
-import { parseJobs, sourceFor } from "../lib/sources";
-import type { Job } from "../lib/sources/types";
+import { parseJob, parseJobs, sourceFor } from "../lib/sources";
+import type { Job, JobId } from "../lib/sources/types";
 import { branchSpend } from "../lib/spend";
 import { runnerEventId } from "../lib/stages";
 import { config } from "./config";
@@ -76,7 +80,7 @@ async function prFacts(prUrl: string, repo: RepoName, headSha: string, baseRef: 
   return { headSha, mergeable, behindBy, files, checks: state.checks, bugbot: { review: state.bugbot, findings } };
 }
 
-type Evaluated = { decision: Decision; headSha: string | null; headSeenAt: number | null } | "unchanged";
+type Evaluated = { decision: Decision; headSha: string | null; headSeenAt: number | null; review?: ReviewSummary } | "unchanged";
 
 async function evaluate(job: Job, policy: RepoPolicy, previous: MergeDecision | null, tracked: boolean, now: number): Promise<Evaluated> {
   const sameReport = previous !== null && previous.autonomy === policy.autonomy && previous.stageEventId === job.stage_event_id;
@@ -110,7 +114,7 @@ async function evaluate(job: Job, policy: RepoPolicy, previous: MergeDecision | 
     headSeenAt,
     now,
   });
-  return { decision, headSha: detail.headSha, headSeenAt };
+  return { decision, headSha: detail.headSha, headSeenAt, review: reviewSummary(pr) };
 }
 
 /** Stores the decision unless the job left the report it was made for; audits it when it changed. */
@@ -317,6 +321,7 @@ export async function decideMerges({ now = Date.now(), only }: { now?: number; o
         stageEventId: job.stage_event_id,
         ...(blocked && { blocked }),
         ...(previous?.comments && { comments: previous.comments }),
+        ...(result.review && { review: result.review }),
       };
       const stored = await store(job, previous, next);
       if (stored === "gone") continue;
@@ -335,4 +340,60 @@ export async function decideMerges({ now = Date.now(), only }: { now?: number; o
     }
   }
   return errors.length > 0 ? { changed, errors } : changed;
+}
+
+export type Approval = { merged: string } | { blocked: string } | { refused: string };
+
+/**
+ * Merges a PR the owner approved in the inbox, through the same merge as auto: the head pinned,
+ * the repo's method, a refusal handed over and recorded, the merge recorded and watched on main.
+ * The agent's and the policy's reasons are the owner's to overrule; facts about the PR still stop
+ * it. A replay after the merge finds it recorded and changes nothing.
+ */
+export async function approveMerge(id: JobId, { actor, headSha }: ApproveDetail, now = Date.now()): Promise<Approval> {
+  const [row] = await db.select().from(jobs).where(eq(jobs.id, id));
+  if (!row) return { refused: `No job ${id}.` };
+  const job = parseJob(row);
+  const previous = storedDecision(job);
+  if (previous?.merged) return { merged: previous.merged.sha };
+  if (job.stage !== "pr" || !job.pr_url) return { refused: `The job is in ${job.stage}, not waiting on a pull request.` };
+  const detail = await github.pullDetail(job.pr_url);
+  if (detail.state !== "open") return { refused: `The pull request is already ${detail.state}.` };
+  if (headSha && detail.headSha !== headSha) {
+    return { refused: `The pull request moved to ${detail.headSha.slice(0, 7)} since you reviewed ${headSha.slice(0, 7)}. Review the new commit first.` };
+  }
+  const pr = await prFacts(job.pr_url, job.repo as RepoName, detail.headSha, detail.baseRef, detail.mergeable);
+  const blockers = approvalBlockers(pr);
+  if (blockers.length > 0) return { blocked: blockers.join(" ") };
+  const policy = resolvePolicy(await readRepoSettings(db), job.repo);
+  const iso = new Date(now).toISOString();
+  const approved: MergeDecision = {
+    ...previous,
+    outcome: "merge",
+    reasons: [`Approved in the inbox by ${actor}.`],
+    autonomy: policy.autonomy,
+    evaluatedAt: iso,
+    headSha: detail.headSha,
+    headSeenAt: previous?.headSha === detail.headSha ? previous.headSeenAt : iso,
+    stageEventId: job.stage_event_id,
+    review: reviewSummary(pr),
+    approvedBy: actor,
+    blocked: undefined,
+    merging: undefined,
+  };
+  await db.insert(auditLog).values({
+    id: randomUUID(),
+    at: new Date(now),
+    actor,
+    action: "merge_requested",
+    job_id: job.id,
+    target: job.pr_url,
+    head_sha: detail.headSha,
+    detail: "Approved in the inbox",
+  });
+  const merged = await mergeNow(job, approved, now);
+  if (!merged) return { refused: "The pull request changed while it was merging. Review it again." };
+  await syncComments(job, merged);
+  if (merged.merged) return { merged: merged.merged.sha };
+  return { blocked: merged.reasons.join(" ") };
 }

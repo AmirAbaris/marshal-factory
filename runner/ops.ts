@@ -767,7 +767,7 @@ export async function stopJob(id: JobId, detail: string) {
  * message goes to whichever thread the job is bound to, once per thread: now if it is known,
  * or when a launch, its recovery or the thread's own session start records it.
  */
-async function finishStop(job: Job, reopen: boolean) {
+export async function finishStop(job: Job, reopen: boolean) {
   await deliverStops(job.id);
   await postEvent({
     eventId: job.stage_event_id,
