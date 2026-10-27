@@ -1,9 +1,16 @@
 import type { AgentRow, MachineRow, RunRow } from "@/db/schema";
 import { cn } from "@/lib/utils";
 import { STAGES } from "@/lib/events";
-import type { BoardCard } from "./cards";
+import { t3ThreadLink } from "@/lib/machine";
+import { t3EnvironmentId, type BoardCard } from "./cards";
 import { StageCard } from "./run-card";
 import { STAGE_META } from "./stages";
+
+/** A local thread whose stop couldn't be confirmed opens in its machine's T3; a sandbox's has no direct link. */
+function stopT3Href(card: BoardCard, machines: ReadonlyMap<string, MachineRow>) {
+  if (card.stop?.view.kind !== "unconfirmed" || !card.stop.thread || card.runsOn?.kind !== "local") return undefined;
+  return t3ThreadLink(card.stop.thread, t3EnvironmentId(machines.get(card.runsOn.machineId)));
+}
 
 export function Board({
   cards,
@@ -51,6 +58,7 @@ export function Board({
                   agents={agentsOf(card.runs)}
                   selected={card.runs.some((r) => r.session_id === selected)}
                   repoLabel={card.repo ? repoLabels?.get(card.repo) : undefined}
+                  t3Href={stopT3Href(card, machines)}
                 />
               ))}
             </div>

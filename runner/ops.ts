@@ -23,10 +23,12 @@ import { readRegistry, registerRepos, routeRepo, type Registry } from "../lib/re
 import { forbidInTest } from "../lib/test-mode";
 import { ensureAwake, HostGoneError, hosts, isHibernated, type JobHost } from "../lib/host";
 import { modalHost } from "../lib/modal-host";
-import { canReclaimSql, isStopped, PENDING, stopDeliverableSql } from "./binding";
+import { requestedStop } from "../lib/stop";
+import { canReclaimSql, heldStoppingSql, isStopped, PENDING, stopDeliverableSql, stoppingSql } from "./binding";
 import { config } from "./config";
 import { thisMachine } from "./heartbeat";
 import { leaseSlot, teardownSandbox } from "./lifecycle";
+import { confirmStops, stopDelivered } from "./stops";
 import { threads } from "./threads";
 import { claimReplies, qaBlock, resumeMessage } from "../lib/resume";
 
@@ -451,6 +453,8 @@ export async function writeBack() {
           or(await mine(), isNull(jobs.machine_id)),
           isNotNull(jobs.stage_event_id),
           or(isNull(jobs.synced_event_id), ne(jobs.synced_event_id, jobs.stage_event_id)),
+          // A stop is written back once it is confirmed or marked unconfirmed, not while it is on its way.
+          sql`not ${stoppingSql}`,
         ),
       ),
   );
@@ -523,7 +527,7 @@ export async function claim({
       .from(jobs)
       .where(
         or(
-          and(me, inArray(jobs.stage, IN_FLIGHT)),
+          and(me, or(inArray(jobs.stage, IN_FLIGHT), stoppingSql)),
           and(isNull(jobs.machine_id), eq(jobs.stage, "queued"), inArray(jobs.repo, targets)),
         ),
       );
@@ -576,6 +580,7 @@ export async function claim({
             resume_context: null,
             stop_sent_to: null,
             stop_event_id: null,
+            stop: null,
             answered_at: null,
             answer: null,
             merge_assessment: null,
@@ -739,7 +744,8 @@ export async function pullRequestsSettled() {
 /**
  * The source took the job away: the factory label came off, or the issue was canceled or
  * deleted. A run still in flight or waiting is told to stop and marked failed; the source already
- * says what the human wants, so nothing is written back.
+ * says what the human wants, so nothing is written back. The stop is recorded on the job and
+ * driven to a confirmed end by runner/stops.ts; the job keeps its capacity until then.
  */
 export async function stopJob(id: JobId, detail: string) {
   const { source, externalId } = parseJobId(id);
@@ -756,7 +762,7 @@ export async function stopJob(id: JobId, detail: string) {
     // Stopped already, perhaps by a retry whose side effects failed: finish them, they are idempotent.
     // A stopped job that merged since is done; only a stop still owed to its thread is left to send.
     if (isStopped(job)) {
-      if (job.stage === "failed") return finishStop(job, reopen);
+      if (job.stage === "failed") return finishStop(job);
       await deliverStops(job.id);
       return "stopped";
     }
@@ -766,11 +772,21 @@ export async function stopJob(id: JobId, detail: string) {
     const now = new Date();
     const [stopped] = await db
       .update(jobs)
-      .set({ stage: "failed", stage_at: now, stage_summary: `Stopped: ${detail}.`, question: null, stage_event_id: eventId, synced_event_id: eventId, stop_event_id: eventId, updated_at: now })
+      .set({
+        stage: "failed",
+        stage_at: now,
+        stage_summary: `Stopped: ${detail}.`,
+        question: null,
+        stage_event_id: eventId,
+        synced_event_id: eventId,
+        stop_event_id: eventId,
+        stop: requestedStop({ at: now, by: SOURCE_SHAPES[job.source].label, reason: detail, reopen }),
+        updated_at: now,
+      })
       .where(and(eq(jobs.id, id), eq(jobs.stage, job.stage), sql`${jobs.stage_event_id} is not distinct from ${job.stage_event_id}`))
       .returning();
     if (!stopped) continue;
-    return finishStop(parseJob(stopped), reopen);
+    return finishStop(parseJob(stopped));
   }
   throw new Error("the stage kept changing; the stop is retried");
 }
@@ -778,9 +794,11 @@ export async function stopJob(id: JobId, detail: string) {
 /**
  * The stop is recorded on the job, so it survives whatever happens to the thread binding. The
  * message goes to whichever thread the job is bound to, once per thread: now if it is known,
- * or when a launch, its recovery or the thread's own session start records it.
+ * or when a launch, its recovery or the thread's own session start records it. A first look at
+ * the thread follows at once, so a job that never had one settles now; the source is reopened
+ * when the stop settles (runner/stops.ts).
  */
-export async function finishStop(job: Job, reopen: boolean) {
+export async function finishStop(job: Job) {
   await deliverStops(job.id);
   await postEvent({
     eventId: job.stage_event_id,
@@ -791,8 +809,7 @@ export async function finishStop(job: Job, reopen: boolean) {
     summary: job.stage_summary,
     jobKey: job.key,
   });
-  // Back to the not-started state, so adding the label again retries it as a new attempt, as for any failure.
-  if (reopen) await sourceFor(job.source).reopen(job);
+  await confirmStops({ only: [job.id] });
   return "stopped";
 }
 
@@ -840,7 +857,7 @@ export async function claimLaunch(
         isNull(jobs.session_id),
         isNull(jobs.machine_id),
         inArray(jobs.repo, [...machine.repos]),
-        sql`(select count(*) from jobs held where held.machine_id = ${machine.id} and held.stage in (${working})) < ${machine.maxInFlight}`,
+        sql`(select count(*) from jobs held where held.machine_id = ${machine.id} and (held.stage in (${working}) or ${heldStoppingSql})) < ${machine.maxInFlight}`,
       ),
     )
     .returning({ key: jobs.key });
@@ -878,7 +895,7 @@ export async function sandboxesInFlight(machineId: string) {
   const [{ count }] = await db
     .select({ count: sql<number>`count(*)::int` })
     .from(jobs)
-    .where(and(eq(jobs.machine_id, machineId), isNotNull(jobs.codex_slot), inArray(jobs.stage, IN_FLIGHT)));
+    .where(and(eq(jobs.machine_id, machineId), isNotNull(jobs.codex_slot), or(inArray(jobs.stage, IN_FLIGHT), stoppingSql)));
   return count;
 }
 
@@ -886,7 +903,7 @@ export async function machineInFlight(machineId: string) {
   const [{ count }] = await db
     .select({ count: sql<number>`count(*)::int` })
     .from(jobs)
-    .where(and(eq(jobs.machine_id, machineId), inArray(jobs.stage, IN_FLIGHT)));
+    .where(and(eq(jobs.machine_id, machineId), or(inArray(jobs.stage, IN_FLIGHT), stoppingSql)));
   return count;
 }
 
@@ -907,7 +924,11 @@ export async function pendingLaunches() {
 }
 
 
-/** Sends the stop message to every stopped job's thread that has not had it; claimed per thread. */
+/**
+ * Sends the stop message to every stopped job's thread that has not had it; claimed per thread.
+ * T3 queues it behind a busy thread's turn, so it only asks: runner/stops.ts confirms the work
+ * ended and interrupts what does not.
+ */
 export async function deliverStops(id?: JobId) {
   const due = await db
     .select()
@@ -924,6 +945,7 @@ export async function deliverStops(id?: JobId) {
     if (!claimed) continue;
     // A hibernated thread settled before its sandbox was snapshotted, and teardown discards it: nothing to stop.
     if (isHibernated(job)) {
+      await stopDelivered(job.id, threadId);
       delivered.push(job.key);
       continue;
     }
@@ -943,6 +965,7 @@ export async function deliverStops(id?: JobId) {
         .where(and(eq(jobs.id, job.id), eq(jobs.stop_sent_to, threadId)));
       throw error;
     }
+    await stopDelivered(job.id, threadId);
     delivered.push(job.key);
   }
   return delivered;

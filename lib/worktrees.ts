@@ -6,6 +6,7 @@ import { attemptBranch, jobKeyFromBranch } from "./factory";
 import type { RepoName } from "./github/app";
 import { github } from "./github/pulls";
 import { localHost, type JobHost } from "./host";
+import { listThreads, showThread } from "./t3-client";
 
 type ClaimedJob = Pick<JobRow, "key" | "attempt" | "stage" | "stage_at" | "claimed_at">;
 
@@ -18,7 +19,7 @@ type Thread = { threadId: string; branch: string | null; archived: boolean; runn
 async function projectThreads(repo: string, host: JobHost): Promise<Thread[]> {
   const list = z
     .array(z.object({ threadId: z.string() }))
-    .parse(JSON.parse(await sh(host, host.t3, ["thread", "list", "--project", repo, "--json"])));
+    .parse(await listThreads(host, repo, { timeoutMs: 60_000, maxBuffer: 16 * 1024 * 1024 }));
   return Promise.all(
     list.map(async ({ threadId }) => {
       const { thread } = z
@@ -30,7 +31,7 @@ async function projectThreads(repo: string, host: JobHost): Promise<Thread[]> {
             worktreePath: z.string().nullable(),
           }),
         })
-        .parse(JSON.parse(await sh(host, host.t3, ["thread", "show", threadId, "--json"])));
+        .parse(await showThread(host, threadId, { timeoutMs: 60_000, maxBuffer: 16 * 1024 * 1024 }));
       return { threadId, branch: thread.branch, archived: thread.archived, running: thread.activeRunId !== null, worktreePath: thread.worktreePath };
     }),
   );

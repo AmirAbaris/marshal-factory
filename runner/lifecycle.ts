@@ -9,8 +9,9 @@ import { modalSecretName, parseDetail } from "../lib/onboarding";
 import { CODEX_AUTH, T3_PORT } from "../lib/sandbox";
 import { readSettings, resolveExecution } from "../lib/settings";
 import type { JobId } from "../lib/sources/shapes";
+import { parseStop } from "../lib/stop";
 import { HIBERNATED_MESSAGE, type PairingResult } from "../lib/t3-pairing";
-import { bindingOf, PENDING, stopOwed } from "./binding";
+import { bindingOf, PENDING, stopOwed, stopping } from "./binding";
 import { config } from "./config";
 import { thisMachine } from "./heartbeat";
 import { flushSandboxOutbox } from "./outbox";
@@ -170,20 +171,43 @@ export async function loginFailed(key: string, slot: string) {
   log("sandbox:login-failed", { key, slot });
 }
 
-type SandboxRow = Pick<JobRow, "key" | "sandbox_id" | "sandbox_snapshot" | "codex_slot" | "t3_thread_id" | "stage" | "stop_event_id" | "stop_sent_to">;
+type SandboxRow = Pick<JobRow, "key" | "sandbox_id" | "sandbox_snapshot" | "codex_slot" | "t3_thread_id" | "stage" | "stop_event_id" | "stop_sent_to"> &
+  Partial<Pick<JobRow, "stop">>;
+
+/** Throws unless Modal no longer runs anything in the sandbox: a command there must find it gone. */
+async function verifyGone(sandboxId: string) {
+  try {
+    await modalHost(sandboxId).exists("/");
+  } catch (error) {
+    if (error instanceof HostGoneError) return;
+    throw error;
+  }
+  throw new Error(`sandbox ${sandboxId} still answers after it was terminated`);
+}
 
 /**
  * Ends everything the job's sandbox holds: the running sandbox, its snapshot and its slot. A stop
- * still owed to the thread is settled too, since the thread ended with the sandbox. Idempotent.
+ * still owed to the thread is settled too, since the thread ended with the sandbox. A stop on its
+ * way records the termination once Modal no longer answers for the sandbox; runner/stops.ts then
+ * confirms it. Idempotent.
  */
 export async function teardownSandbox(row: SandboxRow) {
   if (!row.sandbox_id && !row.sandbox_snapshot && !row.codex_slot) return;
   if (row.sandbox_id) await retireSandbox(row.key, row.sandbox_id, row.codex_slot);
+  const stop = stopping(row) ? parseStop(row.stop) : null;
+  if (row.sandbox_id && stop) await verifyGone(row.sandbox_id);
   if (row.sandbox_snapshot) await deleteSnapshot(row.sandbox_snapshot);
   const threadEnded = stopOwed(row) && bindingOf(row.t3_thread_id) === "bound";
+  const ended = row.sandbox_id ? `Ended sandbox ${row.sandbox_id}; Modal no longer runs it.` : "The sandbox was already hibernated; its snapshot is deleted.";
   await db
     .update(jobs)
-    .set({ sandbox_id: null, sandbox_snapshot: null, codex_slot: null, ...(threadEnded && { stop_sent_to: row.t3_thread_id }) })
+    .set({
+      sandbox_id: null,
+      sandbox_snapshot: null,
+      codex_slot: null,
+      ...(threadEnded && { stop_sent_to: row.t3_thread_id }),
+      ...(stop && { stop: { ...stop, how: "terminate" as const, step: ended } }),
+    })
     .where(
       and(
         eq(jobs.key, row.key),

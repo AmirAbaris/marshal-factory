@@ -13,6 +13,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import type { JobRow } from "@/db/schema";
 import { ASSESSMENT_CHECKS, assessmentSchema, CHECK_LABELS } from "@/lib/assessment";
 import { INBOX_LABELS, inboxItems, inboxReason, type InboxItem, type InboxKind } from "@/lib/inbox";
+import { stopLine, stopView } from "@/lib/stop";
 import { AUTONOMY_LABELS, type ReviewSummary } from "@/lib/merge-decision";
 import { sourceLink } from "@/lib/sources/shapes";
 import { cn } from "@/lib/utils";
@@ -27,6 +28,7 @@ const KIND_DOT: Record<InboxKind, string> = {
   revert_failed: "bg-destructive",
   handover: "bg-primary",
   failed: "bg-destructive",
+  stop_unconfirmed: "bg-warning",
 };
 
 const itemHref = (key: string) => `/inbox?job=${encodeURIComponent(key)}`;
@@ -90,8 +92,28 @@ function Why({ item }: { item: Item }) {
   switch (kind) {
     case "question":
       return <p className="whitespace-pre-wrap">{job.question ?? job.stage_summary}</p>;
-    case "failed":
-      return <p className="whitespace-pre-wrap">{job.stage_summary ?? "The job failed without a summary."}</p>;
+    case "failed": {
+      const stop = stopView(job.stop, job.execution === "modal");
+      return (
+        <div className="flex flex-col gap-1">
+          <p className="whitespace-pre-wrap">{job.stage_summary ?? "The job failed without a summary."}</p>
+          {stop?.kind === "stopping" && <p className="text-xs text-muted-foreground">{stopLine(stop)}</p>}
+        </div>
+      );
+    }
+    case "stop_unconfirmed":
+      return (
+        <Alert variant="warning">
+          <AlertTitle>Stop not confirmed — check the thread in T3</AlertTitle>
+          <AlertDescription className="flex flex-col gap-1">
+            <span>{inboxReason(item)}</span>
+            <span>
+              Open the run, then Open in T3, and stop the thread there if it still works; then dismiss this. Retry stop asks T3 to interrupt it again. The label
+              can&apos;t retry the job until this is dismissed.
+            </span>
+          </AlertDescription>
+        </Alert>
+      );
     case "revert_failed": {
       const watch = decision?.watch;
       return (

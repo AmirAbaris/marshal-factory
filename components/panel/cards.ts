@@ -1,10 +1,12 @@
-import type { JobRow, RunRow } from "@/db/schema";
+import type { JobRow, MachineRow, RunRow } from "@/db/schema";
 import type { Stage } from "@/lib/events";
 import { sandboxState, type SandboxState } from "@/lib/execution";
 import { attemptBranch, isMcpSession } from "@/lib/factory";
 import { harnessLabel, isTracked, type Harness, type Tracking } from "@/lib/harness";
+import { parseInventory, UNKNOWN } from "@/lib/machine";
 import { mergeDecisionSchema, type MergeDecision } from "@/lib/merge-decision";
 import { sourceLink } from "@/lib/sources/shapes";
+import { parseStop, stopView, type StopView } from "@/lib/stop";
 import { groupBy } from "./format";
 
 /** One board card: a claimed job, or a staged run whose job the factory never claimed. */
@@ -36,9 +38,17 @@ export type BoardCard = {
   runsOn: RunsOn | null;
   /** The runner's merge decision while the job is in pr, or once the factory merged it. */
   mergeDecision: MergeDecision | null;
+  /** Where the attempt's stop is, and the thread it went to; null for a job never stopped. */
+  stop: { view: StopView; thread: string | null } | null;
   /** The newest change to the job or any of its runs. */
   updatedAt: Date;
 };
+
+/** The T3 environment a machine's inventory names, for links into its T3; null when unknown. */
+export function t3EnvironmentId(machine: Pick<MachineRow, "inventory"> | undefined) {
+  const t3 = machine && parseInventory(machine.inventory)?.t3;
+  return t3 && t3 !== UNKNOWN ? t3.environmentId : null;
+}
 
 /** What the card can show of the harness's run: Codex jobs whose report server posted have stages but no cost. */
 export type CardHarness = { name: string; tracking: Tracking };
@@ -91,6 +101,11 @@ export function shownDecision(job: Pick<JobRow, "stage" | "merge_decision">): Me
 
 const stagedAt = (run: RunRow) => run.stage_at?.getTime() ?? 0;
 
+function cardStop(job: JobRow): BoardCard["stop"] {
+  const view = stopView(job.stop, runsOn(job)?.kind === "modal");
+  return view && { view, thread: parseStop(job.stop)?.thread ?? job.t3_thread_id };
+}
+
 /** `harnesses` are the ones the machines report, so a renamed Claude Code instance keeps its name and stays tracked. */
 export function boardCards(jobs: readonly JobRow[], runs: readonly RunRow[], harnesses: readonly Harness[] = []): BoardCard[] {
   const harnessOf = (provider: string, attemptRuns: readonly RunRow[]): CardHarness => {
@@ -130,6 +145,7 @@ export function boardCards(jobs: readonly JobRow[], runs: readonly RunRow[], har
       harness: job.provider ? harnessOf(job.provider, attemptRuns) : null,
       runsOn: runsOn(job),
       mergeDecision: shownDecision(job),
+      stop: cardStop(job),
       updatedAt: new Date(Math.max(job.updated_at.getTime(), ...jobRuns.map((r) => r.last_event_at.getTime()))),
     };
   });
@@ -164,6 +180,7 @@ export function boardCards(jobs: readonly JobRow[], runs: readonly RunRow[], har
         harness: null,
         runsOn: null,
         mergeDecision: null,
+        stop: null,
         updatedAt: new Date(Math.max(...sorted.map((r) => r.last_event_at.getTime()))),
       };
     },

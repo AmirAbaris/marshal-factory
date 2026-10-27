@@ -90,6 +90,19 @@ export const factorySchema = z
     webhooks: z.record(z.string(), z.union([z.string(), z.number()])).default({}),
     /** Whether the runner creates missing Harness and Runs on label groups in the team, about once a day. */
     syncLinearLabels: z.boolean().default(false),
+    /** How a stop is confirmed; see lib/stop.ts. The runner looks on its tick, so each wait rounds up to tickSeconds. */
+    stop: z
+      .object({
+        /** The least time between two looks at a stopping thread. */
+        checkSeconds: z.number().positive().default(15),
+        /** How long the thread and its subagents must show no active run before the stop counts as confirmed. */
+        settleSeconds: z.number().nonnegative().default(30),
+        /** How long after the stop message the runner asks T3 to interrupt what still runs. */
+        interruptAfterSeconds: z.number().nonnegative().default(60),
+        /** How long after the stop message a stop that still isn't confirmed is marked unconfirmed for the owner. */
+        giveUpAfterMinutes: z.number().positive().default(5),
+      })
+      .prefault({}),
     sandbox: sandboxSchema,
   })
   .prefault({});

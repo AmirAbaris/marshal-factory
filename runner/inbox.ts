@@ -8,6 +8,7 @@ import { changesMessage, type CloseDetail, type FeedbackDetail, type ReviewComme
 import { parseJob } from "../lib/sources";
 import type { Job, JobId } from "../lib/sources/types";
 import { canTransition, runnerEventId } from "../lib/stages";
+import { requestedStop } from "../lib/stop";
 import { finishStop, IN_FLIGHT, postEvent, threads } from "./ops";
 
 // The inbox's actions on the job's own machine. Requested changes reach the thread once per
@@ -142,7 +143,8 @@ export type CloseResult = { closed: string; pr: "closed" | "already closed" | "n
 
 /**
  * Closes the job's PR if it is open and fails the job with the owner's reason, telling its thread
- * to stop. The failure is written back to the source like any other, and the inbox leaves it out.
+ * to stop. The failure is written back to the source like any other once the stop settles, and
+ * the inbox leaves it out unless the stop can't be confirmed.
  */
 export async function closeJob(id: JobId, { actor, reason }: CloseDetail, now = new Date()): Promise<CloseResult> {
   for (let tries = 0; tries < 3; tries++) {
@@ -164,11 +166,21 @@ export async function closeJob(id: JobId, { actor, reason }: CloseDetail, now = 
     const summary = `Closed in the inbox by ${actor}${reason.trim() ? `: ${reason.trim()}` : ""}.`;
     const [stopped] = await db
       .update(jobs)
-      .set({ stage: "failed", stage_at: now, stage_summary: summary, question: null, stage_event_id: eventId, stop_event_id: eventId, dismissed_at: now, updated_at: now })
+      .set({
+        stage: "failed",
+        stage_at: now,
+        stage_summary: summary,
+        question: null,
+        stage_event_id: eventId,
+        stop_event_id: eventId,
+        stop: requestedStop({ at: now, by: actor, reason: summary, reopen: false }),
+        dismissed_at: now,
+        updated_at: now,
+      })
       .where(and(eq(jobs.id, id), eq(jobs.stage, job.stage), sql`${jobs.stage_event_id} is not distinct from ${job.stage_event_id}`))
       .returning();
     if (!stopped) continue;
-    await finishStop(parseJob(stopped), false);
+    await finishStop(parseJob(stopped));
     return { closed: job.key, pr };
   }
   throw new Error("the stage kept changing; the close is retried");

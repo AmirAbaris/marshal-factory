@@ -49,7 +49,8 @@ const NOT_OFFERED: Record<InboxAction, string> = {
   request_changes: "The job is no longer waiting on your review.",
   follow_up: "Only a merge whose revert failed takes a follow-up.",
   close: "The job is no longer waiting on you.",
-  dismiss: "Only a failed job can be dismissed.",
+  dismiss: "Only a failed job or a stop that couldn't be confirmed can be dismissed.",
+  retry_stop: "The stop is no longer waiting on you.",
 };
 
 async function ownerJob(deps: InboxDeps, jobId: JobId, action: InboxAction) {
@@ -197,7 +198,18 @@ export async function closeJob(deps: InboxDeps, jobId: JobId, requestId: string,
   return record(deps, found.job, "close_job", requestId, { actor: found.actor, reason: reason.trim() } satisfies CloseDetail);
 }
 
-/** Hides a failed job from the inbox and changes nothing else; a later failure shows again. */
+/** Asks the job's runner to interrupt the stopped job's threads again and wait for them to settle. */
+export async function retryStop(deps: InboxDeps, jobId: JobId, requestId: string): Promise<InboxOutcome> {
+  if (badRequest(requestId)) return { ok: false, message: "The request is not valid." };
+  const found = await ownerJob(deps, jobId, "retry_stop");
+  if (!found.ok) return found;
+  return record(deps, found.job, "retry_stop", requestId, { actor: found.actor });
+}
+
+/**
+ * Hides a failed job, or an unconfirmed stop the owner checked in T3, from the inbox and changes
+ * nothing else; a later failure shows again. Dismissing an unconfirmed stop also lets the label retry the job.
+ */
 export async function dismissJob(deps: InboxDeps, jobId: JobId): Promise<InboxOutcome> {
   const found = await ownerJob(deps, jobId, "dismiss");
   if (!found.ok) return found;
@@ -207,13 +219,14 @@ export async function dismissJob(deps: InboxDeps, jobId: JobId): Promise<InboxOu
 
 export type IntentOutcome = { status: "pending" } | { status: "done"; message: string } | { status: "failed"; message: string };
 
-const INBOX_INTENTS = ["approve_merge", "request_changes", "close_job", "answer"] as const satisfies readonly IntentKind[];
+const INBOX_INTENTS = ["approve_merge", "request_changes", "close_job", "answer", "retry_stop"] as const satisfies readonly IntentKind[];
 
 const resultSchema = z.object({
   error: z.string().optional(),
   approval: z.union([z.object({ merged: z.string() }), z.object({ blocked: z.string() }), z.object({ refused: z.string() })]).optional(),
   changes: z.union([z.object({ sent: z.string(), moved: z.boolean() }), z.object({ skipped: z.string() }), z.object({ refused: z.string() })]).optional(),
   close: z.union([z.object({ closed: z.string(), pr: z.string() }), z.object({ refused: z.string() })]).optional(),
+  retry: z.union([z.object({ retried: z.string() }), z.object({ refused: z.string() })]).optional(),
 });
 
 /** What the runner made of an intent: the result it stored, said for the owner. */
@@ -241,6 +254,11 @@ export function describeOutcome(kind: (typeof INBOX_INTENTS)[number], raw: strin
     }
     case "answer":
       return { status: "done", message: "Answer sent. The job resumes." };
+    case "retry_stop": {
+      const r = result.retry;
+      if (!r) break;
+      return "retried" in r ? { status: "done", message: "Interrupting the agent again; the job says when it stopped." } : { status: "failed", message: r.refused };
+    }
     default: {
       const never: never = kind;
       throw new Error(`unknown inbox intent ${String(never)}`);

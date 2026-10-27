@@ -19,6 +19,7 @@ import { DEFAULT_EXECUTION, type Execution } from "../lib/execution";
 import type { Autonomy, MergeDecision } from "../lib/merge-decision";
 import { ONBOARDING_STATES, type OnboardingDetail } from "../lib/onboarding";
 import { JOB_SOURCES, type JobId } from "../lib/sources/shapes";
+import type { StopRecord } from "../lib/stop";
 import type { TicketRecord } from "../lib/ticket-overrides";
 
 // Keys equal column names: the Neon Realtime Drizzle adapter requires it.
@@ -146,6 +147,8 @@ export const jobs = pgTable(
     stop_sent_to: text("stop_sent_to"),
     /** The stop recorded for this attempt. A later stage, such as a merge, leaves it, so an owed stop is still sent. */
     stop_event_id: text("stop_event_id"),
+    /** Where the attempt's stop is on its way to a verified end; see lib/stop.ts. Null for a job never stopped. */
+    stop: jsonb("stop").$type<StopRecord>(),
     /** The PR head the factory last sent back to its thread because it conflicted with main. */
     conflict_head: text("conflict_head"),
     t3_thread_id: text("t3_thread_id"),
@@ -204,6 +207,7 @@ export const intentKind = pgEnum("intent_kind", [
   "onboard_repo",
   "rebuild_repo_image",
   "repo_push",
+  "retry_stop",
 ]);
 
 /**
