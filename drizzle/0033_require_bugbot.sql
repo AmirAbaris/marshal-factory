@@ -1,0 +1,1 @@
+ALTER TABLE "repo_settings" ADD COLUMN "require_bugbot" boolean DEFAULT true NOT NULL;

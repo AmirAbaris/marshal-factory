@@ -125,6 +125,7 @@ async function watchOne(job: Job, decision: MergeDecision & { merged: FactoryMer
     case "success":
       return endWatch(job, decision, { ...watch, state: "green" }, "Main stayed green after the factory's merge", now);
     case "pending":
+    case "none":
       if (now < Date.parse(watch.until)) return null;
       return endWatch(job, decision, { ...watch, state: "expired" }, `Main's checks didn't finish within ${config.factory.postMergeWatchMinutes} minutes of the merge; stopped watching`, now);
     case "failure": {

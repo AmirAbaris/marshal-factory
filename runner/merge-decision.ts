@@ -46,11 +46,12 @@ import { runnerVerification, startVerification } from "./verify";
 
 export const RECHECK_MS = 15 * 60_000;
 
-async function prFacts(prUrl: string, repo: RepoName, headSha: string, baseRef: string, mergeable: PrFacts["mergeable"]): Promise<PrFacts> {
+/** `seenAt` is when the factory first saw this head, so a repo without CI is told from CI that hasn't started. */
+async function prFacts(prUrl: string, repo: RepoName, headSha: string, baseRef: string, mergeable: PrFacts["mergeable"], seenAt?: number): Promise<PrFacts> {
   const [behindBy, files, state, findings] = await Promise.all([
     github.behindBy(repo, baseRef, headSha),
     github.pullFiles(prUrl),
-    github.checkState(repo, headSha),
+    github.checkState(repo, headSha, { baseRef, seenAt, graceMs: config.factory.noCiGraceMinutes * 60_000 }),
     github.bugbotFindings(prUrl),
   ]);
   return { headSha, mergeable, behindBy, files, checks: state.checks, bugbot: { review: state.bugbot, findings } };
@@ -93,13 +94,13 @@ async function evaluate(job: Job, policy: RepoPolicy, previous: MergeDecision | 
   const runner = runnerVerification(job, detail.headSha, policy, previous, now);
 
   const branch = attemptBranch(job.key, job.attempt);
+  const headSeenAt = sameHead && previous.headSeenAt ? Date.parse(previous.headSeenAt) : now;
   const [pr, labels, costs] = await Promise.all([
-    prFacts(job.pr_url!, job.repo as RepoName, detail.headSha, detail.baseRef, detail.mergeable),
+    prFacts(job.pr_url!, job.repo as RepoName, detail.headSha, detail.baseRef, detail.mergeable, headSeenAt),
     sourceFor(job.source).labels(job),
     branchCosts(db, [branch], config.factory.pricing),
   ]);
   const cost = costs[branch] ?? { usd: 0, known: false };
-  const headSeenAt = sameHead && previous.headSeenAt ? Date.parse(previous.headSeenAt) : now;
   const decision = decideMerge({
     policy,
     costKnown: cost.known,
@@ -216,7 +217,8 @@ export async function approveMerge(id: JobId, { actor, headSha, via }: ApproveDe
   if (headSha && detail.headSha !== headSha) {
     return stop("head_moved", headSha, { refused: `The pull request moved to ${detail.headSha.slice(0, 7)} since you reviewed ${headSha.slice(0, 7)}. Review the new commit first.` });
   }
-  const pr = await prFacts(job.pr_url, job.repo as RepoName, detail.headSha, detail.baseRef, detail.mergeable);
+  const seenAt = previous?.headSha === detail.headSha && previous.headSeenAt ? Date.parse(previous.headSeenAt) : undefined;
+  const pr = await prFacts(job.pr_url, job.repo as RepoName, detail.headSha, detail.baseRef, detail.mergeable, seenAt);
   const blockers = approvalBlockers(pr);
   if (blockers.length > 0) return stop("not_mergeable", detail.headSha, { blocked: blockers.join(" ") });
   const policy = resolvePolicy(await readRepoSettings(db), job.repo);

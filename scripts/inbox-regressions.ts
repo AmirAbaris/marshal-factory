@@ -102,6 +102,7 @@ assert.deepEqual(approvalBlockers({ checks: "failure", mergeable: "conflicting",
   "The branch is 2 commits behind its base.",
 ]);
 assert.deepEqual(approvalBlockers({ checks: "pending", mergeable: "unknown", behindBy: 0 }).length, 2, "running checks and unknown mergeability are facts too");
+assert.deepEqual(approvalBlockers({ checks: "none", mergeable: "mergeable", behindBy: 0 }), [], "a repo without CI has no checks to wait for");
 assert.deepEqual(
   reviewSummary({
     headSha: "h1",
@@ -186,10 +187,14 @@ const server = await serve(0, async (request) => {
   }
   if ((m = /\/commits\/([^/]+)\/(check-runs|status)$/.exec(path))) {
     const p = [...pulls.values()].find((x) => x.head === m![1]);
-    const runs = [{ name: "ci", status: "completed", conclusion: p?.checks ?? "success" }, { name: "Cursor Bugbot", status: "completed", conclusion: "neutral" }];
+    const runs = p?.checks === "none" ? [] : [{ name: "ci", status: "completed", conclusion: p?.checks ?? "success" }, { name: "Cursor Bugbot", status: "completed", conclusion: "neutral" }];
     if (m[2] === "check-runs") return Response.json({ total_count: runs.length, check_runs: runs });
     return Response.json({ state: "success", total_count: 0, statuses: [] });
   }
+  // A repo without CI: its commits are old, and the App may read neither branch protection nor rulesets.
+  if (/^\/repos\/[^/]+\/[^/]+\/git\/commits\/[^/]+$/.test(path)) return Response.json({ committer: { date: "2026-01-01T00:00:00Z" } });
+  if (/^\/repos\/[^/]+\/[^/]+\/branches\/main$/.test(path)) return Response.json({ message: "Resource not accessible by integration" }, { status: 403 });
+  if (/^\/repos\/[^/]+\/[^/]+\/rules\/branches\/main$/.test(path)) return Response.json({ message: "Not Found" }, { status: 404 });
   if (path === "/graphql") {
     const finding = { isResolved: false, comments: { nodes: [{ author: { login: "cursor" }, body: "**High Severity** bug" }] } };
     return Response.json({ data: { repository: { pullRequest: { reviewThreads: { nodes: [finding] } } } } });
@@ -326,6 +331,9 @@ try {
   assert.equal(putsTo(1).length, 1, "and never merges twice");
   await db.update(intents).set({ handled_at: new Date(), result: JSON.stringify({ approval: approved }) }).where(eq(intents.id, approveIntent!.id));
   assert.deepEqual(await inbox.intentOutcome(deps(), approveIntent!.id), { status: "done", message: "Merged as merge-1. The factory now watches main." });
+
+  const NOCI = await job("NOCI", {}, { number: 41, checks: "none" });
+  assert.deepEqual(await approveMerge((await row(NOCI)).id, { actor: OWNER, headSha: "h41", via: "run_detail" }), { merged: "merge-41" }, "a repo without CI merges on the owner's approval");
 
   const RED = await job("RED", {}, { number: 2, checks: "failure", behind: 3 });
   assert.deepEqual(await approveMerge((await row(RED)).id, { actor: OWNER, headSha: null, via: "inbox" }), {

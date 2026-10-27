@@ -71,6 +71,7 @@ export function resolvePolicy(rows: readonly RepoSettingsRow[], repo: string): R
     autonomy: autonomySchema.catch("off").parse(row.autonomy),
     protectedPaths: row.protected_paths ?? DEFAULT_POLICY.protectedPaths,
     maxChangedLines: row.max_changed_lines ?? DEFAULT_POLICY.maxChangedLines,
+    requireBugbot: row.require_bugbot,
   };
 }
 

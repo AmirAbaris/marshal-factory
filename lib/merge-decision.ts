@@ -27,10 +27,13 @@ export const DEFAULT_PROTECTED_PATHS = [
 ];
 export const DEFAULT_MAX_CHANGED_LINES = 300;
 export const CHECKS_TIMEOUT_MS = 60 * 60_000;
+/** How long a head with no check run and no status may wait for CI to start before it counts as having none. */
+export const DEFAULT_NO_CI_GRACE_MS = 5 * 60_000;
 export const REVIEW_LABEL = "review";
 
-export type RepoPolicy = { autonomy: Autonomy; protectedPaths: readonly string[]; maxChangedLines: number };
-export const DEFAULT_POLICY: RepoPolicy = { autonomy: "off", protectedPaths: DEFAULT_PROTECTED_PATHS, maxChangedLines: DEFAULT_MAX_CHANGED_LINES };
+/** `requireBugbot` false means the repo has no Bugbot: its review is neither awaited nor read. */
+export type RepoPolicy = { autonomy: Autonomy; protectedPaths: readonly string[]; maxChangedLines: number; requireBugbot: boolean };
+export const DEFAULT_POLICY: RepoPolicy = { autonomy: "off", protectedPaths: DEFAULT_PROTECTED_PATHS, maxChangedLines: DEFAULT_MAX_CHANGED_LINES, requireBugbot: true };
 
 export const MERGE_OUTCOMES = ["merge", "handover", "pending"] as const;
 export type MergeOutcome = (typeof MERGE_OUTCOMES)[number];
@@ -133,7 +136,8 @@ export const mergeDecisionSchema = z.object({
 });
 export type MergeDecision = z.infer<typeof mergeDecisionSchema>;
 
-export type CheckState = "success" | "pending" | "failure";
+/** `none`: no check run or status reported on the head past the grace period, and the base branch requires none. */
+export type CheckState = "success" | "pending" | "failure" | "none";
 export type BugbotFinding = { severity: "high" | "medium" | "low"; resolved: boolean };
 /** Bugbot's run on the head: still running (or not started), reviewed, or ended without a review. */
 export type BugbotReview = { state: "pending" } | { state: "reviewed" } | { state: "failed"; conclusion: string };
@@ -144,7 +148,7 @@ export type PrFacts = {
   headSha: string;
   mergeable: "mergeable" | "conflicting" | "unknown";
   behindBy: number;
-  /** Every check run and commit status on the head, Bugbot's aside; pending also when none reported yet. */
+  /** Every check run and commit status on the head, Bugbot's aside; pending also when none reported yet, none once the repo has no CI. */
   checks: CheckState;
   bugbot: { review: BugbotReview; findings: readonly BugbotFinding[] };
   files: readonly ChangedFile[];
@@ -207,9 +211,11 @@ function hardLimits(input: DecisionInput, pr: PrFacts) {
   if (pr.checks === "failure") reasons.push("A check failed on the latest commit.");
   if (pr.mergeable === "conflicting") reasons.push("The pull request conflicts with its base branch.");
   if (pr.behindBy > 0) reasons.push(`The branch is ${pr.behindBy} commit${pr.behindBy === 1 ? "" : "s"} behind its base.`);
-  if (pr.bugbot.review.state === "failed") reasons.push(`Bugbot didn't complete its review (${pr.bugbot.review.conclusion}).`);
-  const open = pr.bugbot.findings.filter((f) => !f.resolved && f.severity !== "low");
-  if (open.length > 0) reasons.push(`Bugbot has ${open.length} unresolved medium or high finding${open.length === 1 ? "" : "s"}.`);
+  if (input.policy.requireBugbot) {
+    if (pr.bugbot.review.state === "failed") reasons.push(`Bugbot didn't complete its review (${pr.bugbot.review.conclusion}).`);
+    const open = pr.bugbot.findings.filter((f) => !f.resolved && f.severity !== "low");
+    if (open.length > 0) reasons.push(`Bugbot has ${open.length} unresolved medium or high finding${open.length === 1 ? "" : "s"}.`);
+  }
   const touched = pr.files.flatMap((f) => [f.path, ...(f.previousPath ? [f.previousPath] : [])]);
   const protectedHits = [...new Set(touched.filter((p) => matchesAny(p, input.policy.protectedPaths)))];
   if (protectedHits.length > 0) reasons.push(`It touches protected paths: ${protectedHits.slice(0, 5).join(", ")}${protectedHits.length > 5 ? ", …" : ""}.`);
@@ -270,7 +276,7 @@ const verificationWait = (pr: PrFacts) => `verification at ${shortSha(pr.headSha
 function waitingOn(input: DecisionInput, pr: PrFacts) {
   const waiting: string[] = [];
   if (pr.checks === "pending") waiting.push("checks");
-  if (pr.bugbot.review.state === "pending") waiting.push("Bugbot");
+  if (input.policy.requireBugbot && pr.bugbot.review.state === "pending") waiting.push("Bugbot");
   if (pr.mergeable === "unknown") waiting.push("GitHub's mergeability check");
   if (evidenceReasons(input, pr).length === 0 && input.evidence.state !== "verified") waiting.push(verificationWait(pr));
   return waiting;
@@ -293,8 +299,11 @@ export function decideMerge(input: DecisionInput): Decision {
     }
     return { outcome: "handover", reasons: [`${waiting.join(", ")} didn't finish within ${minutes(timeout)} minutes.`.replace(/^./, (c) => c.toUpperCase())] };
   }
-  return { outcome: "merge", reasons: [] };
+  return { outcome: "merge", reasons: input.pr.checks === "none" ? [noCiReason(input.pr.headSha)] : [] };
 }
+
+/** Said on a merge where the factory's evidence at the head stood in for CI. */
+export const noCiReason = (headSha: string) => `No CI on this repo; relying on the factory's own checks at ${shortSha(headSha)}.`;
 
 export function reviewSummary(pr: Pick<PrFacts, "headSha" | "files" | "bugbot">): ReviewSummary {
   const open = pr.bugbot.findings.filter((f) => !f.resolved);

@@ -293,7 +293,7 @@ export async function inboxReview(deps: ReviewDeps, jobId: JobId): Promise<Revie
   const detail = await deps.pulls.pullDetail(job.pr_url);
   const [files, state, findings] = await Promise.all([
     deps.pulls.pullFiles(job.pr_url),
-    deps.pulls.checkState(job.repo as RepoName, detail.headSha),
+    deps.pulls.checkState(job.repo as RepoName, detail.headSha, { baseRef: detail.baseRef }),
     deps.pulls.bugbotFindings(job.pr_url),
   ]);
   return reviewSummary({ headSha: detail.headSha, files, bugbot: { review: state.bugbot, findings } });
