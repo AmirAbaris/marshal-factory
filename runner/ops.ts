@@ -534,6 +534,8 @@ async function claimDrafts(ready: readonly { source: SourceAdapter<JobSource>; d
           repo: target,
           writeback: draft.writeback,
           source_state: draft.sourceState,
+          // Unused, but NOT NULL without a default until migration 0034 has run.
+          budget_usd: 5,
           claimed_at: now,
           updated_at: now,
         })

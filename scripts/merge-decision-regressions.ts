@@ -70,6 +70,11 @@ assert.deepEqual(
   "a six-check handover reads as not confident, its failed checks the reason",
 );
 assert.deepEqual(parseAssessment(legacy({ recommendation: "handover", reviewFocus: "The sort" })), unsure("The sort"), "with every check ok, its review focus is the reason");
+{
+  const long = Object.fromEntries(Object.keys(legacy().checks).map((c) => [c, { ok: false, note: "x".repeat(500) }]));
+  const parsed = parseAssessment(legacy({ recommendation: "handover", checks: long }));
+  assert.ok(parsed && parsed.confidence.reason!.length <= 1000, "six long failed-check notes still read back as a reason within its limit");
+}
 assert.deepEqual(parseAssessment(assessment()), assessment(), "the current shape reads as is");
 assert.equal(parseAssessment({ recommendation: "merge" }), null, "anything else is no assessment");
 

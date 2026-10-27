@@ -4,12 +4,15 @@ import { z } from "zod";
 // it built what the issue asked for and that it works, and handover only when it isn't. The
 // factory weighs that against its own hard limits (lib/merge-decision.ts); the agent never merges.
 
+const REASON_MAX = 1000;
+const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0, max - 1)}…` : text);
+
 const confidenceSchema = z.object({
   confident: z.boolean().describe("True when you are confident you built what the issue asked for and that it works."),
   reason: z
     .string()
     .min(1)
-    .max(1000)
+    .max(REASON_MAX)
     .optional()
     .describe("Required when not confident: why, in one or two sentences, so the owner knows what to check."),
 });
@@ -61,7 +64,7 @@ function fromLegacy(a: AssessmentInput, { checks, reviewFocus }: z.infer<typeof 
   const notes = reviewFocus && { notes: reviewFocus };
   if (a.recommendation === "merge") return { confidence: { confident: true }, ...notes };
   const failed = LEGACY_CHECKS.filter((c) => !checks[c].ok).map((c) => `${LEGACY_LABELS[c]}: ${checks[c].note}`);
-  if (failed.length > 0) return { confidence: { confident: false, reason: failed.join(" ") }, ...notes };
+  if (failed.length > 0) return { confidence: { confident: false, reason: clip(failed.join(" "), REASON_MAX) }, ...notes };
   return { confidence: { confident: false, reason: reviewFocus ?? "It recommended handing over." } };
 }
 
