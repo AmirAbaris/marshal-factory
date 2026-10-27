@@ -6,6 +6,7 @@ import { terminateSandbox } from "../lib/modal-host";
 import { builtVersions, imageProblem, REPO_DIR } from "../lib/sandbox";
 import { modalSecretName, parseDetail, repoImage } from "../lib/onboarding";
 import { RECIPE_PATH } from "../lib/recipe";
+import { listThreads, showThread, startThread as t3Start } from "../lib/t3-client";
 import { PENDING } from "./binding";
 import { thisMachine } from "./heartbeat";
 import type { JobSource } from "../lib/sources/types";
@@ -50,20 +51,7 @@ export function parseThreadId(stdout: string) {
 }
 
 export async function startThread(host: JobHost, repo: string, branch: string, title: string, message: string, { provider, model }: HarnessChoice) {
-  const { stdout } = await host.run(
-    host.t3,
-    [
-      "thread", "start", repo, "-",
-      "--worktree", "origin/main",
-      "--branch", branch,
-      "--title", title,
-      "--provider", provider,
-      "--model", model,
-      "--json",
-    ],
-    { input: message, timeoutMs: 60_000, maxBuffer: 16 * 1024 * 1024 },
-  );
-  return parseThreadId(stdout);
+  return parseThreadId(await t3Start(host, { project: repo, message, worktree: "origin/main", branch, title, provider, model }));
 }
 
 /** T3 prepares the worktree after start returns; wait for it and confirm it sits on fresh origin/main. */
@@ -71,7 +59,7 @@ async function worktreeHead(threadId: string, host: JobHost) {
   for (let i = 0; i < 30; i++) {
     const { thread } = z
       .object({ thread: z.object({ worktreePath: z.string().nullable() }) })
-      .parse(JSON.parse(await sh(host, host.t3, ["thread", "show", threadId, "--json"])));
+      .parse(await showThread(host, threadId, { timeoutMs: 60_000 }));
     if (thread.worktreePath) {
       try {
         return { path: thread.worktreePath, head: await sh(host, "git", ["rev-parse", "HEAD"], thread.worktreePath) };
@@ -95,11 +83,11 @@ const SANDBOX_GIVE_UP_MS = 45 * 60_000;
  * it is stale, look for the thread T3 made on that branch and record it, or clear the marker.
  */
 async function threadBranches(checkout: string, host: JobHost) {
-  const list = z.array(z.object({ threadId: z.string() })).parse(JSON.parse(await sh(host, host.t3, ["thread", "list", "--project", checkout, "--json"])));
+  const list = z.array(z.object({ threadId: z.string() })).parse(await listThreads(host, checkout, { timeoutMs: 60_000 }));
   return Promise.all(
     list.map(async ({ threadId }) => ({
       threadId,
-      branch: z.object({ thread: z.object({ branch: z.string().nullable() }) }).parse(JSON.parse(await sh(host, host.t3, ["thread", "show", threadId, "--json"]))).thread.branch,
+      branch: z.object({ thread: z.object({ branch: z.string().nullable() }) }).parse(await showThread(host, threadId, { timeoutMs: 60_000 })).thread.branch,
     })),
   );
 }
