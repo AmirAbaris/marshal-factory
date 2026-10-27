@@ -27,6 +27,7 @@ const { inferUntracked } = await import("./untracked");
 const { flushLocalOutbox } = await import("./outbox");
 const { approveMerge, decideMerges } = await import("./merge-decision");
 const { closeJob, forwardReview, requestChanges } = await import("./inbox");
+const { confirmStops, retryStop } = await import("./stops");
 const { approveDetailSchema, closeDetailSchema, feedbackDetailSchema } = await import("../lib/inbox");
 const { watchMerges } = await import("./post-merge");
 const { syncLinearLabels } = await import("./overrides");
@@ -91,6 +92,8 @@ async function handle(intent: IntentRow) {
       return { rebuild: await requestRebuild(intent.detail!, "the owner asked for a rebuild") };
     case "repo_push":
       return { push: await repoPushed(repoPushDetailSchema.parse(JSON.parse(intent.detail ?? "null"))) };
+    case "retry_stop":
+      return { retry: await retryStop(intent.job_id!), synced: await ops.writeBack() };
     default: {
       const unhandled: never = intent.kind;
       throw new Error(`no handler for intent ${String(unhandled)}`);
@@ -198,6 +201,8 @@ async function tick() {
     watched: await isolated(ops.watchdog),
     // After the stops and the PR check, so a finished job gives its slot back before this tick's launches.
     sandboxes: await isolated(tickSandboxes),
+    // After teardown, which records a stopped sandbox's end; a confirmed stop frees its capacity before this tick's launches.
+    stopsConfirmed: await isolated(() => confirmStops()),
     pairingsExpired: await isolated(expirePairings),
     synced: await isolated(async () => ops.writeBack()),
   };
