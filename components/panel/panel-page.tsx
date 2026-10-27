@@ -12,7 +12,6 @@ import {
   load,
   machinesQuery,
   parseJobKey,
-  parseSessionId,
   runJob,
   runsQuery,
   sessionAgentsQuery,
@@ -20,10 +19,11 @@ import {
   sessionStagesQuery,
 } from "@/lib/live-queries";
 import { REPO_FILTER_COOKIE, repoFilter } from "@/lib/repo-filter";
+import { parseSessionId, runFeedPath } from "@/lib/run-links";
 import { readRegistry } from "@/lib/repositories";
 
 async function loadDetail(raw: string | undefined): Promise<DetailProps | undefined> {
-  const sessionId = raw && parseSessionId(raw);
+  const sessionId = parseSessionId(raw);
   if (!sessionId) return undefined;
   const { jobKey, jobId } = await runJob(sessionId);
   const [agents, events, stages, audit, evidence] = await Promise.all([
@@ -35,7 +35,7 @@ async function loadDetail(raw: string | undefined): Promise<DetailProps | undefi
   ]);
   const stagesPath = jobKey
     ? `/api/live/jobs/${encodeURIComponent(jobKey)}/stages`
-    : `/api/live/runs/${encodeURIComponent(sessionId)}/stages`;
+    : runFeedPath("stages", sessionId);
   const auditFeed = audit && jobKey ? { feed: audit, path: `/api/live/jobs/${encodeURIComponent(jobKey)}/audit` } : undefined;
   const evidenceFeed = evidence && jobKey ? { feed: evidence, path: `/api/live/jobs/${encodeURIComponent(jobKey)}/evidence` } : undefined;
   return { sessionId, agents, events, stages, stagesPath, audit: auditFeed, evidence: evidenceFeed };

@@ -6,6 +6,7 @@ import type { AgentRow, RunRow } from "@/db/schema";
 import type { SandboxState } from "@/lib/execution";
 import type { Tracking } from "@/lib/harness";
 import type { MergeDecision } from "@/lib/merge-decision";
+import { activityHref } from "@/lib/run-links";
 import { stopLine, type StopView } from "@/lib/stop";
 import { cn } from "@/lib/utils";
 import { harnessLine, showsDecision, whereLine, type BoardCard } from "./cards";
@@ -217,7 +218,7 @@ export function RunCard({
 }) {
   return (
     <Link
-      href={`/activity?run=${run.session_id}`}
+      href={activityHref(run.session_id)}
       scroll={false}
       className={cn(cardClass(selected), run.status === "ended" && "opacity-60")}
     >

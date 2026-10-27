@@ -148,8 +148,4 @@ export async function sealedResponse(query: SealableQuery) {
   });
 }
 
-const SESSION_ID = /^[\w.:-]{1,128}$/;
-export const parseSessionId = (value: string) =>
-  SESSION_ID.test(value) ? value : undefined;
-
 export const parseJobKey = (value: string) => (isJobKey(value) ? value : undefined);
