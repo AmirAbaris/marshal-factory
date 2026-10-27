@@ -85,8 +85,9 @@ export function slackClient({ token, baseUrl = SLACK_API_URL, minGapMs = 1_000, 
   };
 
   return {
-    async postMessage(channel: string, message: SlackMessage) {
-      const body = await call("chat.postMessage", { channel, ...messageParams(message) });
+    /** Posts a message, as a reply in the thread of `threadTs` when given. */
+    async postMessage(channel: string, message: SlackMessage, threadTs?: string) {
+      const body = await call("chat.postMessage", { channel, ...messageParams(message), ...(threadTs && { thread_ts: threadTs }) });
       return { channel: str(body.channel, "channel"), ts: str(body.ts, "ts") };
     },
     async update(channel: string, ts: string, message: SlackMessage) {
@@ -100,6 +101,11 @@ export function slackClient({ token, baseUrl = SLACK_API_URL, minGapMs = 1_000, 
     /** Opens a modal; the trigger id from a click is good for 3 seconds. */
     async openView(triggerId: string, view: object) {
       await call("views.open", { trigger_id: triggerId, view: JSON.stringify(view) });
+    },
+    /** A link to a message; it needs no scope beyond the token. */
+    async permalink(channel: string, ts: string) {
+      const body = await call("chat.getPermalink", { channel, message_ts: ts });
+      return str(body.permalink, "permalink");
     },
     async channelInfo(channel: string) {
       const body = await call("conversations.info", { channel });
