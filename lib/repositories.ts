@@ -24,13 +24,25 @@ const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
 
 export const defaultRepo = (registry: Registry) => registry.find((r) => r.is_default) ?? null;
 
-/** A Repository label names a repo by display name, else by its name part, else by its full name. */
+/** The repos a Repository label names: by display name, else by name part, else by full name. More than one is ambiguous. */
+function labelMatches(registry: Registry, name: string) {
+  for (const key of [displayName, (r: RepoSettingsRow) => repoName(r.repo), (r: RepoSettingsRow) => r.repo]) {
+    const matches = registry.filter((r) => same(key(r), name));
+    if (matches.length > 0) return matches;
+  }
+  return [];
+}
+
+/** The one repo a Repository label names; a name more than one repo answers to names none. */
 export function repoForLabel(registry: Registry, name: string) {
-  return (
-    registry.find((r) => same(displayName(r), name)) ??
-    registry.find((r) => same(repoName(r.repo), name)) ??
-    registry.find((r) => same(r.repo, name))
-  );
+  const matches = labelMatches(registry, name);
+  return matches.length === 1 ? matches[0] : undefined;
+}
+
+/** The label that names `row`: its display name, or its full name while another repo shares the display name. */
+export function repoLabel(registry: Registry, row: Pick<RepoSettingsRow, "repo" | "display_name">) {
+  const name = displayName(row);
+  return registry.some((r) => r.repo !== row.repo && same(displayName(r), name)) ? row.repo : name;
 }
 
 export type RepoRoute = { repo: string | null; problem?: string };
@@ -46,16 +58,23 @@ export function routeRepo(asked: Pick<SourceOverrides, "repository">, registry: 
     return { repo, problem: `The issue has more than one ${REPOSITORY_GROUP} label (${picked.map((name) => `"${name}"`).join(", ")}), so it runs in ${to}.` };
   }
   const name = picked[0]!;
-  const match = repoForLabel(registry, name);
+  const matches = labelMatches(registry, name);
+  if (matches.length > 1) {
+    return { repo, problem: `The ${REPOSITORY_GROUP} label "${name}" names more than one repository (${matches.map((r) => r.repo).join(", ")}), so it runs in ${to}.` };
+  }
+  const match = matches[0];
   if (!match) return { repo, problem: `The ${REPOSITORY_GROUP} label "${name}" names no repository the factory knows, so it runs in ${to}.` };
   if (!match.enabled) return { repo, problem: `The ${REPOSITORY_GROUP} label "${name}" names ${match.repo}, which is disabled, so it runs in ${to}.` };
   return { repo: match.repo };
 }
 
-/** One Repository child per enabled repo, by display name. */
+/** One Repository child per enabled repo, by the label that names it alone. */
 export function desiredRepositoryGroup(registry: Registry) {
   const names: string[] = [];
-  for (const r of registry) if (r.enabled && !names.some((n) => same(n, displayName(r)))) names.push(displayName(r));
+  for (const r of registry) {
+    const name = repoLabel(registry, r);
+    if (r.enabled && !names.some((n) => same(n, name))) names.push(name);
+  }
   return { group: REPOSITORY_GROUP, children: names };
 }
 
@@ -96,14 +115,23 @@ const isUniqueViolation = (error: unknown) => (error as { code?: string; cause?:
 
 /**
  * Adds the runner's checkouts to the registry and makes the first one the default when none is.
- * It never changes a row that exists, so the panel's edits win.
+ * It never changes a row that exists, so the panel's edits win. A new repo whose name part another
+ * repo already goes by is named by its full name, since labels match by display name.
  */
 export async function registerRepos(database: Db, repos: readonly string[], by: string, at: Date) {
   if (repos.length === 0) return;
-  await database
-    .insert(repoSettings)
-    .values(repos.map((repo) => ({ repo, updated_at: at, updated_by: by })))
-    .onConflictDoNothing();
+  await database.transaction(async (tx) => {
+    await tx.execute(sql`select pg_advisory_xact_lock(hashtext('repo_settings.display_name'))`);
+    const named: Pick<RepoSettingsRow, "repo" | "display_name">[] = await tx.select({ repo: repoSettings.repo, display_name: repoSettings.display_name }).from(repoSettings);
+    const added: (typeof repoSettings.$inferInsert)[] = [];
+    for (const repo of repos) {
+      if (named.some((r) => r.repo === repo)) continue;
+      const display_name = named.some((r) => same(displayName(r), repoName(repo)) || same(r.repo, repoName(repo))) ? repo : null;
+      named.push({ repo, display_name });
+      added.push({ repo, display_name, updated_at: at, updated_by: by });
+    }
+    if (added.length > 0) await tx.insert(repoSettings).values(added).onConflictDoNothing();
+  });
   try {
     await database.execute(
       sql`update ${repoSettings} set is_default = true where repo = ${repos[0]} and enabled and not exists (select 1 from ${repoSettings} where is_default)`,
