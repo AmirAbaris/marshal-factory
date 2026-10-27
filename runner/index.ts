@@ -206,6 +206,7 @@ const beat = createBeat({
 // The startup beat marks this machine online at once; the slower inventory waits until the reconcile is done.
 if (process.argv.includes("--once")) {
   await beat({ inventory: false });
+  await serial("registry", ops.registerCheckouts);
   await serial("reconcile", startupReconcile);
   takeIntents(await openIntents());
   await queue.idle();
@@ -216,6 +217,8 @@ if (process.argv.includes("--once")) {
 log("start", { pid: process.pid, tickSeconds: ops.config.factory.tickSeconds, machine });
 await beat({ inventory: false });
 setInterval(() => void beat(), ops.config.factory.tickSeconds * 1000);
+// Before the first claim, so a fresh install has its checkouts registered and a default repo.
+await serial("registry", ops.registerCheckouts);
 await serial("reconcile", startupReconcile);
 void beat();
 takeIntents(await openIntents());

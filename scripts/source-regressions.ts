@@ -382,7 +382,7 @@ try {
   await db.insert(jobs).values(linearJob("src-retry", "SRC-9", { stage: "failed", stage_summary: "earlier failure", stage_event_id: "e-r", synced_event_id: "e-r" }));
   readyNodes = [node("src-new", "SRC-8"), node("src-retry", "SRC-9")];
   calls.length = 0;
-  const claimed = await ops.claim({ repos: async () => ["test-owner/claimed-repo"] });
+  const claimed = await ops.claim({ repos: async () => ["test-owner/claimed-repo"], registry: async () => [] });
   const claim = { claimed, calls: structuredClone(calls), rows: await snapshot() };
 
   calls.length = 0;

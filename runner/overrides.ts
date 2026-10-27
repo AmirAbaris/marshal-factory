@@ -8,6 +8,7 @@ import type { EffectiveHarness, HarnessChoice } from "../lib/settings";
 import { sourceFor } from "../lib/sources";
 import type { Job } from "../lib/sources/types";
 import { readT3Runtime } from "../lib/t3-state";
+import { desiredRepositoryGroup, readRegistry, type Registry } from "../lib/repositories";
 import { desiredLabelGroups, ticketOverrides, type TicketLabel, type TicketRecord } from "../lib/ticket-overrides";
 import { config } from "./config";
 import { thisMachine } from "./heartbeat";
@@ -20,6 +21,8 @@ import { sandboxHarness, sandboxRuntime, usableSlots } from "./sandbox";
 export type Capabilities = {
   /** This machine's T3 server is up. */
   local: boolean;
+  /** This machine has a checkout of the job's repo; a local launch needs one. */
+  checkout: boolean;
   /** Why Modal cannot launch here; null when it can, even if every slot is busy right now. */
   modal: string | null;
   claude: boolean;
@@ -32,10 +35,13 @@ export type LaunchPlan =
   | { kind: "wait"; reason: string };
 
 /**
- * The ticket's harness replaces the Settings one with its first current model, since the lead
- * agent fans out to other models itself; the Settings model applies only to the Settings harness.
- * A ticket asking for Modal where it cannot launch runs locally if this machine's T3 is up, and one
- * asking for Local without a T3 here runs on Modal if it can launch; otherwise it waits queued.
+ * `settings` are the Settings with the job's repo defaults over them (lib/repositories.ts), so a
+ * ticket label beats the repo default, which beats Settings. The ticket's harness replaces the
+ * default one with its first current model, since the lead agent fans out to other models itself;
+ * the default model applies only to the default harness. A local launch needs this machine's T3 up
+ * and a checkout of the repo. A ticket asking for Modal where it cannot launch runs locally if it
+ * can, and one asking for Local where it cannot runs on Modal if Modal can launch; otherwise it
+ * waits queued. Without a Runs on label, a repo with no checkout here runs on Modal, or waits.
  */
 export function planLaunch(
   labels: readonly TicketLabel[],
@@ -54,16 +60,22 @@ export function planLaunch(
     else notes.push(`${nameOf(asked.provider)} reports no current model, so it runs on the Settings harness ${nameOf(harness.provider)}.`);
   }
 
+  const noLocal = !can.local ? "this runner's T3 is not running" : !can.checkout ? "this runner has no checkout of the repo" : null;
   let execution = asked.execution ?? settings.execution;
   if (asked.execution === "modal" && can.modal) {
-    if (!can.local) return { kind: "wait", reason: `Modal cannot launch on this runner (${can.modal}) and its T3 is not running` };
+    if (noLocal) return { kind: "wait", reason: `Modal cannot launch on this runner (${can.modal}) and ${noLocal}` };
     execution = "local";
     notes.push(`Modal cannot launch on this runner (${can.modal}), so it runs locally.`);
   }
-  if (asked.execution === "local" && !can.local) {
-    if (can.modal) return { kind: "wait", reason: `this runner's T3 is not running and Modal cannot launch here (${can.modal})` };
+  if (asked.execution === "local" && noLocal) {
+    if (can.modal) return { kind: "wait", reason: `${noLocal} and Modal cannot launch here (${can.modal})` };
     execution = "modal";
-    notes.push("This runner's T3 is not running, so it runs in a Modal sandbox.");
+    notes.push(`${noLocal[0]!.toUpperCase()}${noLocal.slice(1)}, so it runs in a Modal sandbox.`);
+  }
+  // A job only Settings or its repo send to local still needs the checkout; a down T3 fails its start as before.
+  if (!asked.execution && execution === "local" && !can.checkout) {
+    if (can.modal) return { kind: "wait", reason: `this runner has no checkout of the repo and Modal cannot launch here (${can.modal})` };
+    execution = "modal";
   }
   if (execution === "modal" && (asked.provider || asked.execution)) {
     const { fallback } = sandboxHarness(harness, can.driverOf(harness.provider), can.claude, can.codexModel);
@@ -98,12 +110,14 @@ export function splitByExecution<T extends { execution: Execution }>(planned: re
 /** What planning reads from this machine and the database; regressions replace any of it. */
 export const overrideRuntime = {
   harnesses: async () => reportedHarnesses(await db.select().from(machines), Date.now()),
+  registry: (): Promise<Registry> => readRegistry(db),
   localT3: () => readT3Runtime().up,
   note: (job: Job, key: string, body: string) => sourceFor(job.source).note(job, key, body),
   log: (event: string, detail: Record<string, unknown>) => sandboxRuntime.log(event, detail),
 };
 
-export function capabilities(): Capabilities {
+/** What this runner can launch on, before a job's repo is known; launchQueued sets checkout per job. */
+export function capabilities(): Omit<Capabilities, "checkout"> {
   const limits = config.factory.sandbox;
   const modal =
     imageProblem(sandboxRuntime.image(), limits) ??
@@ -151,9 +165,15 @@ export async function announceFallbacks(job: Job, ticket: TicketRecord | null) {
   }
 }
 
-/** Creates the Harness and Runs on groups the team is missing, with a child per enabled harness the machines report. */
+/**
+ * Creates the Harness, Runs on and Repository groups the team is missing, with a child per enabled
+ * harness the machines report and per enabled repo. Before any machine reports its harnesses, only
+ * the Repository group is synced.
+ */
 export async function syncLinearLabels(source = sourceFor("linear")) {
-  const harnesses = await overrideRuntime.harnesses();
-  if (!harnesses) return { skipped: "no machine reports its harnesses yet" };
-  return source.syncLabelGroups!(desiredLabelGroups(harnesses));
+  const [harnesses, registry] = await Promise.all([overrideRuntime.harnesses(), overrideRuntime.registry()]);
+  const repositories = desiredRepositoryGroup(registry);
+  const groups = [...(harnesses ? desiredLabelGroups(harnesses) : []), ...(repositories.children.length > 0 ? [repositories] : [])];
+  if (groups.length === 0) return { skipped: "no machine reports its harnesses yet" };
+  return source.syncLabelGroups!(groups);
 }

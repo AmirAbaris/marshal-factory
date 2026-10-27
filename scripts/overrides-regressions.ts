@@ -83,7 +83,7 @@ assert.deepEqual(desiredLabelGroups([...harnesses, harness("codex2", "codex", "c
 
 // planLaunch: overrides field by field over Settings, the model, and each fallback.
 const settings = { harness: { provider: "claudeAgent", model: "claude-sonnet-5-5", from: "settings" as const }, execution: "local" as const };
-const can = { local: true, modal: null as string | null, claude: true, driverOf: (p: string) => harnesses.find((h) => h.id === p)?.driver ?? p, codexModel: "gpt-6-astra" };
+const can = { local: true, checkout: true, modal: null as string | null, claude: true, driverOf: (p: string) => harnesses.find((h) => h.id === p)?.driver ?? p, codexModel: "gpt-6-astra" };
 const plan = (labels: ReturnType<typeof L>[], over: Partial<typeof can> = {}, s: typeof settings | (Omit<typeof settings, "execution"> & { execution: "modal" }) = settings) =>
   planLaunch(labels, s, harnesses, { ...can, ...over });
 
@@ -130,7 +130,7 @@ assert.deepEqual(
 );
 assert.deepEqual(
   plan([L("Modal", "Runs on")], { modal: "there is no Modal token", local: false }),
-  { kind: "wait", reason: "Modal cannot launch on this runner (there is no Modal token) and its T3 is not running" },
+  { kind: "wait", reason: "Modal cannot launch on this runner (there is no Modal token) and this runner's T3 is not running" },
   "and waits queued when it is not",
 );
 assert.deepEqual(
@@ -191,7 +191,7 @@ assert.equal(harnessLine(boardCards([{ ...cardJob, provider: "claudeAgent" } as 
 const owner = { email: OWNER, emailVerified: true };
 const requestId = "6f0c3f8e-1f4b-4a52-9f0e-2d7c5a8b9c11";
 const filed: unknown[] = [];
-const fileDeps = { user: async () => owner, file: async (d: unknown) => (filed.push(d), { key: "FAC-1", url: "u" }), harnesses: async () => harnesses };
+const fileDeps = { user: async () => owner, file: async (d: unknown) => (filed.push(d), { key: "FAC-1", url: "u" }), harnesses: async () => harnesses, registry: async () => [] };
 await createJob(fileDeps, { title: "Title", description: "", requestId });
 assert.equal((filed[0] as { labels?: unknown }).labels, undefined, "Settings default files no override label");
 await createJob(fileDeps, { title: "Title", description: "", requestId, provider: "codex", execution: "modal" });
@@ -247,7 +247,9 @@ const labelClient = {
 };
 const syncer = createLinearAdapter(() => ({ client: labelClient as never, db, limits: factorySchema.parse({}) }));
 const realHarnesses = overrideRuntime.harnesses;
+const realRegistry = overrideRuntime.registry;
 overrideRuntime.harnesses = async () => harnesses;
+overrideRuntime.registry = async () => [];
 const synced = await syncLinearLabels(syncer);
 assert.deepEqual(synced, {
   team: "FAC",
@@ -259,6 +261,7 @@ assert.ok(creates.every((c) => c.teamId === "team-1"), "every label is created i
 overrideRuntime.harnesses = async () => null;
 assert.deepEqual(await syncLinearLabels(syncer), { skipped: "no machine reports its harnesses yet" });
 overrideRuntime.harnesses = realHarnesses;
+overrideRuntime.registry = realRegistry;
 
 // The adapter stores each label's group; an old row has none.
 const adapter = createLinearAdapter(() => ({

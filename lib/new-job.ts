@@ -2,26 +2,33 @@ import { isOwner, type SessionUser } from "@/lib/auth/owner";
 import type { Harness } from "@/lib/harness";
 import { JOB_IMAGE_TYPES, MAX_JOB_IMAGE_BYTES, newJobSchema, type ImageUploadOutcome, type NewJobOutcome } from "@/lib/new-job-schema";
 import type { FileDraft, FiledJob, ImageFile } from "@/lib/sources/types";
+import { displayName } from "@/lib/repo-name";
+import { defaultRepo, REPOSITORY_GROUP, type Registry } from "@/lib/repositories";
 import { HARNESS_GROUP, RUNS_ON_GROUP, RUNS_ON_LABELS } from "@/lib/ticket-overrides";
 
 // A job started from the panel is filed in its source like any other: for Linear, a Todo issue with
 // the factory label that the webhook brings to the runner. Questions, stops and write-back then
 // work as they do for an issue filed by hand. A harness or execution chosen in the form goes on the
-// issue as the same override label a person would add.
+// issue as the same override label a person would add, and so does the repo, default or not.
 
 export type NewJobDeps = {
   user: () => Promise<SessionUser | null | undefined>;
   file: (draft: FileDraft) => Promise<FiledJob>;
   /** What the machines report; null when none has reported its harnesses yet. */
   harnesses: () => Promise<Harness[] | null>;
+  registry: () => Promise<Registry>;
 };
 
 export async function createJob(deps: NewJobDeps, input: unknown): Promise<NewJobOutcome> {
   if (!isOwner(await deps.user())) return { ok: false, status: 403, message: "Only the factory owner can start jobs." };
   const parsed = newJobSchema.safeParse(input);
   if (!parsed.success) return { ok: false, status: 400, message: parsed.error.issues[0]?.message ?? "The job is not valid." };
-  const { provider, execution, ...draft } = parsed.data;
+  const { provider, execution, repo, ...draft } = parsed.data;
   const labels: NonNullable<FileDraft["labels"]> = [];
+  const registry = await deps.registry();
+  const target = repo ? registry.find((r) => r.repo === repo) : defaultRepo(registry);
+  if (repo && !target?.enabled) return { ok: false, status: 400, message: `${repo} is not an enabled repository.` };
+  if (target) labels.push({ group: REPOSITORY_GROUP, name: displayName(target) });
   if (provider) {
     const harness = (await deps.harnesses())?.find((h) => h.id === provider && h.enabled);
     if (!harness) return { ok: false, status: 400, message: `No machine reports an enabled harness ${provider}.` };

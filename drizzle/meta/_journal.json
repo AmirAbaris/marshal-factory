@@ -183,6 +183,20 @@
       "when": 1793090936769,
       "tag": "0025_inbox_follow_up",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1793096469277,
+      "tag": "0026_repositories",
+      "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "7",
+      "when": 1793096475263,
+      "tag": "0027_seed_default_repo",
+      "breakpoints": true
     }
   ]
 }

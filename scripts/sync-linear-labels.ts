@@ -1,8 +1,9 @@
 import { join } from "node:path";
 
-// Creates the Harness and Runs on label groups in the configured Linear team (factory.teamKey),
-// with a child per enabled harness the machines report and Local and Modal. It only adds labels:
-// nothing is renamed, moved or deleted. Run it again after enabling a new harness in T3.
+// Creates the Harness, Runs on and Repository label groups in the configured Linear team
+// (factory.teamKey), with a child per enabled harness the machines report, Local and Modal, and one
+// per enabled repo by its display name. It only adds labels: nothing is renamed, moved or deleted.
+// Run it again after enabling a new harness in T3 or adding or renaming a repository.
 //   bun scripts/sync-linear-labels.ts
 
 process.chdir(join(import.meta.dirname, ".."));

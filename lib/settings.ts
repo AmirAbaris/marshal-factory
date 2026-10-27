@@ -7,6 +7,7 @@ import { isOwner, type SessionUser } from "@/lib/auth/owner";
 import { DEFAULT_EXECUTION, executionSchema, type Execution } from "@/lib/execution";
 import type { Harness } from "@/lib/harness";
 import { autonomySchema, DEFAULT_POLICY, type RepoPolicy } from "@/lib/merge-decision";
+import { REPO_NAME } from "@/lib/repo-name";
 
 // The panel's factory settings: which T3 provider instance and model new threads start on, and
 // where. The runner reads them on every launch pass and falls back to its config when none are saved.
@@ -24,7 +25,8 @@ export const settingsInputSchema = z.object({
 export type SettingsInput = z.input<typeof settingsInputSchema>;
 
 export type HarnessChoice = { provider: string; model: string };
-export type EffectiveHarness = HarnessChoice & { from: "settings" | "config" };
+/** Where the harness came from: the panel's Settings, the runner config, or the job's repo default. */
+export type EffectiveHarness = HarnessChoice & { from: "settings" | "config" | "repo" };
 export type SettingsChoice = HarnessChoice & { execution?: Execution };
 
 export async function readSettings(database: Db): Promise<SettingsRow | null> {
@@ -59,8 +61,6 @@ export type SettingsDeps = {
 };
 
 export type SettingsOutcome = { ok: true } | { ok: false; status: 400 | 403 | 502; message: string };
-
-const REPO_NAME = /^[\w.-]+\/[\w.-]+$/;
 
 export const repoAutonomyInputSchema = z.object({
   repo: z.string().regex(REPO_NAME, "Name the repo as owner/name."),

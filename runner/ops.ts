@@ -18,7 +18,8 @@ import { isTracked } from "../lib/harness";
 import { readHarnesses } from "../lib/t3-state";
 import { readSettings, resolveExecution, resolveHarness, type HarnessChoice } from "../lib/settings";
 import type { Execution } from "../lib/execution";
-import type { TicketRecord } from "../lib/ticket-overrides";
+import { ticketLabels, type TicketRecord } from "../lib/ticket-overrides";
+import { readRegistry, registerRepos, routeRepo, type Registry } from "../lib/repositories";
 import { forbidInTest } from "../lib/test-mode";
 import { ensureAwake, HostGoneError, hosts, isHibernated, type JobHost } from "../lib/host";
 import { modalHost } from "../lib/modal-host";
@@ -488,21 +489,32 @@ export async function factoryCheckouts() {
 
 const factoryRepos = async () => [...(await factoryCheckouts()).keys()];
 
+/** Adds this machine's checkouts to the repository registry; the first becomes the default when none is. */
+export async function registerCheckouts() {
+  const repos = await factoryRepos();
+  await registerRepos(db, repos, `runner ${(await thisMachine()).name}`, new Date());
+  return repos;
+}
+
 /**
  * Claims ready jobs this machine has room for: its own working jobs plus the queued jobs no
- * machine holds yet in its repos stay under maxInFlight, so each machine queues only what it could
- * launch and the rest waits for one with room. The row insert is the claim; the advisory lock
- * serializes claimers. A source names no repo yet, so a new job goes to this machine's first one.
+ * machine holds yet in the repos it can launch stay under maxInFlight, so each machine queues only
+ * what it could launch and the rest waits for one with room. The row insert is the claim; the
+ * advisory lock serializes claimers. Each job goes to the repo its Repository label names, else to
+ * the default repo (see lib/repositories.ts); with an empty registry, to this machine's first checkout.
+ * A retry routes again from the labels the issue has now.
  */
 export async function claim({
   source = sourceFor("linear"),
   repos = factoryRepos,
-}: { source?: SourceAdapter<JobSource>; repos?: () => Promise<string[]> } = {}) {
+  registry = () => readRegistry(db),
+}: { source?: SourceAdapter<JobSource>; repos?: () => Promise<string[]>; registry?: () => Promise<Registry> } = {}) {
   const ready: JobDraft[] = await source.ready();
   if (ready.length === 0) return { claimed: [], inFlight: 0 };
-  const targets = await repos();
-  const target = targets[0];
-  if (!target) throw new Error("factory.repos is empty, so there is no repository to claim work for");
+  const [checkouts, known] = await Promise.all([repos(), registry()]);
+  const targets = [...new Set([...checkouts, ...known.filter((r) => r.enabled).map((r) => r.repo)])];
+  if (targets.length === 0) throw new Error("no repository is registered and factory.repos is empty, so there is no repository to claim work for");
+  const targetOf = (draft: JobDraft) => routeRepo(ticketLabels(draft.sourceState), known).repo ?? checkouts[0] ?? targets[0]!;
   const me = await mine();
   return db.transaction(async (tx) => {
     await tx.execute(sql`select pg_advisory_xact_lock(hashtext('marshal-factory linear-poll'))`);
@@ -520,6 +532,7 @@ export async function claim({
     for (const draft of ready) {
       if (inFlight >= config.factory.maxInFlight) break;
       const now = new Date();
+      const target = targetOf(draft);
       const inserted = await tx
         .insert(jobs)
         .values({

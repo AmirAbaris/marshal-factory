@@ -150,7 +150,7 @@ try {
     sourceState: { state: "Todo", labels: [] },
   }));
   const source = { source: "linear", ready: async () => drafts } as unknown as Adapter;
-  const claimed = await claim({ source, repos: async () => [REPO] });
+  const claimed = await claim({ source, repos: async () => [REPO], registry: async () => [] });
   assert.deepEqual(
     claimed.claimed,
     [`${prefix}-d1`],
