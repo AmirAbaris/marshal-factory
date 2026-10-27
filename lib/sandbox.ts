@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { z } from "zod";
 import { CONFIG_PATH, SANDBOX_IMAGE_PATH, type SandboxLimits } from "./config";
-import type { SandboxReadiness } from "./machine";
+import { imageDrift, imageVersionsSchema, rebuildText, type ImageComponent, type ImageVersions, type SandboxReadiness } from "./machine";
 
 // Fixed paths inside a job's sandbox. The image puts the factory's hook and MCP bundles under
 // FACTORY_ROOT; each launch clones the job's repo into REPO_DIR.
@@ -18,13 +18,64 @@ export const CODEX_HOME = `${SANDBOX_HOME}/.codex`;
 export const CODEX_AUTH = `${CODEX_HOME}/auth.json`;
 export const T3_PORT = 3773;
 
+/** PStack's marketplace, cloned at the pinned commit, and the plugin both CLIs install from it. */
+export const PSTACK_DIR = "/opt/pstack";
+export const PSTACK_PLUGIN = "pstack@pstack-claude";
+
 export const sandboxImageSchema = z.object({
   imageId: z.string().min(1),
   t3Version: z.string(),
+  /** Optional so an image built before the other pins reads as outdated, not as missing. */
+  versions: imageVersionsSchema.optional(),
   factoryCommit: z.string(),
   builtAt: z.string(),
 });
 export type SandboxImage = z.infer<typeof sandboxImageSchema>;
+
+type Pins = Pick<SandboxLimits, "t3Version" | "claudeCodeVersion" | "codexVersion" | "pstack">;
+
+/** PStack by its version and a commit prefix, so a moved pin at the same version still differs. */
+export const pstackVersion = (pstack: Pins["pstack"]) => `${pstack.version}@${pstack.commit.slice(0, 12)}`;
+
+export const pinnedVersions = (limits: Pins): Required<ImageVersions> => ({
+  t3: limits.t3Version,
+  claudeCode: limits.claudeCodeVersion,
+  codex: limits.codexVersion,
+  pstack: pstackVersion(limits.pstack),
+});
+
+export const builtVersions = (image: SandboxImage): ImageVersions => ({ t3: image.t3Version, ...image.versions });
+
+/** The version a CLI's --version output names, or null when it names none. */
+export function parseVersion(component: Exclude<ImageComponent, "pstack">, output: string) {
+  const pattern = (() => {
+    switch (component) {
+      case "t3":
+        return /^t3 v(\S+)$/m;
+      case "claudeCode":
+        return /^(\S+) \(Claude Code\)$/m;
+      case "codex":
+        return /^codex-cli (\S+)$/m;
+      default: {
+        const unknown: never = component;
+        throw new Error(`no version format for ${String(unknown)}`);
+      }
+    }
+  })();
+  return pattern.exec(output.trim())?.[1] ?? null;
+}
+
+const pluginListSchema = z.array(z.object({ id: z.string(), version: z.string().optional(), enabled: z.boolean().optional(), installPath: z.string().optional() }));
+
+/** PStack's entry in `claude plugin list --json` when it is installed and enabled, else null. */
+export function enabledPstack(output: string) {
+  try {
+    const plugin = pluginListSchema.parse(JSON.parse(output)).find((p) => p.id === PSTACK_PLUGIN);
+    return plugin?.enabled ? plugin : null;
+  } catch {
+    return null;
+  }
+}
 
 /** The stored image, or null when none was built or it is unreadable. */
 export function readSandboxImage(path = SANDBOX_IMAGE_PATH): SandboxImage | null {
@@ -37,10 +88,10 @@ export function readSandboxImage(path = SANDBOX_IMAGE_PATH): SandboxImage | null
 }
 
 /** Why this image cannot launch jobs under these limits, or undefined when it can. */
-export function imageProblem(image: SandboxImage | null, limits: Pick<SandboxLimits, "t3Version">) {
+export function imageProblem(image: SandboxImage | null, limits: Pins) {
   if (!image) return "no sandbox image is built; run bun scripts/sandbox-image.ts";
-  if (image.t3Version !== limits.t3Version) return `the sandbox image has T3 ${image.t3Version} but the config pins ${limits.t3Version}; run bun scripts/sandbox-image.ts`;
-  return undefined;
+  const drift = imageDrift(builtVersions(image), pinnedVersions(limits));
+  return drift.length > 0 ? `${rebuildText(drift)}; run bun scripts/sandbox-image.ts` : undefined;
 }
 
 export const slotAuthPath = (slot: string) => join(slot, "auth.json");
@@ -80,13 +131,14 @@ export const slotUnusable = (health: SlotHealth, slot: string, authMtimeMs: numb
 
 /** Booleans and counts only: whether this runner could launch on Modal, never the credentials themselves. */
 export function sandboxReadiness(
-  limits: Pick<SandboxLimits, "codexSlots"> & Partial<Pick<SandboxLimits, "t3Version" | "maxParallel">>,
+  limits: Pick<SandboxLimits, "codexSlots"> & Partial<Pins & Pick<SandboxLimits, "maxParallel">>,
   env: NodeJS.ProcessEnv = process.env,
   health = readSlotHealth(),
   image = readSandboxImage(),
 ): SandboxReadiness {
   const loggedIn = limits.codexSlots.filter((slot) => existsSync(slotAuthPath(slot)));
   const unusable = loggedIn.filter((slot) => slotUnusable(health, slot, slotAuthMtime(slot))).length;
+  const { t3Version, claudeCodeVersion, codexVersion, pstack } = limits;
   return {
     modal: Boolean(env.MODAL_TOKEN_ID) || existsSync(join(homedir(), ".modal.toml")),
     claude: Boolean(env.CLAUDE_CODE_OAUTH_TOKEN),
@@ -94,8 +146,9 @@ export function sandboxReadiness(
     codexSlotsUnusable: unusable,
     image: image !== null,
     // The image id stays on the runner; its version, build time and commit say nothing secret.
-    imageInfo: image && { t3Version: image.t3Version, builtAt: image.builtAt, factoryCommit: image.factoryCommit },
+    imageInfo: image && { t3Version: image.t3Version, builtAt: image.builtAt, factoryCommit: image.factoryCommit, versions: builtVersions(image) },
     ...(limits.t3Version && { pinnedT3Version: limits.t3Version }),
+    ...(t3Version && claudeCodeVersion && codexVersion && pstack && { pinnedVersions: pinnedVersions({ t3Version, claudeCodeVersion, codexVersion, pstack }) }),
     ...(limits.maxParallel && { maxParallel: limits.maxParallel }),
   };
 }

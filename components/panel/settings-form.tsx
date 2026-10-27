@@ -13,7 +13,7 @@ import { Spinner } from "@/components/ui/spinner";
 import type { MachineRow, SettingsRow } from "@/db/schema";
 import { DEFAULT_EXECUTION, EXECUTIONS, type Execution } from "@/lib/execution";
 import { DEFAULT_MODEL, DEFAULT_PROVIDER, harnessLabel, isTracked, type Harness } from "@/lib/harness";
-import { imageOutdated, reportedHarnesses, reportedSandbox, type SandboxReadiness } from "@/lib/machine";
+import { componentName, IMAGE_COMPONENTS, rebuildText, reportedDrift, reportedHarnesses, reportedSandbox, type SandboxReadiness } from "@/lib/machine";
 import { useFeed, type Feed } from "./sealed";
 import { PanelFooter, PanelHeader } from "./panel-header";
 import { useAfterHydration, useNow } from "./time";
@@ -59,8 +59,14 @@ const CHECK_ICON: Record<Check["tone"], ReactNode> = {
   missing: <XIcon className="mt-0.5 size-4 shrink-0 text-destructive" />,
 };
 
+const imageSummary = (info: NonNullable<SandboxReadiness["imageInfo"]>) => {
+  const versions = { t3: info.t3Version, ...info.versions };
+  return IMAGE_COMPONENTS.flatMap((c) => (versions[c] ? [`${componentName(c)} ${versions[c]}`] : [])).join(" · ");
+};
+
 function sandboxChecks(readiness: SandboxReadiness): Check[] {
-  const { imageInfo, pinnedT3Version } = readiness;
+  const { imageInfo } = readiness;
+  const drift = reportedDrift(readiness);
   const buildImage = (
     <>
       Run <Cmd>bun scripts/sandbox-image.ts</Cmd> on the runner Mac.
@@ -81,12 +87,8 @@ function sandboxChecks(readiness: SandboxReadiness): Check[] {
         },
     !readiness.image
       ? { tone: "missing", label: "No sandbox image built", howTo: buildImage }
-      : imageOutdated(readiness)
-        ? {
-            tone: "missing",
-            label: `The sandbox image has T3 ${imageInfo?.t3Version}, but the runner pins ${pinnedT3Version}`,
-            howTo: buildImage,
-          }
+      : drift.length > 0
+        ? { tone: "missing", label: rebuildText(drift), howTo: buildImage }
         : {
             tone: "ok",
             label: imageInfo ? (
@@ -94,7 +96,7 @@ function sandboxChecks(readiness: SandboxReadiness): Check[] {
                 Sandbox image built <When date={new Date(imageInfo.builtAt)} />
                 <span className="text-muted-foreground">
                   {" "}
-                  · T3 {imageInfo.t3Version} · factory <span className="font-mono text-xs">{imageInfo.factoryCommit.slice(0, 7)}</span>
+                  · {imageSummary(imageInfo)} · factory <span className="font-mono text-xs">{imageInfo.factoryCommit.slice(0, 7)}</span>
                 </span>
               </>
             ) : (

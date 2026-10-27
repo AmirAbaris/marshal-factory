@@ -9,9 +9,11 @@ import { modal, modalHost, rememberSandbox, sandboxName } from "../lib/modal-hos
 import {
   CODEX_AUTH,
   CODEX_HOME,
+  enabledPstack,
   FACTORY_ROOT,
   GITHUB_TOKEN_PATH,
   INGEST_CONFIG_PATH,
+  PSTACK_PLUGIN,
   readSandboxImage,
   readSlotHealth,
   REPO_DIR,
@@ -115,10 +117,23 @@ export const t3Settings = (choice: HarnessChoice, hasClaude: boolean) => ({
   },
 });
 
-/** Codex gets the factory-report server too, so a Codex-led run can call report_stage. */
-export function codexConfig() {
+/**
+ * Codex gets the factory-report server too, so a Codex-led run can call report_stage. It goes after
+ * the image's config, which holds the PStack marketplace and plugin.
+ */
+export function codexConfig(image: string | null = null) {
   const { command, args } = reportServer(FACTORY_ROOT);
-  return `[mcp_servers.factory-report]\ncommand = ${JSON.stringify(command)}\nargs = ${JSON.stringify(args)}\n`;
+  const server = `[mcp_servers.factory-report]\ncommand = ${JSON.stringify(command)}\nargs = ${JSON.stringify(args)}\n`;
+  return image?.trim() ? `${image.trimEnd()}\n\n${server}` : server;
+}
+
+/** Whether the sandbox's claude has PStack enabled; a launch without it only warns. */
+async function pstackEnabled(host: JobHost) {
+  try {
+    return enabledPstack((await host.run("claude", ["plugin", "list", "--json"], { timeoutMs: 30_000 })).stdout) !== null;
+  } catch {
+    return false;
+  }
 }
 
 /** Just what the hooks read: where to report and the job's budget. */
@@ -187,12 +202,13 @@ export async function setupSandbox(host: JobHost, setup: SandboxSetup, codexMode
     choice = { provider: CODEX, model: codexModel };
     hasClaude = false;
   }
-  await host.writeFile(`${CODEX_HOME}/config.toml`, codexConfig());
+  await host.writeFile(`${CODEX_HOME}/config.toml`, codexConfig(await host.readFile(`${CODEX_HOME}/config.toml`)));
   await host.writeFile(`${T3_USERDATA}/settings.json`, json(t3Settings(choice, hasClaude)));
   await writeSecretFile(host, INGEST_CONFIG_PATH, setup.ingest);
   await writeGithubToken(host, setup.githubToken);
   await host.run("git", ["clone", "--quiet", `https://github.com/${setup.repo}.git`, REPO_DIR], { timeoutMs: 300_000 });
   await wire(host);
+  if (!(await pstackEnabled(host))) sandboxRuntime.log("sandbox:no-pstack", { repo: setup.repo, plugin: PSTACK_PLUGIN });
   await startT3(host);
   await host.run(host.t3, ["project", "add", REPO_DIR, "--title", setup.repo.split("/").pop()!], { timeoutMs: 60_000 });
   return { choice, ...(fallback && { fallback }) };
