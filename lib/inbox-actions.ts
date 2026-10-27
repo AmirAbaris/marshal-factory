@@ -5,7 +5,7 @@ import * as schema from "@/db/schema";
 import { auditLog, intents, jobs, type IntentKind, type JobRow } from "@/db/schema";
 import { isOwner, type SessionUser } from "@/lib/auth/owner";
 import type { RepoName } from "@/lib/github/app";
-import type { PullsClient } from "@/lib/github/pulls";
+import type { Mergeable, PullsClient } from "@/lib/github/pulls";
 import {
   allows,
   followUpIssue,
@@ -22,7 +22,7 @@ import { createJob, type NewJobDeps } from "@/lib/new-job";
 import { parseJob } from "@/lib/sources";
 import type { Job, JobId } from "@/lib/sources/types";
 
-// The inbox's owner-only actions. Each one checks the owner and that the job still offers the
+// The inbox's owner-only actions, and run detail's Merge, which records the inbox's approval. Each one checks the owner and that the job still offers the
 // action, then records an intent for the job's runner; only dismiss and the answer's comment act
 // at once. A request id from the browser keys each intent, so a double submit records it once.
 // The browser asks for the intent's outcome until the runner has handled it.
@@ -78,6 +78,43 @@ export async function approveMerge(deps: InboxDeps, jobId: JobId, requestId: str
   const found = await ownerJob(deps, jobId, "approve");
   if (!found.ok) return found;
   return record(deps, found.job, "approve_merge", requestId, { actor: found.actor, headSha, via: "inbox" } satisfies ApproveDetail);
+}
+
+/** Why run detail's Merge is not offered on this job, or null when it is. */
+function notMergeable(job: JobRow): string | null {
+  if (job.stage !== "pr" || !job.pr_url) return "The job is no longer waiting on a pull request.";
+  const decision = mergeDecisionSchema.safeParse(job.merge_decision).data;
+  if (decision?.merged) return "The factory already merged this pull request.";
+  if (decision?.merging) return "The factory is already merging this pull request.";
+  return null;
+}
+
+/**
+ * Run detail's Merge: the same approve_merge intent as the inbox's Approve, for any job in pr the
+ * factory is not already merging, pinned to the head the dialog showed. The runner's merge
+ * service does the merge; this only records the request.
+ */
+export async function approveFromRunDetail(deps: InboxDeps, jobId: JobId, requestId: string, headSha: string): Promise<InboxOutcome> {
+  if (badRequest(requestId) || !headSha) return { ok: false, message: "The request is not valid." };
+  const user = await deps.user();
+  if (!isOwner(user)) return { ok: false, message: OWNER_ONLY };
+  const [job] = await deps.db.select().from(jobs).where(eq(jobs.id, jobId));
+  if (!job) return { ok: false, message: `No job ${jobId}.` };
+  const refused = notMergeable(job);
+  if (refused) return { ok: false, message: refused };
+  return record(deps, job, "approve_merge", requestId, { actor: user!.email, headSha, via: "run_detail" } satisfies ApproveDetail);
+}
+
+export type MergeTarget = { title: string; headSha: string; repo: string; mergeable: Mergeable };
+
+/** What run detail's merge dialog shows, read on the server through the App: null for a non-owner or a job with nothing to merge. */
+export async function mergeTarget(deps: Pick<InboxDeps, "db" | "user"> & { pulls: Pick<PullsClient, "pullRequest"> }, jobId: JobId): Promise<MergeTarget | null> {
+  if (!isOwner(await deps.user())) return null;
+  const [job] = await deps.db.select().from(jobs).where(eq(jobs.id, jobId));
+  if (!job || notMergeable(job)) return null;
+  const pull = await deps.pulls.pullRequest(job.pr_url!);
+  if (pull.state !== "open") return null;
+  return { title: pull.title, headSha: pull.headSha, repo: job.repo, mergeable: pull.mergeable };
 }
 
 const feedbackSchema = z.string().trim().min(1, "Write what should change.").max(MAX_FEEDBACK_CHARS, "The feedback is too long.");

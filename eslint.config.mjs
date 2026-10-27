@@ -38,6 +38,15 @@ const eslintConfig = defineConfig([
   { files: ["lib/*.ts"], rules: restrictLinear(ANYWHERE, "^\\./linear") },
   { files: ["lib/sources/**/*.ts"], rules: restrictLinear(ANYWHERE, "^\\.\\./linear") },
   { files: ["lib/sources/linear.ts", "scripts/linear-regressions.ts"], rules: { "no-restricted-imports": "off", "no-restricted-syntax": "off" } },
+  {
+    rules: {
+      "no-restricted-properties": [
+        "error",
+        { property: "mergePull", message: "Only the runner's merge service (runner/merge-service.ts) merges a pull request. Record an approve_merge intent instead." },
+      ],
+    },
+  },
+  { files: ["runner/merge-service.ts", "scripts/github-regressions.ts"], rules: { "no-restricted-properties": "off" } },
 ]);
 
 export default eslintConfig;

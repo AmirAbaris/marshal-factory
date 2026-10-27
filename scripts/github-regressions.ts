@@ -5,7 +5,7 @@ import { generateKeyPairSync, verify } from "node:crypto";
 import { chmodSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { appJwt, installationTokens, readAppFile, tokenSource } from "../lib/github/app";
+import { appCredentials, appJwt, installationTokens, readAppFile, tokenSource } from "../lib/github/app";
 import { github, parsePullUrl, pullsClient } from "../lib/github/pulls";
 import { serve } from "./serve";
 
@@ -27,6 +27,8 @@ function verifiedClaims(jwt: string) {
 const nowMs = 1_800_000_000_000;
 const { header, claims } = verifiedClaims(appJwt(app, nowMs));
 assert.deepEqual(header, { alg: "RS256", typ: "JWT" });
+assert.deepEqual(appCredentials({ GITHUB_APP_ID: "5459681", GITHUB_APP_PRIVATE_KEY: "pem" }), { client_id: "5459681", pem: "pem" }, "Vercel signs with the env key");
+assert.throws(() => appCredentials({ GITHUB_APP_PRIVATE_KEY: "pem" }), /GITHUB_APP_ID is not/, "a key without an app id is refused");
 assert.deepEqual(claims, { iat: nowMs / 1000 - 60, exp: nowMs / 1000 + 540, iss: "Iv1.stub" }, "iat a minute back, exp inside ten minutes, iss the client id");
 
 assert.deepEqual(parsePullUrl("https://github.com/ski043/factory-demo/pull/12"), { repo: "ski043/factory-demo", number: 12 });
