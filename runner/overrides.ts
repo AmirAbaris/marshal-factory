@@ -5,11 +5,11 @@ import { harnessLabel, type Harness } from "../lib/harness";
 import { reportedHarnesses } from "../lib/machine";
 import { imageProblem } from "../lib/sandbox";
 import type { EffectiveHarness, HarnessChoice } from "../lib/settings";
-import { sourceFor } from "../lib/sources";
-import type { Job } from "../lib/sources/types";
+import { allSources, sourceFor } from "../lib/sources";
+import type { Job, JobSource, SourceAdapter } from "../lib/sources/types";
 import { readT3Runtime } from "../lib/t3-state";
 import { desiredRepositoryGroup, readRegistry, type Registry } from "../lib/repositories";
-import { desiredLabelGroups, ticketOverrides, type TicketLabel, type TicketRecord } from "../lib/ticket-overrides";
+import { desiredLabelGroups, ticketOverrides, type SourceOverrides, type TicketRecord } from "../lib/ticket-overrides";
 import { config } from "./config";
 import { thisMachine } from "./heartbeat";
 import { sandboxHarness, sandboxRuntime, usableSlots } from "./sandbox";
@@ -44,12 +44,12 @@ export type LaunchPlan =
  * waits queued. Without a Runs on label, a repo with no checkout here runs on Modal, or waits.
  */
 export function planLaunch(
-  labels: readonly TicketLabel[],
+  overrides: SourceOverrides,
   settings: { harness: EffectiveHarness; execution: Execution },
   harnesses: readonly Harness[] | null,
   can: Capabilities,
 ): LaunchPlan {
-  const asked = ticketOverrides(labels, harnesses);
+  const asked = ticketOverrides(overrides, harnesses);
   const nameOf = (provider: string) => harnesses?.find((h) => h.id === provider)?.name ?? harnessLabel(provider);
   const notes = [...asked.problems];
 
@@ -166,14 +166,16 @@ export async function announceFallbacks(job: Job, ticket: TicketRecord | null) {
 }
 
 /**
- * Creates the Harness, Runs on and Repository groups the team is missing, with a child per enabled
- * harness the machines report and per enabled repo. Before any machine reports its harnesses, only
- * the Repository group is synced.
+ * Creates the Harness, Runs on and Repository groups each source with override labels is missing,
+ * with a child per enabled harness the machines report and per enabled repo. Before any machine
+ * reports its harnesses, only the Repository group is synced.
  */
-export async function syncLinearLabels(source = sourceFor("linear")) {
+export async function syncOverrideLabels(sources = allSources()) {
   const [harnesses, registry] = await Promise.all([overrideRuntime.harnesses(), overrideRuntime.registry()]);
   const repositories = desiredRepositoryGroup(registry);
   const groups = [...(harnesses ? desiredLabelGroups(harnesses) : []), ...(repositories.children.length > 0 ? [repositories] : [])];
   if (groups.length === 0) return { skipped: "no machine reports its harnesses yet" };
-  return source.syncLabelGroups!(groups);
+  const synced: Record<string, Awaited<ReturnType<NonNullable<SourceAdapter<JobSource>["syncLabelGroups"]>>>> = {};
+  for (const source of sources) if (source.syncLabelGroups) synced[source.source] = await source.syncLabelGroups(groups);
+  return { synced };
 }

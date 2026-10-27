@@ -3,7 +3,8 @@ import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import * as schema from "../db/schema";
 import { agents, events, jobs, runs } from "../db/schema";
 import type { FactoryEvent, Usage } from "./events";
-import { jobKeyFromBranch } from "./factory";
+import { attemptBranchSql } from "./branch-sql";
+import { parseBranch } from "./factory";
 import { branchSpend } from "./spend";
 import { decideStage, type StageVerdict } from "./stages";
 
@@ -47,7 +48,7 @@ async function upsertRun(tx: Tx, event: FactoryEvent) {
           cwd: event.cwd,
           repo: event.repo,
           branch: event.branch,
-          job_key: jobKeyFromBranch(event.branch),
+          job_key: parseBranch(event.branch)?.key,
           t3_thread_id: event.t3ThreadId,
           title: event.title,
           model: event.model,
@@ -314,12 +315,8 @@ async function applyStage(tx: Tx, e: Extract<FactoryEvent, { kind: "stage" }>) {
     });
 }
 
-/** True for the job's current attempt branch, so an older attempt's thread cannot move a retry. */
-const onCurrentAttempt = (branch: string) =>
-  sql`${branch} = case when ${jobs.attempt} > 1 then 'factory/' || ${jobs.key} || '-a' || ${jobs.attempt} else 'factory/' || ${jobs.key} end`;
-
 async function linkSession(tx: Tx, event: Extract<FactoryEvent, { kind: "session_start" }>) {
-  const key = jobKeyFromBranch(event.branch);
+  const key = parseBranch(event.branch)?.key;
   if (!key) return;
   await tx
     .update(jobs)
@@ -328,7 +325,8 @@ async function linkSession(tx: Tx, event: Extract<FactoryEvent, { kind: "session
       t3_thread_id: sql`coalesce(${event.t3ThreadId ?? null}, ${jobs.t3_thread_id})`,
       updated_at: when(event.at),
     })
-    .where(and(eq(jobs.key, key), onCurrentAttempt(event.branch!)));
+    // Only the job's current attempt branch, so an older attempt's thread cannot move a retry.
+    .where(and(eq(jobs.key, key), eq(attemptBranchSql, event.branch!)));
 }
 
 /** Moves the claimed job the event names; undefined when it names none. */

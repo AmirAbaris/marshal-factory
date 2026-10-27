@@ -1,7 +1,7 @@
 import { and, eq, sql } from "drizzle-orm";
 import { db } from "../db/client";
 import { auditLog, intents, jobs, type IntentRow } from "../db/schema";
-import { attemptBranch, jobKeyFromBranch } from "../lib/factory";
+import { attemptBranch, parseBranch } from "../lib/factory";
 import { github } from "../lib/github/pulls";
 import { ensureAwake } from "../lib/host";
 import { changesMessage, type CloseDetail, type FeedbackDetail, type ReviewComment } from "../lib/inbox";
@@ -94,7 +94,7 @@ type ReviewIntent = Pick<IntentRow, "id" | "job_id" | "pr_url" | "created_at">;
 async function reviewedJob(intent: ReviewIntent, feedback: GithubFeedback) {
   const byId = intent.job_id ? await readJob(intent.job_id) : null;
   const [byPr] = !byId && intent.pr_url ? await db.select().from(jobs).where(eq(jobs.pr_url, intent.pr_url)) : [];
-  const key = jobKeyFromBranch(feedback.branch);
+  const key = parseBranch(feedback.branch)?.key;
   const [byBranch] = !byId && !byPr && key ? await db.select().from(jobs).where(eq(jobs.key, key)) : [];
   const row = byPr ?? byBranch;
   const job = byId ?? (row ? parseJob(row) : null);

@@ -1,5 +1,6 @@
 import type { JobRow } from "../../db/schema";
 import type { Stage } from "../events";
+import type { SourceOverrides } from "../ticket-overrides";
 import type { IntentDraft, Verdict } from "../webhooks";
 import type { JobId, JobSource, SourceStateDraftOf, SourceStateOf, WritebackOf } from "./shapes";
 
@@ -37,14 +38,13 @@ export type StopReason = string;
 
 export type StopCheck = { stop: false } | { stop: true; reopen: boolean };
 
-export type WebhookScope = { teamKey: string; label: string };
-
 export interface SourceWebhook {
   secretEnv: string;
   deliveryHeader: string;
   eventHeader: string;
   verify(raw: string, headers: Headers, secret: string, now?: number): Verdict;
-  intent(body: unknown, scope: WebhookScope): IntentDraft | null;
+  /** What a delivery means; `env` is the ingest function's, where the source reads its own scope (Linear: team key and label). */
+  intent(body: unknown, env: Readonly<Record<string, string | undefined>>): IntentDraft | null;
 }
 
 export interface SourceAdapter<S extends JobSource> {
@@ -64,6 +64,8 @@ export interface SourceAdapter<S extends JobSource> {
   confirmStop(externalId: string, detail: string): Promise<StopCheck>;
   /** Posts a comment on the job; one key is posted once, so a replay changes nothing. */
   note(job: Job<S>, key: string, body: string): Promise<void>;
+  /** The harness, place and repository the job asks for, from what the claim stored; see lib/ticket-overrides.ts. */
+  overrides(state: SourceStateDraftOf<S>): SourceOverrides;
   /** The job's labels as the source shows them now. */
   labels(job: Job<S>): Promise<string[]>;
   /** Returns a stopped job to the source's not-started state, so adding the label again retries it. */
@@ -81,6 +83,8 @@ export interface SourceAdapter<S extends JobSource> {
   file?(draft: FileDraft): Promise<FiledJob>;
   /** Creates the label groups and children the source is missing; it never renames or deletes one. */
   syncLabelGroups?(groups: readonly LabelGroupSpec[]): Promise<{ team: string; created: string[]; problems: string[] }>;
+  /** syncLabelGroups for the panel, which reads the source's credentials from its env instead of the runner's config. */
+  panelSyncLabelGroups?(groups: readonly LabelGroupSpec[]): Promise<{ team: string; created: string[]; problems: string[] }>;
   /** Stores an image where the source keeps uploads, for a job about to be filed; returns its markdown. */
   uploadImage?(image: ImageFile): Promise<string>;
 }

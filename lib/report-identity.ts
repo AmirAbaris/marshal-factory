@@ -1,4 +1,4 @@
-import { attemptBranch, jobKeyFromBranch, mcpSessionId } from "./factory";
+import { attemptBranch, mcpSessionId, parseBranch } from "./factory";
 import { currentBranch } from "./git-head";
 
 // Who the factory-report MCP server reports for. Claude Code's hooks see the session id and turn a
@@ -28,7 +28,7 @@ export type McpIdentity = { jobKey: string; branch: string; sessionId: string; r
 export function mcpIdentity(env: Readonly<Record<string, string | undefined>>, cwd: string, branchOf: (cwd: string) => string | undefined = currentBranch): McpIdentity | undefined {
   const attempt = Number(env.FACTORY_ATTEMPT ?? "1");
   const branch = env.FACTORY_JOB_KEY ? (Number.isInteger(attempt) && attempt > 0 ? attemptBranch(env.FACTORY_JOB_KEY, attempt) : undefined) : branchOf(cwd);
-  const jobKey = jobKeyFromBranch(branch);
+  const jobKey = parseBranch(branch)?.key;
   if (!branch || !jobKey) return undefined;
   return { jobKey, branch, sessionId: env.FACTORY_SESSION_ID || mcpSessionId(branch), ...(env.FACTORY_REPO && { repo: env.FACTORY_REPO }) };
 }

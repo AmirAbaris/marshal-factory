@@ -30,7 +30,7 @@ const { closeJob, forwardReview, requestChanges } = await import("./inbox");
 const { confirmStops, retryStop } = await import("./stops");
 const { approveDetailSchema, closeDetailSchema, feedbackDetailSchema } = await import("../lib/inbox");
 const { watchMerges } = await import("./post-merge");
-const { syncLinearLabels } = await import("./overrides");
+const { syncOverrideLabels } = await import("./overrides");
 const { advanceOnboarding, onboardRepo, repoPushed, requestRebuild } = await import("./onboarding");
 const { repoPushDetailSchema } = await import("../lib/webhooks");
 type IntentRow = typeof intents.$inferSelect;
@@ -57,12 +57,12 @@ async function launchAndAnnounce() {
 }
 
 async function handle(intent: IntentRow) {
-  // The team is fetched only where Linear is needed, so a Linear outage does not block the rest.
+  // Each step reaches a source only where it needs one, so a source outage does not block the rest.
   switch (intent.kind) {
     case "claim":
       return { claimed: await ops.claim(), ...(await launchAndAnnounce()) };
     case "stop":
-      return { stop: await ops.stopJob(intent.job_id!, intent.detail ?? "stopped in Linear") };
+      return { stop: await ops.stopJob(intent.job_id!, intent.detail ?? "stopped in its source") };
     case "answer":
       return {
         resumed: await ops.resumeAnswered(),
@@ -132,7 +132,7 @@ async function runIntent(intent: IntentRow) {
   if (!(await leaseIntent(intent.id, machine.id))) return { id: intent.id, skipped: "leased by another machine" };
   const latencyMs = Date.now() - intent.created_at.getTime();
   const result = await handle(intent).catch((error: unknown) => ({ error: String(error) }));
-  // A failed intent stays open and the timer retries it, so a Linear or T3 hiccup cannot eat a
+  // A failed intent stays open and the timer retries it, so a source or T3 hiccup cannot eat a
   // stop. After its kind's INTENT_ATTEMPTS it is closed with the error kept in result.
   const failed = "error" in result;
   const attempts = intent.attempts + 1;
@@ -180,12 +180,12 @@ const startupReconcile = () => reconcile({ tick, cleanup: () => ops.cleanup(), l
  * without any webhook, and the PR check catches a conflict GitHub settled after a push's recheck.
  */
 async function tick() {
-  // Each check on its own: one failing (Linear or GitHub down) must not skip the others this tick.
+  // Each check on its own: one failing (a source or GitHub down) must not skip the others this tick.
   return {
     // First, so stage reports a hook or MCP call could not deliver reach the board before anything reads it.
     outbox: await isolated(flushLocalOutbox),
     claimed: await isolated(() => ops.claim()),
-    // An answer can land before its question reached Linear, and its intent then finds nothing.
+    // An answer can land before its question reached the source, and its intent then finds nothing.
     resumed: await isolated(ops.resumeAnswered),
     // Stops whose webhook never arrived; before deliverStops, so a new stop is messaged this tick.
     stopsReconciled: await isolated(() => ops.reconcileStops()),
@@ -289,8 +289,8 @@ async function subscribe() {
 await subscribe();
 
 const hourlyCleanup = everyAtMost(3_600_000, () => ops.cleanup());
-const labelSync = ops.config.factory.syncLinearLabels ? everyAtMost(86_400_000, () => syncLinearLabels()) : undefined;
-if (ops.config.factory.syncLinearLabels) void serial("labelSync", () => syncLinearLabels());
+const labelSync = ops.config.factory.syncLinearLabels ? everyAtMost(86_400_000, () => syncOverrideLabels()) : undefined;
+if (ops.config.factory.syncLinearLabels) void serial("labelSync", () => syncOverrideLabels());
 setInterval(() => {
   void serial("tick", async () => {
     const result = { ...(await tick()), ...(await launchAndAnnounce()) };

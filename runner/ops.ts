@@ -2,7 +2,7 @@ import { and, asc, eq, gt, inArray, isNotNull, isNull, ne, or, sql } from "drizz
 import { db } from "../db/client";
 import { agents, jobs, runs, type JobRow, type RunRow } from "../db/schema";
 import { STAGES, type Stage, type Usage } from "../lib/events";
-import { jobId, parseJob, parseJobs, sourceFor } from "../lib/sources";
+import { allSources, jobId, parseJob, parseJobs, sourceFor } from "../lib/sources";
 import { parseJobId, SOURCE_SHAPES } from "../lib/sources/shapes";
 import type { Job, JobDraft, JobId, JobSource, SourceAdapter } from "../lib/sources/types";
 import type { IngestResult } from "../lib/ingest";
@@ -12,13 +12,14 @@ import { subagentTranscripts, sumUsage, transcriptPathFor } from "../lib/transcr
 import { checkoutRepo, cleanupRepo, cleanupSubagentWorktrees } from "../lib/worktrees";
 import { github } from "../lib/github/pulls";
 import { claimConflict, conflictMessage, unclaimedRunsWithPr } from "../lib/conflicts";
-import { attemptBranch } from "../lib/factory";
+import { attemptBranch, isJobKey } from "../lib/factory";
+import { attemptBranchSql } from "../lib/branch-sql";
 import { nudgeMessage, watch } from "../lib/watchdog";
 import { isTracked } from "../lib/harness";
 import { readHarnesses } from "../lib/t3-state";
 import { readSettings, resolveExecution, resolveHarness, type HarnessChoice } from "../lib/settings";
 import type { Execution } from "../lib/execution";
-import { ticketLabels, type TicketRecord } from "../lib/ticket-overrides";
+import type { TicketRecord } from "../lib/ticket-overrides";
 import { readRegistry, registerRepos, routeRepo, type Registry } from "../lib/repositories";
 import { forbidInTest } from "../lib/test-mode";
 import { ensureAwake, HostGoneError, hosts, isHibernated, type JobHost } from "../lib/host";
@@ -249,7 +250,7 @@ export async function watchdog() {
     .select({
       job: jobs,
       // Only the current attempt's runs: an earlier attempt's thread must not keep a retry looking alive.
-      lastEventAt: sql<Date | null>`(select max(${runs.last_event_at}) from ${runs} where ${runs.job_key} = ${jobs.key} and ${runs.branch} = case when ${jobs.attempt} > 1 then 'factory/' || ${jobs.key} || '-a' || ${jobs.attempt} else 'factory/' || ${jobs.key} end)`.mapWith(
+      lastEventAt: sql<Date | null>`(select max(${runs.last_event_at}) from ${runs} where ${runs.job_key} = ${jobs.key} and ${runs.branch} = ${attemptBranchSql})`.mapWith(
         (v: string | null) => (v ? new Date(v) : null),
       ),
     })
@@ -456,7 +457,8 @@ export async function writeBack() {
           // A stop is written back once it is confirmed or marked unconfirmed, not while it is on its way.
           sql`not ${stoppingSql}`,
         ),
-      ),
+      )
+      .orderBy(asc(jobs.key)),
   );
   const synced: string[] = [];
   await eachJob(pending, "write back", async (job) => {
@@ -509,18 +511,36 @@ export async function registerCheckouts() {
  * A retry routes again from the labels the issue has now.
  */
 export async function claim({
-  source = sourceFor("linear"),
+  sources = allSources(),
   repos = factoryRepos,
   registry = () => readRegistry(db),
-}: { source?: SourceAdapter<JobSource>; repos?: () => Promise<string[]>; registry?: () => Promise<Registry> } = {}) {
-  const ready: JobDraft[] = await source.ready();
-  if (ready.length === 0) return { claimed: [], inFlight: 0 };
+}: { sources?: readonly SourceAdapter<JobSource>[]; repos?: () => Promise<string[]>; registry?: () => Promise<Registry> } = {}) {
+  const ready: { source: SourceAdapter<JobSource>; draft: JobDraft }[] = [];
+  const failed: string[] = [];
+  // One source down must not hold back the others; its error is thrown once they are claimed.
+  for (const source of sources) {
+    try {
+      for (const draft of await source.ready()) {
+        if (isJobKey(draft.key)) ready.push({ source, draft });
+        else failed.push(`${source.source} offered ${draft.key}, which is not a job key (see lib/factory.ts)`);
+      }
+    } catch (error) {
+      failed.push(`${source.source}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  const claimed = ready.length === 0 ? { claimed: [], inFlight: 0 } : await claimDrafts(ready, repos, registry);
+  if (failed.length > 0) throw new Error(`could not read ready work from ${failed.join("; ")} (claimed ${claimed.claimed.join(", ") || "nothing"})`);
+  return claimed;
+}
+
+async function claimDrafts(ready: readonly { source: SourceAdapter<JobSource>; draft: JobDraft }[], repos: () => Promise<string[]>, registry: () => Promise<Registry>) {
   const [checkouts, known] = await Promise.all([repos(), registry()]);
   const targets = [...new Set([...checkouts, ...known.filter((r) => r.enabled).map((r) => r.repo)])];
   if (targets.length === 0) throw new Error("no repository is registered and factory.repos is empty, so there is no repository to claim work for");
-  const targetOf = (draft: JobDraft) => routeRepo(ticketLabels(draft.sourceState), known).repo ?? checkouts[0] ?? targets[0]!;
+  const targetOf = (source: SourceAdapter<JobSource>, draft: JobDraft) => routeRepo(source.overrides(draft.sourceState), known).repo ?? checkouts[0] ?? targets[0]!;
   const me = await mine();
   return db.transaction(async (tx) => {
+    // The lock's name predates other sources; runners on older code take the same one.
     await tx.execute(sql`select pg_advisory_xact_lock(hashtext('marshal-factory linear-poll'))`);
     const [{ count }] = await tx
       .select({ count: sql<number>`count(*)::int` })
@@ -533,10 +553,10 @@ export async function claim({
       );
     let inFlight = count;
     const claimed: string[] = [];
-    for (const draft of ready) {
+    for (const { source, draft } of ready) {
       if (inFlight >= config.factory.maxInFlight) break;
       const now = new Date();
-      const target = targetOf(draft);
+      const target = targetOf(source, draft);
       const inserted = await tx
         .insert(jobs)
         .values({
@@ -973,32 +993,38 @@ export async function deliverStops(id?: JobId) {
 
 /**
  * A missed stop webhook must not leave a run going. Each tick reads every claimed, unfinished
- * job from its source in one query and records a stop through stopJob, the webhook's own path,
- * for any that lost the label, was closed, or is gone. A failed fetch decides nothing.
+ * job from its source, one query per source, and records a stop through stopJob, the webhook's own
+ * path, for any that lost the label, was closed, or is gone. A failed fetch decides nothing for
+ * that source's jobs; the other sources still go.
  */
 export async function reconcileStops({
-  source = sourceFor("linear"),
+  sources = allSources(),
   stop = stopJob,
   only,
 }: {
-  source?: SourceAdapter<JobSource>;
+  sources?: readonly SourceAdapter<JobSource>[];
   stop?: (id: JobId, detail: string) => Promise<string>;
   /** Restricts the check to these jobs; the regression script uses it to stay off live ones. */
   only?: JobId[];
 } = {}) {
-  // A job no machine holds yet has no thread, so any machine may record its stop.
-  const unfinished = and(eq(jobs.source, source.source), inArray(jobs.stage, STOPPABLE), or(await mine(), isNull(jobs.machine_id)));
-  const open = parseJobs(await db.select().from(jobs).where(only ? and(unfinished, inArray(jobs.id, only)) : unfinished));
-  if (open.length === 0) return [];
-  let wanted: Awaited<ReturnType<typeof source.stopWanted>>;
-  try {
-    wanted = await source.stopWanted(open);
-  } catch (error) {
-    return { unknown: error instanceof Error ? error.message : String(error) };
+  const stopped: { key: string; reason: string; result: string }[] = [];
+  const unknown: string[] = [];
+  for (const source of sources) {
+    // A job no machine holds yet has no thread, so any machine may record its stop.
+    const unfinished = and(eq(jobs.source, source.source), inArray(jobs.stage, STOPPABLE), or(await mine(), isNull(jobs.machine_id)));
+    const open = parseJobs(await db.select().from(jobs).where(only ? and(unfinished, inArray(jobs.id, only)) : unfinished));
+    if (open.length === 0) continue;
+    let wanted: Awaited<ReturnType<typeof source.stopWanted>>;
+    try {
+      wanted = await source.stopWanted(open);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      unknown.push(sources.length > 1 ? `${source.source}: ${message}` : message);
+      continue;
+    }
+    for (const { job, reason } of wanted) {
+      stopped.push({ key: job.key, reason, result: await stop(job.id, reason) });
+    }
   }
-  const stopped = [];
-  for (const { job, reason } of wanted) {
-    stopped.push({ key: job.key, reason, result: await stop(job.id, reason) });
-  }
-  return stopped;
+  return unknown.length === 0 ? stopped : { unknown: unknown.join("; "), ...(stopped.length > 0 && { stopped }) };
 }

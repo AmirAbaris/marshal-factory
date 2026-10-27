@@ -3,6 +3,7 @@ import { drizzleAdapter } from "@neon/realtime-drizzle";
 import { and, asc, desc, eq, getTableColumns, ne } from "drizzle-orm";
 import { db } from "@/db/client";
 import { agents, auditLog, events, jobs, machines, runs } from "@/db/schema";
+import { isJobKey } from "@/lib/factory";
 import type { JobId } from "@/lib/sources/shapes";
 import { assertOwner } from "@/lib/auth/server";
 import { liveUpdates } from "@/lib/live-mode";
@@ -140,5 +141,4 @@ const SESSION_ID = /^[\w.:-]{1,128}$/;
 export const parseSessionId = (value: string) =>
   SESSION_ID.test(value) ? value : undefined;
 
-const JOB_KEY = /^[A-Z][A-Z0-9]*-\d+$/;
-export const parseJobKey = (value: string) => (JOB_KEY.test(value) ? value : undefined);
+export const parseJobKey = (value: string) => (isJobKey(value) ? value : undefined);

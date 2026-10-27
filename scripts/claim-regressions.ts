@@ -10,7 +10,8 @@ const { sourceFor } = await import("../lib/sources");
 const { github } = await import("../lib/github/pulls");
 const { closeBroadcast, deliveryFor, leaseIntent, receiptIntent } = await import("../runner/intents");
 const { linearJob } = await import("./fixtures");
-type Adapter = NonNullable<Parameters<typeof claim>[0]>["source"];
+const { NO_OVERRIDES } = await import("../lib/ticket-overrides");
+type Adapter = NonNullable<NonNullable<Parameters<typeof claim>[0]>["sources"]>[number];
 
 const prefix = `claim-regress-${Date.now()}`;
 const REPO = "ski043/factory-demo";
@@ -140,7 +141,7 @@ try {
     linearJob(`${prefix}-queued`, `${prefix}-queued`),
     linearJob(`${prefix}-other-busy`, `${prefix}-other-busy`, { stage: "implementing", machine_id: `${prefix}-other` }),
   ]);
-  const drafts = ["d1", "d2", "d3"].map((d) => ({
+  const drafts = ["1", "2", "3"].map((d) => ({
     externalId: `${prefix}-${d}`,
     key: `${prefix}-${d}`,
     title: d,
@@ -149,11 +150,11 @@ try {
     writeback: { kind: "linear" as const, issueId: `${prefix}-${d}` },
     sourceState: { state: "Todo", labels: [] },
   }));
-  const source = { source: "linear", ready: async () => drafts } as unknown as Adapter;
-  const claimed = await claim({ source, repos: async () => [REPO], registry: async () => [] });
+  const source = { source: "linear", ready: async () => drafts, overrides: () => NO_OVERRIDES } as unknown as Adapter;
+  const claimed = await claim({ sources: [source], repos: async () => [REPO], registry: async () => [] });
   assert.deepEqual(
     claimed.claimed,
-    [`${prefix}-d1`],
+    [`${prefix}-1`],
     "with maxInFlight 2 and one free queued job in its repo, a machine claims one more; another machine's work does not count",
   );
 
