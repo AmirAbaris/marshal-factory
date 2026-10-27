@@ -5,7 +5,7 @@ import { jobs, slackMessages, type JobRow } from "../db/schema";
 import { loadConfig } from "../lib/config";
 import { attemptBranch } from "../lib/factory";
 import { inQuietHours, parseNotificationConfig, readNotifications, slackTestDetailSchema, type NotificationConfig, type SlackTarget } from "../lib/notifications";
-import { NOTIFY_WINDOW_MS, notifyEvents, renderMessage, renderTest, resolution, TOGGLE_OF, URGENT, type MessageFacts, type SlackMessage } from "../lib/slack";
+import { NOTIFY_WINDOW_MS, notifyEvents, panelUrl, renderMessage, renderTest, resolution, secretValues, TOGGLE_OF, URGENT, type MessageFacts, type SlackMessage } from "../lib/slack";
 import { SlackApiError, slackClient, SlackRateLimited, type SlackClient } from "../lib/slack-api";
 import { branchCosts } from "../lib/spend";
 
@@ -14,15 +14,10 @@ import { branchCosts } from "../lib/spend";
 // changed and posts the new ones. Every step is keyed by the event id, so a re-tick, a restart or a
 // second runner never posts an event twice. A runner without SLACK_BOT_TOKEN does nothing.
 
-export const panelUrl = () => (process.env.FACTORY_PANEL_URL ?? "https://marshal-factory.vercel.app").replace(/\/+$/, "");
-
 /** Most Slack calls one pass makes; the rest wait for the next tick, so Slack never holds up the runner's queue. */
 export const MAX_CALLS_PER_PASS = 25;
 /** A row still posting after this belongs to a runner that died mid-post; the event is posted again. */
 export const POSTING_STALE_MS = 5 * 60_000;
-
-/** Environment variables whose values must never reach Slack, whatever an agent writes. */
-const SECRET_NAME = /(TOKEN|SECRET|PASSWORD|PRIVATE_KEY|API_KEY|DATABASE_URL)/i;
 
 export type SlackSetup = { client: SlackClient; owner: string | null; secrets: readonly string[] };
 
@@ -35,8 +30,7 @@ export function slackFromEnv(env: Record<string, string | undefined> = process.e
   const baseUrl = env.SLACK_API_URL?.trim() || undefined;
   const key = createHash("sha256").update(`${token}\n${baseUrl ?? ""}`).digest("hex");
   if (cached?.key !== key) cached = { key, client: slackClient({ token, baseUrl }) };
-  const secrets = Object.entries(env).flatMap(([name, value]) => (value && SECRET_NAME.test(name) ? [value] : []));
-  return { client: cached.client, owner: env.SLACK_OWNER_USER_ID?.trim() || null, secrets };
+  return { client: cached.client, owner: env.SLACK_OWNER_USER_ID?.trim() || null, secrets: secretValues(env) };
 }
 
 const dmChannels = new Map<string, string>();

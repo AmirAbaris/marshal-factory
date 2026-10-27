@@ -1,6 +1,6 @@
 import type { JobRow } from "../db/schema";
 import { harnessLabel } from "./harness";
-import { INBOX_LABELS, inboxItems, inboxReason, isDismissed, type InboxAction, type InboxJob, type InboxKind } from "./inbox";
+import { INBOX_ACTIONS, INBOX_KINDS, INBOX_LABELS, inboxItems, inboxReason, isDismissed, type InboxAction, type InboxJob, type InboxKind } from "./inbox";
 import { mergeDecisionSchema, type MergeDecision } from "./merge-decision";
 import { sourceLink } from "./sources/shapes";
 import { parseStop, stopNeedsOwner } from "./stop";
@@ -67,9 +67,9 @@ const LABELS: Record<NotifyKind, string> = { ...INBOX_LABELS, merged: "Merged by
 export const NOTIFY_WINDOW_MS = 24 * 3_600_000;
 
 /**
- * The ids a level 2 button will carry, one per inbox action; the interactivity route dispatches on
- * them. Level 1 renders none of them. The link buttons' ids are there so that route can ack and
- * ignore their clicks.
+ * The ids an open message's action buttons carry, one per inbox action; the interactivity route
+ * (lib/slack-interactions.ts) dispatches on them, and a modal's callback id is the same id. The
+ * link buttons' ids are there so that route can ack and ignore their clicks.
  */
 export const SLACK_ACTION_IDS = {
   answer: "inbox:answer",
@@ -80,6 +80,33 @@ export const SLACK_ACTION_IDS = {
   dismiss: "inbox:dismiss",
   retry_stop: "inbox:retry_stop",
 } as const satisfies Record<InboxAction, string>;
+
+export const slackAction = (actionId: string): InboxAction | null =>
+  (Object.entries(SLACK_ACTION_IDS).find(([, id]) => id === actionId)?.[0] as InboxAction | undefined) ?? null;
+
+/** The button each inbox action gets; the panel's labels. */
+export const ACTION_LABELS: Record<InboxAction, string> = {
+  answer: "Answer",
+  approve: "Approve and merge",
+  request_changes: "Request changes",
+  follow_up: "File a follow-up",
+  close: "Close",
+  dismiss: "Dismiss",
+  retry_stop: "Retry stop",
+};
+
+/** What the message says between the click and the notifier's resolution; it has no action buttons, so a second click finds none. */
+export const PENDING_LABELS: Record<InboxAction, string> = {
+  answer: "Answer sent",
+  approve: "⏳ Merging…",
+  request_changes: "⏳ Sending your changes…",
+  follow_up: "⏳ Filing a follow-up…",
+  close: "⏳ Closing…",
+  dismiss: "Dismissed",
+  retry_stop: "⏳ Interrupting again…",
+};
+
+const isInboxKind = (kind: NotifyKind): kind is InboxKind => (INBOX_KINDS as readonly string[]).includes(kind);
 export const SLACK_LINK_ACTION_IDS = { panel: "link:panel", pr: "link:pr", source: "link:source" } as const;
 /** The actions block's id is this plus the event id, so a click finds its slack_messages row. */
 export const ITEM_BLOCK_PREFIX = "item:";
@@ -212,11 +239,13 @@ const TEXT_MAX = 300;
 type PlainText = { type: "plain_text"; text: string; emoji?: boolean };
 type Mrkdwn = { type: "mrkdwn"; text: string };
 type LinkButton = { type: "button"; text: PlainText; url: string; action_id: string };
+type Confirm = { title: PlainText; text: Mrkdwn; confirm: PlainText; deny: PlainText };
+type ActionButton = { type: "button"; text: PlainText; action_id: string; style?: "primary"; confirm?: Confirm };
 export type SlackBlock =
   | { type: "header"; text: PlainText }
   | { type: "section"; text: Mrkdwn }
   | { type: "context"; elements: Mrkdwn[] }
-  | { type: "actions"; block_id: string; elements: LinkButton[] };
+  | { type: "actions"; block_id: string; elements: (ActionButton | LinkButton)[] };
 export type SlackMessage = { text: string; blocks: SlackBlock[] };
 
 export type MessageFacts = {
@@ -229,13 +258,47 @@ export type MessageFacts = {
 
 const usd = (spend: NonNullable<MessageFacts["spend"]>) => `$${spend.usd.toFixed(2)}${spend.known ? "" : "+"}`;
 
-/** The message for an event, open or with what resolved it. */
-export function renderMessage(event: Pick<NotifyEvent, "id" | "kind" | "job" | "reason">, facts: MessageFacts, resolved: string | null = null): SlackMessage {
+export const panelUrl = () => (process.env.FACTORY_PANEL_URL ?? "https://marshal-factory.vercel.app").replace(/\/+$/, "");
+
+/** Environment variables whose values must never reach Slack, whatever an agent writes. */
+const SECRET_NAME = /(TOKEN|SECRET|PASSWORD|PRIVATE_KEY|API_KEY|DATABASE_URL)/i;
+export const secretValues = (env: Record<string, string | undefined>) => Object.entries(env).flatMap(([name, value]) => (value && SECRET_NAME.test(name) ? [value] : []));
+
+function actionButton(action: InboxAction, job: NotifyJob): ActionButton {
+  const button: ActionButton = { type: "button", text: { type: "plain_text", text: ACTION_LABELS[action] }, action_id: SLACK_ACTION_IDS[action] };
+  if (action !== "approve") return button;
+  return {
+    ...button,
+    style: "primary",
+    confirm: {
+      title: { type: "plain_text", text: "Approve and merge?" },
+      text: {
+        type: "mrkdwn",
+        text: clip(`The factory merges ${escape(job.key)} into ${escape(job.repo)} the way it merges on its own, then watches main. A newer push, a red or running check, a conflict or a branch behind its base still stops it.`, TEXT_MAX),
+      },
+      confirm: { type: "plain_text", text: "Approve and merge" },
+      deny: { type: "plain_text", text: "Cancel" },
+    },
+  };
+}
+
+/**
+ * The message for an event: open with the actions its inbox kind offers, pending (an action is on
+ * its way, no action buttons) or with what resolved it.
+ */
+export function renderMessage(
+  event: Pick<NotifyEvent, "id" | "kind" | "job" | "reason">,
+  facts: MessageFacts,
+  resolved: string | null = null,
+  pending: string | null = null,
+): SlackMessage {
   const { job, kind } = event;
   const clean = (text: string) => redact(text, facts.secrets).replace(/\s+/g, " ").trim();
   const title = clean(job.title);
   const reason = clip(clean(event.reason), REASON_MAX);
-  const line = resolved ? `*${escape(resolved)}* · ${LABELS[kind]}` : `*${LABELS[kind]}:* ${escape(reason)}`;
+  const status = resolved ?? pending;
+  const line = status ? `*${escape(status)}* · ${LABELS[kind]}` : `*${LABELS[kind]}:* ${escape(reason)}`;
+  const actions: readonly InboxAction[] = !status && isInboxKind(kind) ? INBOX_ACTIONS[kind] : [];
   const meta = [job.repo, ...(job.provider ? [harnessLabel(job.provider)] : []), ...(facts.spend ? [usd(facts.spend)] : [])];
   const source = sourceLink(job);
   const links: LinkButton[] = [
@@ -246,12 +309,12 @@ export function renderMessage(event: Pick<NotifyEvent, "id" | "kind" | "job" | "
       : []),
   ];
   return {
-    text: clip(`${EMOJI[kind]} ${job.key} · ${title}: ${resolved ?? reason}`, TEXT_MAX),
+    text: clip(`${EMOJI[kind]} ${job.key} · ${title}: ${status ?? reason}`, TEXT_MAX),
     blocks: [
       { type: "header", text: { type: "plain_text", text: clip(`${EMOJI[kind]} ${job.key} · ${title}`, HEADER_MAX), emoji: true } },
       { type: "section", text: { type: "mrkdwn", text: line } },
       { type: "context", elements: [{ type: "mrkdwn", text: escape(meta.join(" · ")) }] },
-      { type: "actions", block_id: `${ITEM_BLOCK_PREFIX}${event.id}`.slice(0, 255), elements: links },
+      { type: "actions", block_id: `${ITEM_BLOCK_PREFIX}${event.id}`.slice(0, 255), elements: [...actions.map((a) => actionButton(a, job)), ...links] },
     ],
   };
 }
