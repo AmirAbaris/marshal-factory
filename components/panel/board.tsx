@@ -10,11 +10,14 @@ export function Board({
   agentsBySession,
   selected,
   machines,
+  repoLabels,
 }: {
   cards: readonly BoardCard[];
   agentsBySession: Map<string, AgentRow[]>;
   selected: string | undefined;
   machines: ReadonlyMap<string, MachineRow>;
+  /** Each repo's short name, while more than one repo has jobs; undefined shows no repo. */
+  repoLabels?: ReadonlyMap<string, string>;
 }) {
   const agentsOf = (runs: readonly RunRow[]) =>
     runs.flatMap((r) => agentsBySession.get(r.session_id) ?? []);
@@ -47,6 +50,7 @@ export function Board({
                   machineName={card.machineId && (machines.get(card.machineId)?.name ?? card.machineId)}
                   agents={agentsOf(card.runs)}
                   selected={card.runs.some((r) => r.session_id === selected)}
+                  repoLabel={card.repo ? repoLabels?.get(card.repo) : undefined}
                 />
               ))}
             </div>

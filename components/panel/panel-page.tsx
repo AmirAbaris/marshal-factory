@@ -2,6 +2,7 @@ import { cookies } from "next/headers";
 import { Suspense } from "react";
 import { JOB_VIEW_COOKIE, parseJobView } from "@/components/panel/job-view";
 import { LivePanel, type DetailProps, type PanelView } from "@/components/panel/live-panel";
+import { db } from "@/db/client";
 import {
   agentsOverviewQuery,
   jobAuditQuery,
@@ -17,6 +18,8 @@ import {
   sessionEventsQuery,
   sessionStagesQuery,
 } from "@/lib/live-queries";
+import { REPO_FILTER_COOKIE, repoFilter } from "@/lib/repo-filter";
+import { readRegistry } from "@/lib/repositories";
 
 async function loadDetail(raw: string | undefined): Promise<DetailProps | undefined> {
   const sessionId = raw && parseSessionId(raw);
@@ -36,7 +39,7 @@ async function loadDetail(raw: string | undefined): Promise<DetailProps | undefi
 }
 
 async function Panel({ view, searchParams }: { view: PanelView; searchParams: Promise<Record<string, string | string[] | undefined>> }) {
-  const { run, job, view: rawView } = await searchParams;
+  const { run, job, view: rawView, repo } = await searchParams;
   const [jobs, runs, agents, machines, detail, jar] = await Promise.all([
     load(jobsQuery()),
     load(runsQuery()),
@@ -46,10 +49,14 @@ async function Panel({ view, searchParams }: { view: PanelView; searchParams: Pr
     cookies(),
   ]);
   const jobView = parseJobView(rawView) ?? parseJobView(jar.get(JOB_VIEW_COOKIE)?.value) ?? "board";
+  // After the loads, which check the owner.
+  const registry = await readRegistry(db);
   return (
     <LivePanel
       view={view}
       jobView={jobView}
+      repo={repoFilter(repo, jar.get(REPO_FILTER_COOKIE)?.value)}
+      registry={registry.map((r) => ({ repo: r.repo, display_name: r.display_name, enabled: r.enabled, is_default: r.is_default }))}
       jobs={jobs}
       runs={runs}
       agents={agents}

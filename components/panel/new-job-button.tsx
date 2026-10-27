@@ -23,7 +23,9 @@ import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "@/c
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
 import { EXECUTIONS, executionSchema } from "@/lib/execution";
+import type { RepoSettingsRow } from "@/db/schema";
 import type { Harness } from "@/lib/harness";
+import { displayName } from "@/lib/repo-name";
 import { RUNS_ON_LABELS } from "@/lib/ticket-overrides";
 import { cn } from "@/lib/utils";
 import { JOB_IMAGE_TYPES, MAX_JOB_IMAGE_BYTES, newJobSchema, type ImageUploadOutcome, type NewJob, type NewJobOutcome } from "@/lib/new-job-schema";
@@ -56,7 +58,7 @@ const runsOnItems = [
 ];
 
 /** Starts a job by filing it in Linear, where the factory picks it up like any labeled issue. */
-export function NewJobButton({ harnesses }: { harnesses: readonly Harness[] }) {
+export function NewJobButton({ harnesses, repos }: { harnesses: readonly Harness[]; repos: readonly Pick<RepoSettingsRow, "repo" | "display_name" | "enabled" | "is_default">[] }) {
   const [open, setOpen] = useState(false);
   const [created, setCreated] = useState<Extract<NewJobOutcome, { ok: true }> | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
@@ -64,6 +66,8 @@ export function NewJobButton({ harnesses }: { harnesses: readonly Harness[] }) {
   const form = useForm<NewJob>({ resolver: zodResolver(newJobSchema), defaultValues: blank() });
   const [images, setImages] = useState<JobImage[]>([]);
   const [dragging, setDragging] = useState(false);
+  const repoItems = repos.filter((r) => r.enabled).map((r) => ({ value: r.repo, label: displayName(r) }));
+  const defaultRepo = repos.find((r) => r.is_default)?.repo ?? null;
   const harnessItems = [{ value: SETTINGS_DEFAULT, label: "Settings default" }, ...harnesses.map((h) => ({ value: h.id, label: h.name }))];
   const picker = useRef<HTMLInputElement>(null);
   const uploading = images.some((i) => i.status === "uploading");
@@ -208,6 +212,31 @@ export function NewJobButton({ harnesses }: { harnesses: readonly Harness[] }) {
                     </Field>
                   )}
                 />
+                {repoItems.length > 0 && (
+                  <Controller
+                    name="repo"
+                    control={form.control}
+                    render={({ field }) => (
+                      <Field>
+                        <FieldLabel htmlFor="new-job-repo">Repository</FieldLabel>
+                        <Select items={repoItems} value={field.value ?? defaultRepo} onValueChange={(v) => field.onChange(v ?? undefined)}>
+                          <SelectTrigger id="new-job-repo" className="w-full">
+                            <SelectValue placeholder="Pick a repository" />
+                          </SelectTrigger>
+                          <SelectPopup>
+                            {repoItems.map((item) => (
+                              <SelectItem key={item.value} value={item.value}>
+                                {item.label}
+                                <span className="font-mono text-xs text-muted-foreground">{item.value}</span>
+                              </SelectItem>
+                            ))}
+                          </SelectPopup>
+                        </Select>
+                        <FieldDescription>Goes on the issue as its Repository label, the default one included.</FieldDescription>
+                      </Field>
+                    )}
+                  />
+                )}
                 <div className="grid grid-cols-2 gap-4">
                   <Controller
                     name="provider"

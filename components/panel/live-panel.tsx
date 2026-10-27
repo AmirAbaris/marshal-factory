@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { startTransition, useMemo, useOptimistic } from "react";
 import { Button } from "@/components/ui/button";
-import type { AgentRow, AuditRow, EventRow, JobRow, MachineRow, RunRow } from "@/db/schema";
+import type { AgentRow, AuditRow, EventRow, JobRow, MachineRow, RepoSettingsRow, RunRow } from "@/db/schema";
 import { Board } from "./board";
 import { boardCards } from "./cards";
 import { sandboxState } from "@/lib/execution";
@@ -22,6 +22,7 @@ import { OtherActivity } from "./other-activity";
 import { RunDetail } from "./run-detail";
 import { useFeed, type Feed } from "./sealed";
 import { PanelFooter, PanelHeader, type KeyHint } from "./panel-header";
+import { RepoSelect, repoOptions, useRepoFilter, useRepoLabels } from "./repo-filter";
 import { StatsStrip } from "./stats-strip";
 import { useAfterHydration } from "./time";
 
@@ -36,6 +37,9 @@ export type DetailProps = {
 };
 
 export type PanelView = "inbox" | "jobs" | "activity";
+
+/** What the jobs page and the inbox need of each registered repo. */
+export type PanelRepo = Pick<RepoSettingsRow, "repo" | "display_name" | "enabled" | "is_default">;
 
 const LIST_KEYS: readonly KeyHint[] = [
   { keys: ["J", "K"], label: "move" },
@@ -111,6 +115,8 @@ function useJobView(current: JobView) {
 export function LivePanel({
   view,
   jobView: currentJobView,
+  repo: currentRepo,
+  registry,
   jobs,
   runs,
   agents,
@@ -121,6 +127,9 @@ export function LivePanel({
   view: PanelView;
   /** The jobs page's layout, from ?view or the remembered one. */
   jobView: JobView;
+  /** The repo the jobs page and the inbox show, from ?repo or the remembered one; null shows all. */
+  repo: string | null;
+  registry: readonly PanelRepo[];
   /** The inbox item open on the right, by job key. */
   inboxKey: string | undefined;
   jobs: Feed<JobRow>;
@@ -162,17 +171,27 @@ export function LivePanel({
   const inboxCount = useMemo(() => inboxItems(jobRows).length, [jobRows]);
   const [jobView, switchJobView] = useJobView(currentJobView);
 
+  // The filter applies to the loaded feeds; the inbox count stays global.
+  const options = useMemo(() => repoOptions(registry, jobRows), [registry, jobRows]);
+  const repoLabels = useRepoLabels(options);
+  const [repoChoice, pickRepo] = useRepoFilter(currentRepo);
+  const repo = options.some((o) => o.repo === repoChoice) ? repoChoice : null;
+  const shownJobs = useMemo(() => (repo ? jobRows.filter((j) => j.repo === repo) : jobRows), [jobRows, repo]);
+  const shownCards = useMemo(() => (repo ? cards.filter((c) => c.repo === repo) : cards), [cards, repo]);
+  const shownInbox = useMemo(() => (repo ? inboxItems(shownJobs).length : inboxCount), [repo, shownJobs, inboxCount]);
+  const repoSelect = options.length > 0 && <RepoSelect options={options} value={repo} onChange={pickRepo} />;
+
   const meta = viewMeta(view);
   const active = runRows.filter((r) => r.status === "active").length;
   const content = (() => {
     switch (view) {
       case "inbox":
-        return <Inbox jobs={jobRows} cards={cards} selected={inboxKey} />;
+        return <Inbox jobs={shownJobs} cards={cards} selected={inboxKey} repoLabels={repoLabels} />;
       case "jobs":
         return jobView === "board" ? (
-          <Board cards={cards} agentsBySession={agentsBySession} selected={detail?.sessionId} machines={machineById} />
+          <Board cards={shownCards} agentsBySession={agentsBySession} selected={detail?.sessionId} machines={machineById} repoLabels={repoLabels} />
         ) : (
-          <JobList cards={cards} agentsBySession={agentsBySession} selected={detail?.sessionId} machines={machineById} />
+          <JobList cards={shownCards} agentsBySession={agentsBySession} selected={detail?.sessionId} machines={machineById} repoLabels={repoLabels} />
         );
       case "activity":
         return <OtherActivity runs={unstaged} agentsBySession={agentsBySession} selected={detail?.sessionId} />;
@@ -191,14 +210,17 @@ export function LivePanel({
         actions={
           meta.job ? (
             <>
+              {repoSelect}
               {inboxCount > 0 && (
                 <Button render={<Link href="/inbox" />} variant="ghost" size="sm" className="text-muted-foreground">
                   <InboxIcon data-icon="inline-start" />
                   {inboxCount} {inboxCount === 1 ? "needs" : "need"} you
                 </Button>
               )}
-              <NewJobButton harnesses={enabledHarnesses} />
+              <NewJobButton harnesses={enabledHarnesses} repos={registry} />
             </>
+          ) : view === "inbox" ? (
+            repoSelect
           ) : undefined
         }
       />
@@ -238,7 +260,7 @@ export function LivePanel({
       <PanelFooter
         status={status}
         note={[`${active} active`, sandboxNote].filter(Boolean).join(" · ")}
-        summary={footerSummary(view, { jobs: cards.length, sessions: unstaged.length, inbox: inboxCount })}
+        summary={footerSummary(view, { jobs: shownCards.length, sessions: unstaged.length, inbox: shownInbox })}
         keys={(view === "jobs" && jobView === "list") || view === "inbox" ? LIST_KEYS : undefined}
       />
     </>

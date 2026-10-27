@@ -2,7 +2,7 @@ import { asc, eq, sql } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import { z } from "zod";
 import type * as schema from "@/db/schema";
-import { repoSettings, type RepoSettingsRow } from "@/db/schema";
+import { jobs, repoSettings, type RepoSettingsRow } from "@/db/schema";
 import { isOwner, type SessionUser } from "@/lib/auth/owner";
 import { executionSchema, type Execution } from "@/lib/execution";
 import type { Harness } from "@/lib/harness";
@@ -78,6 +78,19 @@ export function withRepoDefaults(settings: LaunchDefaults, repo: RepoSettingsRow
 }
 
 export const readRegistry = (database: Db): Promise<RepoSettingsRow[]> => database.select().from(repoSettings).orderBy(asc(repoSettings.repo));
+
+/** Per repo, its jobs that are not merged or failed, and when its newest job was claimed. */
+export type RepoStats = { repo: string; open: number; lastAt: Date | null };
+
+export const readRepoStats = (database: Db): Promise<RepoStats[]> =>
+  database
+    .select({
+      repo: jobs.repo,
+      open: sql<number>`(count(*) filter (where ${jobs.stage} not in ('merged', 'failed')))::int`,
+      lastAt: sql<Date | null>`max(${jobs.claimed_at})`.mapWith(jobs.claimed_at),
+    })
+    .from(jobs)
+    .groupBy(jobs.repo);
 
 const isUniqueViolation = (error: unknown) => (error as { code?: string; cause?: { code?: string } })?.code === "23505" || (error as { cause?: { code?: string } })?.cause?.code === "23505";
 

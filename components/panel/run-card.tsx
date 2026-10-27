@@ -96,11 +96,14 @@ export function StageCard({
   agents,
   selected,
   machineName,
+  repoLabel,
 }: {
   card: BoardCard;
   agents: readonly AgentRow[];
   selected: boolean;
   machineName: string | null;
+  /** Shown only while more than one repo has jobs. */
+  repoLabel?: string;
 }) {
   const { latest } = card;
   return (
@@ -116,7 +119,8 @@ export function StageCard({
       <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
         {latest?.status === "active" && <Spinner className="size-2.5" />}
         <span className="font-mono">{card.jobKey ?? card.id.slice(0, 8)}</span>
-        <span className="ml-auto flex items-center gap-2.5">
+        {repoLabel && <span className="min-w-0 truncate">{repoLabel}</span>}
+        <span className="ml-auto flex shrink-0 items-center gap-2.5">
           {card.sourceLink && (
             <a href={card.sourceLink.href} target="_blank" rel="noreferrer" className="relative underline-offset-2 hover:text-foreground hover:underline">
               {card.sourceLink.label}
