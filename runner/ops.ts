@@ -14,6 +14,7 @@ import { claimConflict, conflictMessage, unclaimedRunsWithPr } from "../lib/conf
 import { attemptBranch, isJobKey, isMcpSession } from "../lib/factory";
 import { attemptBranchSql } from "../lib/branch-sql";
 import { nudgeMessage, watch } from "../lib/watchdog";
+import { factoryPlaybook, jobExecution } from "../lib/playbook";
 import { isTracked } from "../lib/harness";
 import { readHarnesses } from "../lib/t3-state";
 import { readSettings, resolveExecution, resolveHarness, type HarnessChoice } from "../lib/settings";
@@ -129,7 +130,7 @@ async function sendBackForConflict(job: Job, head: string) {
       });
       return true;
     }
-    await threads.send(job.t3_thread_id!, conflictMessage(job.key, job.pr_url!), host);
+    await threads.send(job.t3_thread_id!, conflictMessage(job.key, job.pr_url!, factoryPlaybook(jobExecution(job))), host);
   } catch (error) {
     await release();
     throw error;
@@ -197,7 +198,7 @@ export async function resumeAnswered() {
 
     if (alive) {
       try {
-        await threads.send(job.t3_thread_id!, await withLocalImages(job.source, job.key, resumeMessage(source.describe(job), plan.question, plan.answer)), host);
+        await threads.send(job.t3_thread_id!, await withLocalImages(job.source, job.key, resumeMessage(source.describe(job), plan.question, plan.answer, factoryPlaybook(jobExecution(job)))), host);
       } catch (error) {
         await db
           .update(jobs)
@@ -276,7 +277,7 @@ export async function watchdog() {
         .returning({ key: jobs.key });
       if (claimed.length === 0) continue;
       try {
-        await threads.send(job.t3_thread_id!, nudgeMessage(job.key, job.stage, action.idleMinutes), host);
+        await threads.send(job.t3_thread_id!, nudgeMessage(job.key, job.stage, action.idleMinutes, factoryPlaybook(jobExecution(job))), host);
       } catch (error) {
         await db
           .update(jobs)
@@ -629,7 +630,7 @@ function launchMessage(job: Job) {
     `Work ${sourceFor(job.source).describe(job)}: ${job.title}`,
     job.url,
     "",
-    "This is an unattended marshal-factory run. Follow the factory playbook in .agents/playbooks/factory.md. Report every stage with the report_stage tool, never ask in this thread, never merge yourself: end with a merge assessment and the factory decides. Before you report pr, run factory-verify on the commit you pushed (the report_stage reply for verifying names the command); the factory merges only a head whose checks passed there.",
+    "This is an unattended marshal-factory run. Follow the factory playbook named under Factory playbook at the end of this message. Report every stage with the report_stage tool, never ask in this thread, never merge yourself: end with a merge assessment and the factory decides. Before you report pr, run factory-verify on the commit you pushed (the report_stage reply for verifying names the command); the factory merges only a head whose checks passed there.",
     "",
     "## Issue",
     "",

@@ -5,6 +5,8 @@ when: Resolving one Linear issue unattended on a `factory/<KEY>` branch that mar
 
 # Factory run
 
+This playbook ships with marshal-factory, not with the repository: the first message names its path on this machine. It changes PStack's bundled playbooks the way a project playbook under `.agents/playbooks/` does, so open the bundled ones it extends and apply the changes below. A repository copy of this file may add notes about that repository; where it differs from this one, this one wins.
+
 No human reads this thread while it runs. The supervision panel and the pull request are the only outputs anyone sees. The branch name carries the issue key: `factory/FAC-2` works issue `FAC-2`. The issue title, body and URL are in the first message.
 
 ## Standing rules

@@ -1,14 +1,16 @@
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { z } from "zod";
 import { CONFIG_PATH, SANDBOX_IMAGE_PATH, type SandboxLimits } from "./config";
 import { imageDrift, imageVersionsSchema, rebuildText, type ImageComponent, type ImageVersions, type SandboxReadiness } from "./machine";
 
-// Fixed paths inside a job's sandbox. The image puts the factory's hook and MCP bundles under
-// FACTORY_ROOT; each launch clones the job's repo into REPO_DIR.
+// Fixed paths inside a job's sandbox. The image puts the factory's hook and MCP bundles and its
+// playbooks under FACTORY_ROOT; each launch clones the job's repo into REPO_DIR.
 
 export const FACTORY_ROOT = "/opt/marshal-factory";
+export const SANDBOX_PLAYBOOKS = `${FACTORY_ROOT}/playbooks`;
 export const REPO_DIR = "/work/repo";
 export const SANDBOX_HOME = "/root";
 export const GITHUB_TOKEN_PATH = `${SANDBOX_HOME}/.config/marshal-factory/github-token`;
@@ -34,6 +36,33 @@ export type SandboxImage = z.infer<typeof sandboxImageSchema>;
 
 type Pins = Pick<SandboxLimits, "t3Version" | "claudeCodeVersion" | "codexVersion" | "pstack">;
 
+/** The playbooks the factory ships with its image, by file name under playbooks/. */
+export const PLAYBOOK_FILES = ["factory.md", "onboarding.md"] as const;
+
+/** This checkout's playbooks directory. */
+export const checkoutPlaybooks = () => resolve(import.meta.dirname, "../playbooks");
+
+/** The playbooks by a content hash prefix, so any edit to one of them reads as another version. */
+export function playbooksVersion(read: (file: (typeof PLAYBOOK_FILES)[number]) => string = (file) => readFileSync(join(checkoutPlaybooks(), file), "utf8")) {
+  const hash = createHash("sha256");
+  for (const file of PLAYBOOK_FILES) hash.update(`${file}\0${read(file)}\0`);
+  return hash.digest("hex").slice(0, 12);
+}
+
+/**
+ * Copies this checkout's playbooks into an image under SANDBOX_PLAYBOOKS and returns the version of
+ * what the image then holds, read back, so a failed or partial copy can never match the pin.
+ */
+export async function installPlaybooks(fs: { writeText(text: string, path: string): Promise<void>; readText(path: string): Promise<string> }) {
+  const copied = new Map<string, string>();
+  for (const file of PLAYBOOK_FILES) {
+    const path = `${SANDBOX_PLAYBOOKS}/${file}`;
+    await fs.writeText(readFileSync(join(checkoutPlaybooks(), file), "utf8"), path);
+    copied.set(file, await fs.readText(path));
+  }
+  return playbooksVersion((file) => copied.get(file)!);
+}
+
 /** PStack by its version and a commit prefix, so a moved pin at the same version still differs. */
 export const pstackVersion = (pstack: Pins["pstack"]) => `${pstack.version}@${pstack.commit.slice(0, 12)}`;
 
@@ -42,12 +71,13 @@ export const pinnedVersions = (limits: Pins): Required<ImageVersions> => ({
   claudeCode: limits.claudeCodeVersion,
   codex: limits.codexVersion,
   pstack: pstackVersion(limits.pstack),
+  playbooks: playbooksVersion(),
 });
 
 export const builtVersions = (image: SandboxImage): ImageVersions => ({ t3: image.t3Version, ...image.versions });
 
 /** The version a CLI's --version output names, or null when it names none. */
-export function parseVersion(component: Exclude<ImageComponent, "pstack">, output: string) {
+export function parseVersion(component: Exclude<ImageComponent, "pstack" | "playbooks">, output: string) {
   const pattern = (() => {
     switch (component) {
       case "t3":

@@ -14,6 +14,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
 import { Spinner } from "@/components/ui/spinner";
+import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import type { MachineRow, RepoSettingsRow } from "@/db/schema";
 import { EXECUTIONS, type Execution } from "@/lib/execution";
@@ -166,6 +167,7 @@ function Detail({ entry, harnesses, panelTakesSecrets }: { entry: Entry; harness
   const [autonomy, setAutonomy] = useState<Autonomy>(row.autonomy);
   const [paths, setPaths] = useState((row.protected_paths ?? []).join("\n"));
   const [limit, setLimit] = useState(row.max_changed_lines === null ? "" : String(row.max_changed_lines));
+  const [requireBugbot, setRequireBugbot] = useState(row.require_bugbot);
   const [failure, setFailure] = useState<string | null>(null);
   const [savedNow, setSavedNow] = useState(false);
   const [pending, startTransition] = useTransition();
@@ -206,6 +208,7 @@ function Detail({ entry, harnesses, panelTakesSecrets }: { entry: Entry; harness
         autonomy,
         protectedPaths: linesOf(paths).length > 0 ? linesOf(paths) : null,
         maxChangedLines: limit.trim() === "" ? null : lines,
+        requireBugbot,
       }),
     );
   };
@@ -353,6 +356,15 @@ function Detail({ entry, harnesses, panelTakesSecrets }: { entry: Entry; harness
               placeholder={String(DEFAULT_POLICY.maxChangedLines)}
             />
             <FieldDescription>The most changed lines, additions plus deletions, a pull request may have to merge on its own. Empty means {DEFAULT_POLICY.maxChangedLines}.</FieldDescription>
+          </Field>
+          <Field>
+            <FieldLabel>
+              <Switch checked={requireBugbot} onCheckedChange={setRequireBugbot} />
+              Require Bugbot review
+            </FieldLabel>
+            <FieldDescription>
+              A pull request waits for Bugbot&apos;s review and doesn&apos;t merge on its own with an unresolved medium or high finding. Turn it off for a repo without Bugbot, so the factory neither waits for its review nor reads its findings.
+            </FieldDescription>
           </Field>
           {failure && (
             <p role="alert" className="text-sm text-destructive">

@@ -115,6 +115,7 @@ const repoRow = (repo: string, state: RepoRow["onboarding_state"], detail: Onboa
   autonomy: "off",
   protected_paths: null,
   max_changed_lines: null,
+  require_bugbot: true,
   onboarding_state: state,
   onboarding_detail: detail,
   onboarding_started_at: null,
@@ -175,6 +176,8 @@ Object.assign(sandboxRuntime, {
 });
 const committed: Record<string, string | null> = {};
 runner.onboardingRuntime.committedRecipe = async (repo) => committed[repo] ?? null;
+const bugbotOn = new Set<string>();
+runner.onboardingRuntime.bugbotRan = async (prUrl) => bugbotOn.has(prUrl);
 let threadState: "running" | "stopped" = "running";
 threads.read = async () => ({ state: threadState, status: null, lastMessage: "I wrote the recipe." });
 fake.answer = (sandbox, argv) => {
@@ -367,6 +370,27 @@ try {
   assert.equal(agentBox.terminated, true, "the onboarding sandbox is torn down");
   assert.deepEqual(await leases(), [], "and its slot's lease is released");
   threadState = "running";
+
+  // Bugbot: the recipe PR is watched until Bugbot shows up on it or the grace period passes.
+  assert.equal(d.bugbotProbe?.pr, `https://github.com/${AGENT}/pull/7`, "the recipe PR is watched for Bugbot");
+  assert.equal(agentRow.require_bugbot, true, "until then Bugbot is required, as for any repo");
+  await runner.advanceOnboarding({ only: await ours() });
+  assert.ok((await detail(AGENT)).bugbotProbe, "inside the grace period nothing is decided");
+  const realNow = runner.onboardingRuntime.now;
+  runner.onboardingRuntime.now = () => new Date(Date.now() + 6 * 60_000);
+  await runner.advanceOnboarding({ only: await ours() });
+  runner.onboardingRuntime.now = realNow;
+  assert.deepEqual([(await row(AGENT)).require_bugbot, (await detail(AGENT)).bugbotProbe], [false, undefined], "no Bugbot run on the recipe PR within the grace period: Bugbot isn't required");
+  assert.deepEqual([(await detail(AGENT)).recipePr, (await row(AGENT)).onboarding_state], [`https://github.com/${AGENT}/pull/7`, "needs_input"], "and the rest of onboarding is left as it was");
+  const BUGBOT = `${NS}/bugbot`;
+  const bugbotPr = `https://github.com/${BUGBOT}/pull/3`;
+  await insert(BUGBOT, "needs_input", { bugbotProbe: { pr: bugbotPr, since: new Date().toISOString() } });
+  await db.update(repoSettings).set({ require_bugbot: false }).where(eq(repoSettings.repo, BUGBOT));
+  bugbotOn.add(bugbotPr);
+  await runner.advanceOnboarding({ only: await ours() });
+  assert.deepEqual([(await row(BUGBOT)).require_bugbot, (await detail(BUGBOT)).bugbotProbe], [true, undefined], "a Bugbot run on the recipe PR makes Bugbot required at once");
+  assert.equal(onboarding.bugbotVerdict(false, new Date(0).toISOString(), 5 * 60_000 - 1, 5 * 60_000), undefined);
+  assert.equal(onboarding.bugbotVerdict(false, new Date(0).toISOString(), 5 * 60_000, 5 * 60_000), false);
 
   // A run that never gets recorded hands its lease back: here the sandbox cannot be created.
   const FLAKY = `${NS}/flaky`;

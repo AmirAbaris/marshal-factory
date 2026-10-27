@@ -232,6 +232,13 @@
       "when": 1793109216168,
       "tag": "0032_codex_slot_leases",
       "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1793133787237,
+      "tag": "0033_require_bugbot",
+      "breakpoints": true
     }
   ]
 }

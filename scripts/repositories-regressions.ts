@@ -34,6 +34,7 @@ const row = (repo: string, over: Partial<RepoRow> = {}): RepoRow => ({
   autonomy: "off",
   protected_paths: null,
   max_changed_lines: null,
+  require_bugbot: true,
   onboarding_state: null,
   onboarding_detail: null,
   onboarding_started_at: null,
@@ -126,7 +127,7 @@ const deps = (user: typeof owner | null = owner) => ({
   harnesses: async () => harnesses,
   save: async (choice: unknown) => void saved.push(choice),
 });
-const input = { repo: B, displayName: "Shop app", enabled: true, provider: "codex", execution: "modal", autonomy: "trial", protectedPaths: ["infra/**"], maxChangedLines: 300 };
+const input = { repo: B, displayName: "Shop app", enabled: true, provider: "codex", execution: "modal", autonomy: "trial", protectedPaths: ["infra/**"], maxChangedLines: 300, requireBugbot: true };
 for (const user of [null, { email: "x@example.com", emailVerified: true }, { email: OWNER, emailVerified: false }]) {
   assert.equal((await repos.saveRepository(deps(user), input)).ok, false, `${user?.email ?? "signed out"} cannot save`);
   assert.deepEqual(await repos.makeDefaultRepo({ ...deps(user), save: async () => void saved.push("default") }, { repo: B }), {
@@ -150,6 +151,8 @@ for (const bad of [{ execution: "cloud" }, { autonomy: "always" }, { enabled: "y
 assert.equal(await refused({ maxChangedLines: 0 }), "400 Use at least 1 line.");
 assert.equal(await refused({ maxChangedLines: 1.5 }), "400 Use a whole number of lines.");
 assert.equal(await refused({ protectedPaths: [" "] }).then((r) => r.startsWith("400")), true);
+assert.equal(await refused({ requireBugbot: "no" }), "400 Say whether pull requests wait for Bugbot.", "Require Bugbot review is a yes or no");
+assert.equal(await refused({ requireBugbot: undefined }), "400 Say whether pull requests wait for Bugbot.", "and must be sent");
 assert.equal(saved.length, 0);
 const kept = { ...deps(), registry: async () => registry.map((r) => (r.repo === B ? { ...r, provider: "gone" } : r)) };
 assert.equal((await repos.saveRepository(kept, { ...input, provider: "gone", displayName: "Shop renamed" })).ok, true, "a stored harness no machine reports any more does not block other edits");
@@ -157,6 +160,8 @@ assert.equal((await repos.saveRepository(kept, { ...input, provider: "off" })).o
 saved.length = 0;
 assert.equal(await refused({}), "saved");
 assert.equal(await refused({ provider: null, execution: null, protectedPaths: null, maxChangedLines: null }), "saved", "null means Settings and the default limits");
+assert.equal(await refused({ requireBugbot: false }), "saved");
+assert.equal((saved.at(-1) as { requireBugbot: boolean }).requireBugbot, false, "a repo without Bugbot saves as such");
 assert.equal((await repos.makeDefaultRepo({ ...deps(), save: async () => {} }, { repo: OFF })).ok, false, "a disabled repo cannot become the default");
 assert.equal((await repos.makeDefaultRepo({ ...deps(), save: async () => {} }, { repo: B })).ok, true);
 
@@ -246,9 +251,9 @@ try {
   await createJob({ ...fileDeps, file: async (d: (typeof dupFiled)[number]) => (dupFiled.push(d), { key: "FAC-2", url: "u" }), registry: async () => legacy2 }, { title: "Title", description: "", requestId, repo: `${OWNER_NS}-other/web` });
   assert.deepEqual(dupFiled[0]!.labels, [{ group: "Repository", name: `${OWNER_NS}-other/web` }], "New Job files the label that names only that repo");
 
-  await repos.writeRepository(db, { repo: B, displayName: "shop", enabled: true, provider: null, execution: "modal", autonomy: "trial", protectedPaths: ["a/**"], maxChangedLines: 10 }, OWNER, new Date());
+  await repos.writeRepository(db, { repo: B, displayName: "shop", enabled: true, provider: null, execution: "modal", autonomy: "trial", protectedPaths: ["a/**"], maxChangedLines: 10, requireBugbot: false }, OWNER, new Date());
   const [shopRow] = await db.select().from(repoSettings).where(eq(repoSettings.repo, B));
-  assert.deepEqual([shopRow!.display_name, shopRow!.execution, shopRow!.autonomy, shopRow!.protected_paths, shopRow!.max_changed_lines], [null, "modal", "trial", ["a/**"], 10], "a display name equal to the repo name stores as the default");
+  assert.deepEqual([shopRow!.display_name, shopRow!.execution, shopRow!.autonomy, shopRow!.protected_paths, shopRow!.max_changed_lines, shopRow!.require_bugbot], [null, "modal", "trial", ["a/**"], 10, false], "a display name equal to the repo name stores as the default");
 
   // Claim: each job goes to its labeled repo, else the default; a retry routes again from the labels it has now.
   ops.config.factory.maxInFlight = 1000;

@@ -345,6 +345,8 @@ export const repoSettings = pgTable(
     protected_paths: jsonb("protected_paths").$type<string[]>(),
     /** Most additions plus deletions a PR may have to merge on its own; null means the default. */
     max_changed_lines: integer("max_changed_lines"),
+    /** Whether a PR waits for and is held to Bugbot's review; false for a repo without Bugbot. */
+    require_bugbot: boolean("require_bugbot").notNull().default(true),
     /** Where onboarding stands (lib/onboarding.ts); null for a repo registered before onboarding existed. */
     onboarding_state: onboardingState("onboarding_state"),
     /** The recipe, its PR, check results, secret names (never values), the warm image and any run in flight. */

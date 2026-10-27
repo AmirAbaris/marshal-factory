@@ -6,10 +6,12 @@ import { db } from "../db/client";
 import { repoSettings, type RepoSettingsRow } from "../db/schema";
 import type { RepoName } from "../lib/github/app";
 import { fileOnDefaultBranch } from "../lib/github/installation";
+import { github } from "../lib/github/pulls";
 import { HostGoneError, type JobHost } from "../lib/host";
 import { deleteSnapshot, modal, modalHost, rememberSandbox, terminateSandbox } from "../lib/modal-host";
 import {
   afterRecipe,
+  bugbotVerdict,
   checkResultSchema,
   imageOutdated,
   modalSecretName,
@@ -76,6 +78,7 @@ const message = (error: unknown) => (error instanceof Error ? error.message.spli
 /** What onboarding reads from outside the database; regressions replace any of it. */
 export const onboardingRuntime = {
   committedRecipe: (repo: string): Promise<string | null> => fileOnDefaultBranch(repo as RepoName, RECIPE_PATH),
+  bugbotRan: (prUrl: string): Promise<boolean> => github.bugbotRan(prUrl),
   playbook: () => readFileSync(PLAYBOOK, "utf8"),
   now: () => new Date(),
 };
@@ -331,7 +334,7 @@ async function advanceAgent(row: RepoSettingsRow, run: StartedRun) {
   const { recipe, prUrl, checks, summary } = result.data;
   const state = await applyRecipe(row.repo, recipe, {
     recipeSource: "agent",
-    ...(prUrl && { recipePr: prUrl }),
+    ...(prUrl && { recipePr: prUrl, bugbotProbe: { pr: prUrl, since: onboardingRuntime.now().toISOString() } }),
     checks: checks as CheckResult[] | undefined,
     ...(summary && { summary: redact(summary, recipe.env?.map((e) => e.name) ?? [], 5) }),
   });
@@ -546,6 +549,36 @@ async function reapOnboarding(rows: readonly RepoSettingsRow[]) {
   return ended;
 }
 
+/**
+ * Sets require_bugbot from each recipe PR still watched: true once Bugbot has a check run on it,
+ * false once noCiGraceMinutes passed without one. A probe the row no longer holds writes nothing.
+ */
+async function probeBugbot(rows: readonly RepoSettingsRow[]) {
+  const graceMs = config.factory.noCiGraceMinutes * 60_000;
+  const results: unknown[] = [];
+  for (const row of rows) {
+    const probe = parseDetail(row.onboarding_detail).bugbotProbe;
+    if (!probe) continue;
+    try {
+      const verdict = bugbotVerdict(await onboardingRuntime.bugbotRan(probe.pr), probe.since, onboardingRuntime.now().getTime(), graceMs);
+      if (verdict === undefined) continue;
+      const set = await db.transaction(async (tx) => {
+        const [current] = await tx.select().from(repoSettings).where(eq(repoSettings.repo, row.repo)).for("update");
+        const detail = parseDetail(current?.onboarding_detail);
+        if (detail.bugbotProbe?.pr !== probe.pr || detail.bugbotProbe.since !== probe.since) return false;
+        await tx.update(repoSettings).set({ require_bugbot: verdict, onboarding_detail: { ...detail, bugbotProbe: undefined } }).where(eq(repoSettings.repo, row.repo));
+        return true;
+      });
+      if (!set) continue;
+      log("onboarding:bugbot", { repo: row.repo, requireBugbot: verdict, pr: probe.pr });
+      results.push({ repo: row.repo, requireBugbot: verdict });
+    } catch (error) {
+      results.push({ repo: row.repo, error: message(error) });
+    }
+  }
+  return results;
+}
+
 const advancing = new Set<string>();
 const REAP_EVERY_MS = 5 * 60_000;
 let lastReap = 0;
@@ -556,8 +589,13 @@ export async function advanceOnboarding({ only }: { only?: readonly string[] } =
   const rows = await db
     .select()
     .from(repoSettings)
-    .where(and(sql`${repoSettings.onboarding_detail} ? 'run' or ${repoSettings.onboarding_state} in ('building', 'rebuilding', 'ready')`, onlyRepos(only)));
-  const results: unknown[] = [];
+    .where(
+      and(
+        sql`${repoSettings.onboarding_detail} ? 'run' or ${repoSettings.onboarding_detail} ? 'bugbotProbe' or ${repoSettings.onboarding_state} in ('building', 'rebuilding', 'ready')`,
+        onlyRepos(only),
+      ),
+    );
+  const results: unknown[] = await probeBugbot(rows);
   for (const row of rows) {
     const run = parseDetail(row.onboarding_detail).run;
     if (run && !hasSandbox(run)) {

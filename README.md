@@ -181,11 +181,11 @@ This writes three things into the repo, all pointing at your live checkout:
 
 - `.claude/settings.json`: the reporter hooks and the budget hook.
 - `.mcp.json`: the `factory-report` MCP server.
-- `.agents/playbooks/factory.md`: the factory playbook.
+- `.agents/playbooks/factory.md`: a copy of the factory playbook. Threads follow the factory's own `playbooks/factory.md`, which every launch message names; the copy may only add notes about the repo.
 
 It merges with any settings the repo already has, adds `.claude/**` to the ESLint ignores when it can, and adds the repo to `factory.repos` in your config. Running it again changes nothing.
 
-Commit those files and push them to `main`. Every thread starts from a fresh worktree of `origin/main`, so a thread can only see the playbook and hooks once they're on `main`.
+Commit those files and push them to `main`. Every thread starts from a fresh worktree of `origin/main`, so a thread can only see the hooks once they're on `main`.
 
 Then restart the runner so it loads the new repo: `bun scripts/install-runner.ts --uninstall && bun scripts/install-runner.ts`. At startup the runner adds each checkout in `factory.repos` to the panel's **Repositories** page, and the first one becomes the default repo when there is none yet.
 

@@ -69,6 +69,8 @@ export const onboardingDetailSchema = z.object({
   /** Where the recipe came from: the repo's main, or an agent's PR not merged yet. */
   recipeSource: z.enum(["committed", "agent"]).optional(),
   recipePr: z.string().optional(),
+  /** The recipe PR the factory watches for a Bugbot check run, from when it was recorded, until require_bugbot is set from it. */
+  bugbotProbe: z.object({ pr: z.string(), since: z.string() }).optional(),
   summary: z.string().optional(),
   checks: z.array(checkResultSchema).optional(),
   missingSecrets: z.array(z.string()).optional(),
@@ -92,6 +94,15 @@ export const modalSecretName = (repo: string) =>
     .replace(/-+/g, "-")
     .replace(/-$/, "")
     .slice(0, 64);
+
+/**
+ * Whether the repo has Bugbot, from its recipe PR: yes once Bugbot has a check run there, no once
+ * the grace period passed without one, undefined while it may still show up.
+ */
+export function bugbotVerdict(ran: boolean, since: string, now: number, graceMs: number): boolean | undefined {
+  if (ran) return true;
+  return now - Date.parse(since) >= graceMs ? false : undefined;
+}
 
 /** After a recipe is known: secrets first, then the image. */
 export function afterRecipe(recipe: Recipe, detail: OnboardingDetail): { state: OnboardingState; missingSecrets: string[] } {

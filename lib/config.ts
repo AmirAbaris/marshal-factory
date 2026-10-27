@@ -72,6 +72,8 @@ export const factorySchema = z
     pricing: pricingSchema.default({}),
     /** Days a failed job keeps its worktree for a human to look at before cleanup removes it. */
     cleanupGraceDays: z.number().nonnegative().default(3),
+    /** Minutes a PR head with no check run and no status waits for CI to show up before the repo counts as having none; also how long onboarding waits for Bugbot on the recipe PR. */
+    noCiGraceMinutes: z.number().nonnegative().default(5),
     /** How long the runner watches the base branch's checks after it merged a PR, reverting when they fail. */
     postMergeWatchMinutes: z.number().positive().default(60),
     /** Hours a Claude Code subagent worktree must sit untouched before cleanup considers it. */

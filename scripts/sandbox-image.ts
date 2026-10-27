@@ -10,11 +10,14 @@ import {
   enabledPstack,
   FACTORY_ROOT,
   GITHUB_TOKEN_PATH,
+  installPlaybooks,
   parseVersion,
   pinnedVersions,
+  PLAYBOOK_FILES,
   PSTACK_DIR,
   PSTACK_PLUGIN,
   pstackVersion,
+  SANDBOX_PLAYBOOKS,
   type SandboxImage,
 } from "../lib/sandbox";
 
@@ -23,10 +26,10 @@ import {
 // The base layers come from Dockerfile commands and Modal caches them. The factory's hook and MCP
 // entry points are bundled here with Bun, one self-contained file each at the path the wiring
 // names, so the sandbox needs no checkout and no install; `factory-verify` on PATH runs
-// hooks/verify.ts. A sandbox from the base gets those files,
+// hooks/verify.ts. A sandbox from the base gets those files and the factory's playbooks,
 // and its filesystem snapshot, kept indefinitely, is the image. T3, Claude Code, Codex and PStack
 // install at the versions factory.sandbox pins, and the build fails unless the sandbox reports
-// exactly those. Rerun it after the hooks or a pin change.
+// exactly those and holds this checkout's playbooks. Rerun it after the hooks, a playbook or a pin change.
 
 const root = join(import.meta.dirname, "..");
 const ENTRIES = ["hooks/report.ts", "hooks/budget.ts", "hooks/verify.ts", "mcp/factory-report.ts"];
@@ -111,12 +114,15 @@ try {
   });
   log(`build sandbox ${sandbox.sandboxId} up`);
   for (const entry of ENTRIES) await sandbox.filesystem.writeText(readFileSync(join(bundleDir, entry), "utf8"), join(FACTORY_ROOT, entry));
+  const playbooks = await installPlaybooks(sandbox.filesystem);
+  log(`playbooks ${PLAYBOOK_FILES.join(", ")} in ${SANDBOX_PLAYBOOKS} at ${playbooks}`);
   const pinned = pinnedVersions(limits);
   const built: ImageVersions = {
     t3: parseVersion("t3", await sh(sandbox, "t3 --version")) ?? undefined,
     claudeCode: parseVersion("claudeCode", await sh(sandbox, "claude --version")) ?? undefined,
     codex: parseVersion("codex", await sh(sandbox, "codex --version")) ?? undefined,
     pstack: await pstackInImage(sandbox),
+    playbooks,
   };
   const drift = imageDrift(built, pinned);
   if (drift.length > 0) throw new Error(`the build sandbox does not match the pins: ${rebuildText(drift)}`);

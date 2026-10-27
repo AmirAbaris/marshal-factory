@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { ReviewComment } from "../inbox";
-import type { BugbotFinding, BugbotReview, ChangedFile, CheckState, MergeMethod } from "../merge-decision";
+import { DEFAULT_NO_CI_GRACE_MS, type BugbotFinding, type BugbotReview, type ChangedFile, type CheckState, type MergeMethod } from "../merge-decision";
 import { GITHUB_API, GitHubError, githubRequest, installationTokens, type RepoName, type TokenSource } from "./app";
 
 export type PullState = "open" | "closed" | "merged";
@@ -85,13 +85,21 @@ function bugbotReviewOf(runs: readonly CheckRun[]): BugbotReview {
 }
 
 /**
+ * What tells a commit nothing reported on from one whose CI has not started yet: when it was pushed,
+ * the checks its base branch requires, and how long CI may take to show up.
+ */
+export type NoCiFacts = { pushedAt: number; now: number; graceMs: number; required: readonly string[] };
+
+/**
  * Every check run and commit status on a commit, Bugbot's run aside. A commit nothing reported on
- * yet is pending: CI may not have started. So is one GitHub listed more checks for than it returned.
+ * yet is pending: CI may not have started. It has none once it is older than the grace period and
+ * its base branch requires no check. One GitHub listed more checks for than it returned is pending.
  */
 export function checkStateOf(
   runs: readonly CheckRun[],
   status: z.infer<typeof combinedStatusSchema>,
   complete = true,
+  noCi?: NoCiFacts,
 ): { checks: CheckState; bugbot: BugbotReview } {
   const others = runs.filter((run) => !isBugbot(run));
   const states: CheckState[] = others.map((run) =>
@@ -99,9 +107,33 @@ export function checkStateOf(
   );
   if (status.total_count > 0) states.push(status.state === "success" ? "success" : status.state === "pending" ? "pending" : "failure");
   if (!complete) states.push("pending");
-  const checks: CheckState = states.includes("failure") ? "failure" : states.length === 0 || states.includes("pending") ? "pending" : "success";
+  const unreported = states.length === 0 && noCi !== undefined && noCi.required.length === 0 && noCi.now - noCi.pushedAt >= noCi.graceMs;
+  const checks: CheckState = states.includes("failure") ? "failure" : unreported ? "none" : states.length === 0 || states.includes("pending") ? "pending" : "success";
   return { checks, bugbot: bugbotReviewOf(runs) };
 }
+
+/** Whether no check but Bugbot's reported on the commit; only then is it worth asking whether the repo has CI. */
+const nothingReported = (report: { runs: readonly CheckRun[]; status: { total_count: number }; complete: boolean }) =>
+  report.complete && report.runs.every(isBugbot) && report.status.total_count === 0;
+
+const branchProtectionSchema = z.object({
+  protection: z
+    .object({ required_status_checks: z.object({ contexts: z.array(z.string()).default([]), checks: z.array(z.object({ context: z.string() })).default([]) }).nullable().optional() })
+    .optional(),
+});
+const branchRulesSchema = z.array(
+  z.object({ type: z.string(), parameters: z.object({ required_status_checks: z.array(z.object({ context: z.string() })).optional() }).optional() }),
+);
+
+/** The status checks a branch's protection and its rulesets require, from what the App may read. */
+export function requiredChecksOf(protection: unknown, rules: unknown): string[] {
+  const required = branchProtectionSchema.safeParse(protection).data?.protection?.required_status_checks;
+  const fromRules = (branchRulesSchema.safeParse(rules).data ?? []).filter((r) => r.type === "required_status_checks").flatMap((r) => r.parameters?.required_status_checks ?? []);
+  return [...new Set([...(required?.contexts ?? []), ...(required?.checks ?? []).map((c) => c.context), ...fromRules.map((c) => c.context)])];
+}
+
+/** How checkState tells a repo without CI from CI that has not started; `seenAt` is when the factory first saw the head. Without `baseRef` it never says none. */
+export type CheckStateOptions = { baseRef?: string; seenAt?: number; graceMs?: number; now?: number };
 
 const statusesSchema = combinedStatusSchema.extend({ statuses: z.array(z.object({ context: z.string(), state: z.string() })).default([]) });
 
@@ -204,6 +236,23 @@ export function pullsClient({ api, tokens }: { api: string; tokens: TokenSource 
     return { runs: runs.items, status: { ...combined, statuses: statuses.items }, complete: runs.complete && statuses.complete };
   }
 
+  /** The checks the base branch requires. Branch protection and rulesets the App can't read (403, 404) count as requiring none. */
+  async function requiredStatusChecks(repo: RepoName, baseRef: string) {
+    const branch = encodeURIComponent(baseRef);
+    const [protection, rules] = await Promise.all([
+      request(repo, "GET", `/repos/${repo}/branches/${branch}`, { allow: [403, 404] }),
+      request(repo, "GET", `/repos/${repo}/rules/branches/${branch}`, { allow: [403, 404] }),
+    ]);
+    return requiredChecksOf(protection.status === 200 ? protection.json : null, rules.status === 200 ? rules.json : null);
+  }
+
+  /** When the commit was made, or when the factory first saw it if that is later, since a pushed commit can be older than its push. */
+  async function pushedAt(repo: RepoName, sha: string, seenAt: number | undefined) {
+    const { json } = await request(repo, "GET", `/repos/${repo}/git/commits/${sha}`);
+    const committed = Date.parse(z.object({ committer: z.object({ date: z.string() }) }).parse(json).committer.date);
+    return Math.max(committed, seenAt ?? 0);
+  }
+
   return {
     async pullRequest(url: string): Promise<PullRequest> {
       const { repo, number } = parsePullUrl(url);
@@ -267,9 +316,20 @@ export function pullsClient({ api, tokens }: { api: string; tokens: TokenSource 
       return files;
     },
 
-    async checkState(repo: RepoName, sha: string) {
-      const { runs, status, complete } = await commitReport(repo, sha);
-      return checkStateOf(runs, status, complete);
+    async checkState(repo: RepoName, sha: string, { baseRef, seenAt, graceMs = DEFAULT_NO_CI_GRACE_MS, now = Date.now() }: CheckStateOptions = {}) {
+      const report = await commitReport(repo, sha);
+      // Without the base branch its required checks are unknown, so an empty report stays pending.
+      if (!nothingReported(report) || !baseRef) return checkStateOf(report.runs, report.status, report.complete);
+      const [pushed, required] = await Promise.all([pushedAt(repo, sha, seenAt), requiredStatusChecks(repo, baseRef)]);
+      return checkStateOf(report.runs, report.status, report.complete, { pushedAt: pushed, now, graceMs, required });
+    },
+
+    /** Whether Bugbot has a check run on the PR's head, in any state. */
+    async bugbotRan(url: string): Promise<boolean> {
+      const { repo, number } = parsePullUrl(url);
+      const { json } = await request(repo, "GET", `/repos/${repo}/pulls/${number}`);
+      const head = pullSchema.parse(json).head.sha;
+      return (await commitReport(repo, head)).runs.some(isBugbot);
     },
 
     async bugbotFindings(url: string): Promise<BugbotFinding[]> {
