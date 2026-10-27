@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { ASSESSMENT_CHECKS, CHECK_LABELS, type MergeAssessment } from "./assessment";
+import { PRODUCER_LABELS, shortSha } from "./evidence";
 import type { MergeDecision } from "./merge-decision";
 
 // The comments a merge decision leaves on its PR and in its source. Each body follows from the
@@ -39,16 +40,22 @@ function watchLine({ watch }: MergeDecision) {
   }
 }
 
+/** What the merge rests on beyond GitHub's checks: the checks run at exactly the merged head. */
+function evidenceLine({ evidence }: MergeDecision) {
+  if (evidence?.state !== "verified") return "";
+  return `Verified at ${shortSha(evidence.sha)} · ${evidence.passed}/${evidence.total} checks, run by ${PRODUCER_LABELS[evidence.producer]}.`;
+}
+
 /** The PR comment for the decision, or null when it has nothing to say there yet. */
 export function prCommentBody(decision: MergeDecision, assessment: MergeAssessment | null): string | null {
   const parts = (() => {
-    if (decision.merged) return ["✅ Merged by the factory", watchLine(decision), ...assessmentBlock(assessment)];
+    if (decision.merged) return ["✅ Merged by the factory", evidenceLine(decision), watchLine(decision), ...assessmentBlock(assessment)];
     if (decision.autonomy === "off") return null;
     switch (decision.outcome) {
       case "pending":
         return null;
       case "merge":
-        return decision.autonomy === "trial" ? ["Would merge (trial)", ...assessmentBlock(assessment)] : null;
+        return decision.autonomy === "trial" ? ["Would merge (trial)", evidenceLine(decision), ...assessmentBlock(assessment)] : null;
       case "handover":
         if (decision.autonomy === "trial") return [`Would hand over (trial) because:\n\n${bullets(decision.reasons)}`];
         return [

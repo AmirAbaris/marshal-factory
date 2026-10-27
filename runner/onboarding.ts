@@ -1,9 +1,9 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { asc, eq, isNotNull, sql } from "drizzle-orm";
+import { asc, eq, sql } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "../db/client";
-import { jobs, repoSettings, type RepoSettingsRow } from "../db/schema";
+import { repoSettings, type RepoSettingsRow } from "../db/schema";
 import type { RepoName } from "../lib/github/app";
 import { fileOnDefaultBranch } from "../lib/github/installation";
 import { HostGoneError, type JobHost } from "../lib/host";
@@ -36,13 +36,13 @@ import {
 } from "../lib/recipe";
 import { recipeHash, sha256 } from "../lib/recipe-hash";
 import { builtVersions, GITHUB_TOKEN_PATH, imageProblem, REPO_DIR, type SandboxImage } from "../lib/sandbox";
-import { matchesAny } from "../lib/merge-decision";
+import { matchesAny } from "../lib/globs";
 import type { RepoPushDetail } from "../lib/webhooks";
 import { config } from "./config";
 import { thisMachine } from "./heartbeat";
 import { startThread } from "./launch";
 import { launchSettings } from "./ops";
-import { loginFailed, onboardingSlots, TOKEN_REFRESH_MS, writeBackLogin } from "./lifecycle";
+import { leasedSlots, loginFailed, TOKEN_REFRESH_MS, uniqueViolation, writeBackLogin } from "./lifecycle";
 import { CodexLoginError, sandboxHarness, sandboxRuntime, sandboxSecrets, setupSandbox, usableSlots, writeGithubToken } from "./sandbox";
 import { threads } from "./threads";
 
@@ -65,6 +65,8 @@ import { threads } from "./threads";
 export const ONBOARDING_BRANCH = "factory/onboarding";
 export const ONBOARDING_RESULT = `${BUILD_DIR}/result.json`;
 const AGENT_GIVE_UP_MS = 90 * 60_000;
+/** An agent run on another machine still without a sandbox after this died before creating it. */
+const LEASING_GIVE_UP_MS = 30 * 60_000;
 const BUILD_GIVE_UP_MS = 45 * 60_000;
 const PLAYBOOK = join(import.meta.dirname, "../playbooks/onboarding.md");
 
@@ -84,6 +86,11 @@ const resultSchema = z.union([
 ]);
 
 type Change = { state?: OnboardingState | null; detail: OnboardingDetail };
+type StartedRun = OnboardingRun & { sandboxId: string };
+const hasSandbox = (run: OnboardingRun): run is StartedRun => run.sandboxId !== undefined;
+
+/** Repos whose agent run this runner is creating a sandbox for. */
+const starting = new Set<string>();
 
 /** Reads the row under a lock and writes what `change` returns; null leaves it as it is. */
 async function update(repo: string, change: (row: RepoSettingsRow, detail: OnboardingDetail) => Change | null) {
@@ -111,7 +118,7 @@ async function fail(repo: string, reason: string, logText?: string) {
 }
 
 /** Ends the run's sandbox, handing an agent's login back to its slot first, and clears the run. */
-async function endRun(repo: string, run: OnboardingRun) {
+async function endRun(repo: string, run: StartedRun) {
   if (run.slot) await writeBackLogin(`onboard:${repo}`, run.sandboxId, run.slot);
   await terminateSandbox(run.sandboxId);
   await update(repo, (_row, detail) => (detail.run?.sandboxId === run.sandboxId ? { detail: { ...detail, run: undefined } } : null));
@@ -161,14 +168,30 @@ async function claimRun(repo: string, run: OnboardingRun, state?: OnboardingStat
 
 const secretsFor = (repo: string, detail: OnboardingDetail) => ((detail.secretsSet ?? []).length > 0 ? [modalSecretName(repo)] : []);
 
-/** A free Codex login slot: one no job and no other onboarding run holds. */
-async function freeSlot() {
-  const held = new Set([
-    ...(await db.select({ slot: jobs.codex_slot }).from(jobs).where(isNotNull(jobs.codex_slot))).map((r) => r.slot),
-    ...(await onboardingSlots()),
-  ]);
-  return usableSlots(config.factory.sandbox).find((slot) => !held.has(slot));
+/**
+ * Records an agent run holding a free Codex login slot, before its sandbox exists. The trigger on
+ * repo_settings leases the slot in the same write, so a lease never outlives its run: clearing
+ * the run frees it. "taken" when another run is on the row; undefined when every slot is held.
+ */
+async function claimSlot(repo: string, machine: string): Promise<OnboardingRun | "taken" | undefined> {
+  const held = await leasedSlots();
+  for (const slot of usableSlots(config.factory.sandbox).filter((s) => !held.has(s))) {
+    const run: OnboardingRun = { kind: "agent", machine, startedAt: onboardingRuntime.now().toISOString(), slot };
+    try {
+      return (await claimRun(repo, run, "analyzing")) ? run : "taken";
+    } catch (error) {
+      if (!uniqueViolation(error)) throw error;
+    }
+  }
+  return undefined;
 }
+
+/** The same agent run, still waiting for its sandbox. */
+const sameLeasing = (a: OnboardingRun | undefined, b: OnboardingRun) =>
+  a !== undefined && a.sandboxId === undefined && a.kind === b.kind && a.machine === b.machine && a.startedAt === b.startedAt && a.slot === b.slot;
+
+const clearLeasing = (repo: string, run: OnboardingRun, state?: OnboardingState, reason?: string) =>
+  update(repo, (_r, d) => (sameLeasing(d.run, run) ? { ...(state && { state }), detail: { ...d, run: undefined, ...(reason && { failure: failure(reason) }) } } : null));
 
 /** The recipe is known: record it with what came along, then secrets, then the image. */
 async function applyRecipe(repo: string, recipe: Recipe, extra: Partial<OnboardingDetail>) {
@@ -215,29 +238,49 @@ export async function onboardRepo(repo: string) {
 async function startAgent(repo: string, committedError: string | undefined) {
   const base = launchable();
   if ("problem" in base) return fail(repo, `Modal cannot start the onboarding sandbox: ${base.problem}.`);
-  const slot = await freeSlot();
-  if (!slot) throw new Error("no free Codex login slot for the onboarding run; it retries");
-  const limits = config.factory.sandbox;
-  const { harness } = await launchSettings();
-  const claudeToken = sandboxRuntime.claudeToken();
-  const { choice } = sandboxHarness(harness, sandboxRuntime.driverOf(harness.provider), Boolean(claudeToken), limits.codexModel);
-  const [row] = await db.select().from(repoSettings).where(eq(repoSettings.repo, repo));
-  const detail = parseDetail(row?.onboarding_detail);
-  const created = await createSandbox(repo, "agent", base.image.imageId, secretsFor(repo, detail));
-  const now = onboardingRuntime.now().toISOString();
-  const run: OnboardingRun = { kind: "agent", machine: created.machine, sandboxId: created.sandboxId, startedAt: now, slot, tokenAt: now };
-  if (!(await claimRun(repo, run, "analyzing"))) {
-    await terminateSandbox(created.sandboxId);
-    return { repo, skipped: "another run started" };
-  }
+  starting.add(repo);
   try {
+    const leasing = await claimSlot(repo, (await thisMachine()).id);
+    if (leasing === "taken") return { repo, skipped: "another run started" };
+    if (!leasing) throw new Error("no free Codex login slot for the onboarding run; it retries");
+    const created = await agentSandbox(repo, leasing, base.image).catch(async (error: unknown) => {
+      await clearLeasing(repo, leasing);
+      throw error;
+    });
+    return created ? await runAgent(repo, created.run, created.host, committedError) : { repo, skipped: "another run started" };
+  } finally {
+    starting.delete(repo);
+  }
+}
+
+/** The leasing run's sandbox, recorded on its run; undefined when the run was cleared meanwhile. */
+async function agentSandbox(repo: string, leasing: OnboardingRun, image: SandboxImage) {
+  const [row] = await db.select().from(repoSettings).where(eq(repoSettings.repo, repo));
+  const created = await createSandbox(repo, "agent", image.imageId, secretsFor(repo, parseDetail(row?.onboarding_detail)));
+  const run: StartedRun = { ...leasing, sandboxId: created.sandboxId, tokenAt: onboardingRuntime.now().toISOString() };
+  if (!(await update(repo, (_r, d) => (sameLeasing(d.run, leasing) ? { detail: { ...d, run } } : null)))) {
+    await terminateSandbox(created.sandboxId);
+    return undefined;
+  }
+  return { run, host: created.host };
+}
+
+async function runAgent(repo: string, run: StartedRun, host: JobHost, committedError: string | undefined) {
+  const limits = config.factory.sandbox;
+  const slot = run.slot!;
+  try {
+    const { harness } = await launchSettings();
+    const claudeToken = sandboxRuntime.claudeToken();
+    const { choice } = sandboxHarness(harness, sandboxRuntime.driverOf(harness.provider), Boolean(claudeToken), limits.codexModel);
+    const [row] = await db.select().from(repoSettings).where(eq(repoSettings.repo, repo));
+    const detail = parseDetail(row?.onboarding_detail);
     const githubToken = await sandboxRuntime.githubToken(repo as RepoName);
     const setup = { repo, choice, hasClaude: Boolean(claudeToken), slot, codexAuth: sandboxRuntime.slotAuth(slot), githubToken, ingest: null };
-    const outcome = await setupSandbox(created.host, setup, limits.codexModel);
-    await created.host.run("mkdir", ["-p", BUILD_DIR], { timeoutMs: 30_000 });
-    const threadId = await startThread(created.host, REPO_DIR, ONBOARDING_BRANCH, `Onboard ${repo}`, agentMessage(repo, detail, committedError), outcome.choice);
+    const outcome = await setupSandbox(host, setup, limits.codexModel);
+    await host.run("mkdir", ["-p", BUILD_DIR], { timeoutMs: 30_000 });
+    const threadId = await startThread(host, REPO_DIR, ONBOARDING_BRANCH, `Onboard ${repo}`, agentMessage(repo, detail, committedError), outcome.choice);
     await update(repo, (_r, d) => (d.run?.sandboxId === run.sandboxId ? { detail: { ...d, run: { ...run, threadId } } } : null));
-    log("onboarding:agent-started", { repo, sandbox: created.sandboxId, threadId, harness: outcome.choice });
+    log("onboarding:agent-started", { repo, sandbox: run.sandboxId, threadId, harness: outcome.choice });
     return { repo, agent: threadId };
   } catch (error) {
     if (error instanceof CodexLoginError) await loginFailed(`onboard:${repo}`, error.slot);
@@ -246,7 +289,7 @@ async function startAgent(repo: string, committedError: string | undefined) {
   }
 }
 
-async function refreshToken(repo: string, run: OnboardingRun, host: JobHost) {
+async function refreshToken(repo: string, run: StartedRun, host: JobHost) {
   if (run.tokenAt && Date.now() - Date.parse(run.tokenAt) < TOKEN_REFRESH_MS) return;
   await writeGithubToken(host, await sandboxRuntime.githubToken(repo as RepoName));
   const tokenAt = onboardingRuntime.now().toISOString();
@@ -255,7 +298,7 @@ async function refreshToken(repo: string, run: OnboardingRun, host: JobHost) {
 
 const overdue = (run: OnboardingRun, limitMs: number) => Date.now() - Date.parse(run.startedAt) > limitMs;
 
-async function advanceAgent(row: RepoSettingsRow, run: OnboardingRun) {
+async function advanceAgent(row: RepoSettingsRow, run: StartedRun) {
   const host = modalHost(run.sandboxId);
   const read = await threads.read(run.threadId ?? null, host);
   if (read.state === "running") {
@@ -343,7 +386,7 @@ async function startBuild(row: RepoSettingsRow, image: SandboxImage) {
   const checks = detail.recipeSource === "committed" && detail.image?.recipeHash !== hash;
   const created = await createSandbox(row.repo, "build", image.imageId, secretsFor(row.repo, detail));
   const now = onboardingRuntime.now().toISOString();
-  const run: OnboardingRun = { kind: "build", machine: created.machine, sandboxId: created.sandboxId, startedAt: now, tokenAt: now, checks };
+  const run: StartedRun = { kind: "build", machine: created.machine, sandboxId: created.sandboxId, startedAt: now, tokenAt: now, checks };
   if (!(await claimRun(row.repo, run))) {
     await terminateSandbox(created.sandboxId);
     return undefined;
@@ -358,7 +401,7 @@ async function startBuild(row: RepoSettingsRow, image: SandboxImage) {
   }
 }
 
-async function advanceBuild(row: RepoSettingsRow, run: OnboardingRun) {
+async function advanceBuild(row: RepoSettingsRow, run: StartedRun) {
   const host = modalHost(run.sandboxId);
   const detail = parseDetail(row.onboarding_detail);
   const recipe = detail.recipe!;
@@ -455,7 +498,7 @@ export async function repoPushed(push: RepoPushDetail) {
     }
   }
   if (!detail.recipe) return { repo: row.repo, skipped: "no recipe yet" };
-  return requestRebuild(row.repo, recipeChanged ? "the recipe changed on main" : "dependencies changed on main");
+  return requestRebuild(row.repo, push.truncated ? "a push to main changed more than the factory can list" : recipeChanged ? "the recipe changed on main" : "dependencies changed on main");
 }
 
 /**
@@ -511,6 +554,14 @@ export async function advanceOnboarding() {
   const results: unknown[] = [];
   for (const row of rows) {
     const run = parseDetail(row.onboarding_detail).run;
+    if (run && !hasSandbox(run)) {
+      const abandoned = run.machine === machine.id ? !starting.has(row.repo) : overdue(run, LEASING_GIVE_UP_MS);
+      if (abandoned && (await clearLeasing(row.repo, run, "failed", "The onboarding run stopped before its sandbox was created; retry it."))) {
+        log("onboarding:leasing-abandoned", { repo: row.repo, slot: run.slot, machine: run.machine });
+        results.push({ repo: row.repo, released: run.slot });
+      }
+      continue;
+    }
     if (!run || run.machine !== machine.id || advancing.has(row.repo)) continue;
     advancing.add(row.repo);
     try {

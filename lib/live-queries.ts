@@ -2,7 +2,7 @@ import { createRealtime } from "@neon/realtime/server";
 import { drizzleAdapter } from "@neon/realtime-drizzle";
 import { and, asc, desc, eq, getTableColumns, ne } from "drizzle-orm";
 import { db } from "@/db/client";
-import { agents, auditLog, events, jobs, machines, runs } from "@/db/schema";
+import { agents, auditLog, events, jobEvidence, jobs, machines, runs } from "@/db/schema";
 import { isJobKey } from "@/lib/factory";
 import type { JobId } from "@/lib/sources/shapes";
 import { assertOwner } from "@/lib/auth/server";
@@ -99,6 +99,17 @@ export const jobAuditQuery = (jobId: JobId) =>
     .where(eq(auditLog.job_id, jobId))
     .orderBy(desc(auditLog.at), desc(auditLog.id))
     .limit(AUDIT_LIMIT);
+
+export const EVIDENCE_LIMIT = 20;
+
+/** The checks run at each of the job's commits, newest first. */
+export const jobEvidenceQuery = (jobKey: string) =>
+  db
+    .select(getTableColumns(jobEvidence))
+    .from(jobEvidence)
+    .where(eq(jobEvidence.job_key, jobKey))
+    .orderBy(desc(jobEvidence.recorded_at), desc(jobEvidence.sha))
+    .limit(EVIDENCE_LIMIT);
 
 export async function jobIdForKey(jobKey: string) {
   await assertOwner();

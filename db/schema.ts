@@ -15,6 +15,7 @@ import {
 } from "drizzle-orm/pg-core";
 import { STAGES } from "../lib/events";
 import type { MergeAssessment } from "../lib/assessment";
+import type { CheckSource, EvidenceCheck, EvidenceSummary, Producer } from "../lib/evidence";
 import { DEFAULT_EXECUTION, type Execution } from "../lib/execution";
 import type { Autonomy, MergeDecision } from "../lib/merge-decision";
 import { ONBOARDING_STATES, type OnboardingDetail } from "../lib/onboarding";
@@ -171,6 +172,8 @@ export const jobs = pgTable(
     merge_assessment: jsonb("merge_assessment").$type<MergeAssessment>(),
     /** The runner's latest merge decision while the job sits in pr; see lib/merge-decision.ts. */
     merge_decision: jsonb("merge_decision").$type<MergeDecision>(),
+    /** The latest evidence for the current attempt, without output; job_evidence keeps every commit's. See lib/evidence.ts. */
+    evidence: jsonb("evidence").$type<EvidenceSummary>(),
     /** When the owner dismissed the job from the inbox; a failure newer than this shows again. */
     dismissed_at: ts("dismissed_at"),
     /** Review feedback already handed to the thread, from the panel or GitHub; the replay guard for request_changes. */
@@ -183,6 +186,47 @@ export const jobs = pgTable(
     uniqueIndex("jobs_codex_slot_idx").on(t.codex_slot).where(sql`${t.codex_slot} is not null`),
     check("jobs_id_check", sql`${t.id} = ${t.source}::text || ':' || ${t.external_id}`),
   ],
+);
+
+/**
+ * Who holds each Codex login slot: a job or an onboarding agent run. The slot is the primary key,
+ * so one holder at a time across both. Triggers from migration 0032 keep it in step with
+ * jobs.codex_slot and a repo's onboarding_detail run slot: setting either to a slot someone else
+ * holds fails with a unique violation, and clearing it releases the slot. Onboarding records its
+ * agent run with the slot before it creates the sandbox; see runner/onboarding.ts.
+ */
+export const codexSlotLeases = pgTable(
+  "codex_slot_leases",
+  {
+    slot: text("slot").primaryKey(),
+    holder_kind: text("holder_kind").$type<"job" | "onboarding">().notNull(),
+    /** The job's id, or the repo an onboarding run is for. */
+    holder_id: text("holder_id").notNull(),
+    leased_at: ts("leased_at").notNull().defaultNow(),
+  },
+  (t) => [check("codex_slot_leases_holder_kind_check", sql`${t.holder_kind} in ('job', 'onboarding')`)],
+);
+
+/**
+ * The checks run at one commit of a job, from an evidence event (lib/evidence.ts). One row per job
+ * and commit: a later run at the same commit replaces it, except that a run with uncommitted
+ * changes never replaces a clean one, since it says nothing about the commit.
+ */
+export const jobEvidence = pgTable(
+  "job_evidence",
+  {
+    job_key: text("job_key").notNull(),
+    sha: text("sha").notNull(),
+    attempt: integer("attempt").notNull(),
+    repo: text("repo").notNull(),
+    clean: boolean("clean").notNull(),
+    producer: text("producer").$type<Producer>().notNull(),
+    source: text("source").$type<CheckSource>().notNull(),
+    checks: jsonb("checks").$type<EvidenceCheck[]>().notNull(),
+    event_id: text("event_id").notNull(),
+    recorded_at: ts("recorded_at").notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.job_key, t.sha] }), index("job_evidence_job_recorded_idx").on(t.job_key, t.recorded_at)],
 );
 
 /** Every webhook delivery, keyed by its id, so a redelivery is recognised and changes nothing. */
@@ -351,3 +395,4 @@ export type MachineRow = typeof machines.$inferSelect;
 export type SettingsRow = typeof settings.$inferSelect;
 export type RepoSettingsRow = typeof repoSettings.$inferSelect;
 export type AuditRow = typeof auditLog.$inferSelect;
+export type JobEvidenceRow = typeof jobEvidence.$inferSelect;

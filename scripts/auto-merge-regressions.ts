@@ -4,7 +4,7 @@ import { eq, inArray, like } from "drizzle-orm";
 import type { MergeAssessment } from "../lib/assessment";
 
 const { db } = await import("../db/client");
-const { auditLog, events, jobs, repoSettings } = await import("../db/schema");
+const { auditLog, events, jobEvidence, jobs, repoSettings } = await import("../db/schema");
 const { linearJob } = await import("./fixtures");
 const { jobId } = await import("../lib/sources/shapes");
 const { SOURCES } = await import("../lib/sources");
@@ -190,6 +190,21 @@ const auditsOf = async (k: string) => db.select().from(auditLog).where(eq(auditL
 const prUrl = (repo: string, n: number) => `https://github.com/${repo}/pull/${n}`;
 const putsTo = (repo: string, n: number) => writes.filter((w) => w.method === "PUT" && w.path === `/repos/${repo}/pulls/${n}/merge`);
 
+/** The agent's evidence that the checks passed at this head. */
+const verifiedAt = (k: string, sha: string) =>
+  db.insert(jobEvidence).values({
+    job_key: k,
+    sha,
+    attempt: 1,
+    repo: "o/r",
+    clean: true,
+    producer: "agent",
+    source: "package",
+    checks: [{ name: "test", command: "bun run test", exitCode: 0, startedAt: new Date().toISOString(), durationMs: 900, outputTail: "", passed: true }],
+    event_id: `auto-merge-evidence-${k}-${sha}`,
+    recorded_at: new Date(),
+  });
+
 async function job(name: string, repo: string, n: number, pull: Partial<Pull> = {}) {
   const k = `AM${name}-${stamp}`;
   keys.push(k);
@@ -206,6 +221,7 @@ async function job(name: string, repo: string, n: number, pull: Partial<Pull> = 
       merge_assessment: assessment,
     }),
   );
+  for (const sha of pulls.get(pullKey(repo, n))!.heads) await verifiedAt(k, sha);
   return k;
 }
 
@@ -314,6 +330,7 @@ try {
 
   // Comments: created once, then the same comment edited when the decision changes.
   pulls.get(pullKey(TRIAL, 6))!.heads = ["h6b"];
+  await verifiedAt(TRIALED, "h6b");
   checksOf.set("h6b", { runs: [checkRun("ci", "failure"), checkRun("Cursor Bugbot", "neutral")], statuses: [] });
   await decideMerges({ only: [TRIALED], now: at(30) });
   const trialComments = comments.get(pullKey(TRIAL, 6))!;
@@ -424,6 +441,7 @@ try {
   const ids = (await db.select({ id: jobs.id }).from(jobs).where(like(jobs.id, `${jobId("linear", "auto-merge-regress-")}%`))).map((j) => j.id);
   if (ids.length > 0) await db.delete(auditLog).where(inArray(auditLog.job_id, ids));
   if (keys.length > 0) await db.delete(events).where(inArray(events.job_key, keys));
+  if (keys.length > 0) await db.delete(jobEvidence).where(inArray(jobEvidence.job_key, keys));
   await db.delete(jobs).where(like(jobs.id, `${jobId("linear", "auto-merge-regress-")}%`));
   await db.delete(repoSettings).where(inArray(repoSettings.repo, [AUTO, MERGE_ONLY, TRIAL, OFF]));
   await server.close();

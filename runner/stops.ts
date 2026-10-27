@@ -141,7 +141,8 @@ async function checkThread(row: JobRow, stop: StopRecord, threadId: string, timi
     return (await advance(row.id, stop, { ...stop, checkedAt: iso, quietSince: null, step: `Asked the agent to stop; ${what}.` })) && "waiting";
   }
 
-  // The thread, then each subagent thread still running. A request id per run makes T3 ignore a repeat.
+  // The thread, then each subagent thread still running. A request id per run and retry makes T3
+  // ignore a repeat within one round, while the owner's Retry stop is a new request it acts on.
   const targets = [
     ...(parent.state === "running" ? [{ threadId, runId: parent.activeRunId }] : []),
     ...running.map((s) => ({ threadId: s.threadId, runId: s.latestRunId })),
@@ -149,7 +150,7 @@ async function checkThread(row: JobRow, stop: StopRecord, threadId: string, timi
   const reason = `marshal-factory stopped ${row.key}: ${stop.reason}`;
   const results = [];
   for (const target of targets) {
-    const requestId = `marshal-factory:stop:${row.id}:${stop.requestedAt}:${target.threadId}:${target.runId ?? "latest"}`;
+    const requestId = `marshal-factory:stop:${row.id}:${stop.requestedAt}:retry-${stop.retries}:${target.threadId}:${target.runId ?? "latest"}`;
     const outcome = await threads.interrupt(target.threadId, requestId, reason, host).catch((error: unknown) => ({ kind: "error" as const, reason: message(error) }));
     results.push({ threadId: target.threadId, outcome });
   }

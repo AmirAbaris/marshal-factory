@@ -1,6 +1,7 @@
 import type { JobRow, MachineRow, RunRow } from "@/db/schema";
 import type { Stage } from "@/lib/events";
 import { sandboxState, type SandboxState } from "@/lib/execution";
+import { evidenceLine, parseSummary, type EvidenceLine } from "@/lib/evidence";
 import { attemptBranch, isMcpSession } from "@/lib/factory";
 import { harnessLabel, isTracked, type Harness, type Tracking } from "@/lib/harness";
 import { parseInventory, UNKNOWN } from "@/lib/machine";
@@ -38,6 +39,8 @@ export type BoardCard = {
   runsOn: RunsOn | null;
   /** The runner's merge decision while the job is in pr, or once the factory merged it. */
   mergeDecision: MergeDecision | null;
+  /** What was verified at which commit, apart from the stage the agent reported; null when there is nothing to say. */
+  evidence: EvidenceLine | null;
   /** Where the attempt's stop is, and the thread it went to; null for a job never stopped. */
   stop: { view: StopView; thread: string | null } | null;
   /** The newest change to the job or any of its runs. */
@@ -99,6 +102,12 @@ export function shownDecision(job: Pick<JobRow, "stage" | "merge_decision">): Me
   return job.stage === "pr" || (job.stage === "merged" && decision?.merged) ? decision : null;
 }
 
+/** The current attempt's latest evidence, held against the PR head the runner last read. */
+export function jobEvidenceLine(job: Pick<JobRow, "evidence" | "attempt" | "stage" | "merge_decision">) {
+  const summary = parseSummary(job.evidence);
+  return evidenceLine(summary?.attempt === job.attempt ? summary : null, shownDecision(job)?.headSha ?? null, { expected: job.stage === "pr" });
+}
+
 const stagedAt = (run: RunRow) => run.stage_at?.getTime() ?? 0;
 
 function cardStop(job: JobRow): BoardCard["stop"] {
@@ -145,6 +154,7 @@ export function boardCards(jobs: readonly JobRow[], runs: readonly RunRow[], har
       harness: job.provider ? harnessOf(job.provider, attemptRuns) : null,
       runsOn: runsOn(job),
       mergeDecision: shownDecision(job),
+      evidence: jobEvidenceLine(job),
       stop: cardStop(job),
       updatedAt: new Date(Math.max(job.updated_at.getTime(), ...jobRuns.map((r) => r.last_event_at.getTime()))),
     };
@@ -180,6 +190,7 @@ export function boardCards(jobs: readonly JobRow[], runs: readonly RunRow[], har
         harness: null,
         runsOn: null,
         mergeDecision: null,
+        evidence: null,
         stop: null,
         updatedAt: new Date(Math.max(...sorted.map((r) => r.last_event_at.getTime()))),
       };

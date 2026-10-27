@@ -1,11 +1,17 @@
 import { z } from "zod";
-import { matchesAny } from "./merge-decision";
+import { matchesAny } from "./globs";
 
 // A repo's setup recipe, committed at RECIPE_PATH: what a sandbox installs and runs so the repo's
 // checks pass. The factory builds a warm image from it, so a job's sandbox starts with the system
 // packages, runtimes and dependency caches in place. Secrets are named here, never valued.
 
 export const RECIPE_PATH = ".factory/setup.json";
+
+/**
+ * Where a job's sandbox holds the recipe while it is only on the onboarding PR, so main, and the
+ * job's worktree, have none; factory-verify reads it when the worktree has no RECIPE_PATH.
+ */
+export const UNMERGED_RECIPE_PATH = "/root/.config/marshal-factory/recipe.json";
 
 /** Changes to these invalidate a warm image when the recipe names no warmKey of its own. */
 export const DEFAULT_WARM_KEY = [
@@ -113,12 +119,25 @@ function runtimeSteps(runtimes: Recipe["runtimes"]) {
     steps.push(`if ! bun --version 2>/dev/null | grep -q '^${runtimes.bun.replaceAll(".", "\\.")}'; then curl -fsSL https://bun.sh/install | BUN_INSTALL=/usr/local bash -s bun-v${runtimes.bun} || exit 12; fi`);
   }
   if (runtimes?.python) {
+    const pin = runtimes.python;
+    const uv = `UV_PYTHON_INSTALL_DIR=${UV_PYTHON_DIR} UV_PYTHON_PREFERENCE=only-managed uv`;
     steps.push(
-      `if ! python3 --version 2>/dev/null | grep -q '^Python ${runtimes.python.replaceAll(".", "\\.")}'; then apt-get update && apt-get install -y --no-install-recommends python3 python3-venv python3-pip || exit 13; fi`,
+      `if ! python3 --version 2>/dev/null | ${pythonIs(pin)}; then { command -v uv > /dev/null || curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin UV_NO_MODIFY_PATH=1 sh; } && ${uv} python install ${pin} && ln -sf "$(${uv} python find ${pin})" /usr/local/bin/python3 && ln -sf /usr/local/bin/python3 /usr/local/bin/python && hash -r || exit 13; fi`,
+      pythonPinCheck(pin),
     );
   }
   return steps;
 }
+
+/** Where uv keeps the Python a recipe pins; /usr/local/bin/python3 links to it. */
+const UV_PYTHON_DIR = "/opt/uv-python";
+
+/** A grep that passes for `python3 --version` output of the pin: 3.12 matches 3.12.4, not 3.120. */
+const pythonIs = (pin: string) => `grep -q '^Python ${pin.replaceAll(".", "\\.")}\\(\\.\\|$\\)'`;
+
+/** Fails the build when python3 on PATH is not the pinned version, whatever the install did. */
+export const pythonPinCheck = (pin: string) =>
+  `python3 --version 2>&1 | ${pythonIs(pin)} || { echo "python3 is $(python3 --version 2>&1), not the pinned ${pin}"; exit 13; }`;
 
 /** Where the build script keeps its log, exit code and check results in the sandbox. */
 export const BUILD_DIR = "/work/onboarding";
@@ -129,7 +148,7 @@ export const BUILD_EXIT: Record<number, string> = {
   10: "installing the system packages failed",
   11: "installing the pinned Node failed",
   12: "installing the pinned Bun failed",
-  13: "installing Python failed",
+  13: "installing the pinned Python failed",
   20: "a setup command failed",
 };
 

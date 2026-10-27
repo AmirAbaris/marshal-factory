@@ -2,8 +2,7 @@ import { isOwner, type SessionUser } from "@/lib/auth/owner";
 import type { Harness } from "@/lib/harness";
 import { JOB_IMAGE_TYPES, MAX_JOB_IMAGE_BYTES, newJobSchema, type ImageUploadOutcome, type NewJobOutcome } from "@/lib/new-job-schema";
 import type { FileDraft, FiledJob, ImageFile } from "@/lib/sources/types";
-import { displayName } from "@/lib/repo-name";
-import { defaultRepo, REPOSITORY_GROUP, type Registry } from "@/lib/repositories";
+import { defaultRepo, repoLabel, REPOSITORY_GROUP, type Registry } from "@/lib/repositories";
 import { HARNESS_GROUP, RUNS_ON_GROUP, RUNS_ON_LABELS } from "@/lib/ticket-overrides";
 
 // A job started from the panel is filed in its source like any other: for Linear, a Todo issue with
@@ -28,7 +27,7 @@ export async function createJob(deps: NewJobDeps, input: unknown): Promise<NewJo
   const registry = await deps.registry();
   const target = repo ? registry.find((r) => r.repo === repo) : defaultRepo(registry);
   if (repo && !target?.enabled) return { ok: false, status: 400, message: `${repo} is not an enabled repository.` };
-  if (target) labels.push({ group: REPOSITORY_GROUP, name: displayName(target) });
+  if (target) labels.push({ group: REPOSITORY_GROUP, name: repoLabel(registry, target) });
   if (provider) {
     const harness = (await deps.harnesses())?.find((h) => h.id === provider && h.enabled);
     if (!harness) return { ok: false, status: 400, message: `No machine reports an enabled harness ${provider}.` };

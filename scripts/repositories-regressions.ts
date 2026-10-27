@@ -151,6 +151,10 @@ assert.equal(await refused({ maxChangedLines: 0 }), "400 Use at least 1 line.");
 assert.equal(await refused({ maxChangedLines: 1.5 }), "400 Use a whole number of lines.");
 assert.equal(await refused({ protectedPaths: [" "] }).then((r) => r.startsWith("400")), true);
 assert.equal(saved.length, 0);
+const kept = { ...deps(), registry: async () => registry.map((r) => (r.repo === B ? { ...r, provider: "gone" } : r)) };
+assert.equal((await repos.saveRepository(kept, { ...input, provider: "gone", displayName: "Shop renamed" })).ok, true, "a stored harness no machine reports any more does not block other edits");
+assert.equal((await repos.saveRepository(kept, { ...input, provider: "off" })).ok, false, "but changing to an unreported harness is still refused");
+saved.length = 0;
 assert.equal(await refused({}), "saved");
 assert.equal(await refused({ provider: null, execution: null, protectedPaths: null, maxChangedLines: null }), "saved", "null means Settings and the default limits");
 assert.equal((await repos.makeDefaultRepo({ ...deps(), save: async () => {} }, { repo: OFF })).ok, false, "a disabled repo cannot become the default");
@@ -224,6 +228,24 @@ try {
   await repos.registerRepos(db, [`${OWNER_NS}/fresh`, `${OWNER_NS}/second`], "runner", new Date());
   assert.deepEqual(await defaults(), [`${OWNER_NS}/fresh`], "with no default, the first checkout becomes it");
 
+  // Two checkouts with the same name part: the second registers under its full name, so a label names one repo.
+  const dupA = `${OWNER_NS}/dup-${stamp}`;
+  const dupB = `${OWNER_NS}-other/dup-${stamp}`;
+  await repos.registerRepos(db, [dupA, dupB], "runner", new Date());
+  const dupRows = await db.select().from(repoSettings).where(inArray(repoSettings.repo, [dupA, dupB]));
+  assert.deepEqual(dupRows.map((r) => [r.repo, r.display_name]).sort(), [[dupA, null], [dupB, dupB]].sort(), "the second repo with a taken name is named by its full name");
+  const dupRegistry = await repos.readRegistry(db);
+  assert.equal(repos.routeRepo(asked([L(`dup-${stamp}`, "Repository")]), dupRegistry).repo, dupA);
+  assert.equal(repos.routeRepo(asked([L(dupB, "Repository")]), dupRegistry).repo, dupB);
+  const legacy2 = [row(dupA, { is_default: true }), row(`${OWNER_NS}/web`), row(`${OWNER_NS}-other/web`)];
+  const ambiguous = repos.routeRepo(asked([L("web", "Repository")]), legacy2);
+  assert.equal(ambiguous.repo, dupA, "a label two repos answer to goes to the default, never to the first match");
+  assert.match(ambiguous.problem ?? "", /names more than one repository/);
+  assert.deepEqual(repos.desiredRepositoryGroup(legacy2).children, [`dup-${stamp}`, `${OWNER_NS}/web`, `${OWNER_NS}-other/web`], "label sync names a shared display name's repos by full name");
+  const dupFiled: { labels?: { group: string; name: string }[] }[] = [];
+  await createJob({ ...fileDeps, file: async (d: (typeof dupFiled)[number]) => (dupFiled.push(d), { key: "FAC-2", url: "u" }), registry: async () => legacy2 }, { title: "Title", description: "", requestId, repo: `${OWNER_NS}-other/web` });
+  assert.deepEqual(dupFiled[0]!.labels, [{ group: "Repository", name: `${OWNER_NS}-other/web` }], "New Job files the label that names only that repo");
+
   await repos.writeRepository(db, { repo: B, displayName: "shop", enabled: true, provider: null, execution: "modal", autonomy: "trial", protectedPaths: ["a/**"], maxChangedLines: 10 }, OWNER, new Date());
   const [shopRow] = await db.select().from(repoSettings).where(eq(repoSettings.repo, B));
   assert.deepEqual([shopRow!.display_name, shopRow!.execution, shopRow!.autonomy, shopRow!.protected_paths, shopRow!.max_changed_lines], [null, "modal", "trial", ["a/**"], 10], "a display name equal to the repo name stores as the default");
@@ -284,7 +306,7 @@ try {
   const ids = (await db.select({ id: jobs.id }).from(jobs).where(ours)).map((j) => j.id);
   if (ids.length > 0) await db.delete(auditLog).where(inArray(auditLog.job_id, ids));
   await db.delete(jobs).where(ours);
-  await db.delete(repoSettings).where(like(repoSettings.repo, `${OWNER_NS}/%`));
+  await db.delete(repoSettings).where(like(repoSettings.repo, `${OWNER_NS}%/%`));
   if (originalDefault) await repos.writeDefaultRepo(db, originalDefault, "test", new Date());
   process.exit(process.exitCode ?? 0);
 }

@@ -50,7 +50,8 @@ export type RepoImage = z.infer<typeof repoImageSchema>;
 export const runSchema = z.object({
   kind: z.enum(["agent", "build"]),
   machine: z.string(),
-  sandboxId: z.string(),
+  /** Absent while an agent run holds its slot and its sandbox is being created. */
+  sandboxId: z.string().optional(),
   startedAt: z.string(),
   /** The Codex login slot an agent run holds. */
   slot: z.string().optional(),

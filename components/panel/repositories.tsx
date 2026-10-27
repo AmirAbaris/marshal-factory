@@ -175,7 +175,7 @@ function Detail({ entry, harnesses, panelTakesSecrets }: { entry: Entry; harness
     { value: SETTINGS_DEFAULT, label: "Settings default" },
     ...harnesses.map((h) => ({ value: h.id, label: h.name })),
     // A default harness no machine reports enabled any more still shows, so saving keeps it.
-    ...(row.provider && !harnesses.some((h) => h.id === row.provider) ? [{ value: row.provider, label: `${row.provider} (not reported)` }] : []),
+    ...(row.provider && !harnesses.some((h) => h.id === row.provider) ? [{ value: row.provider, label: `${row.provider} (not reported by any runner)` }] : []),
   ];
   const runsOnItems = [{ value: SETTINGS_DEFAULT, label: "Settings default" }, ...EXECUTIONS.map((e) => ({ value: e, label: RUNS_ON_LABELS[e] }))];
   const autonomyItems = AUTONOMY_LEVELS.map((level) => ({ value: level, label: AUTONOMY_LABELS[level] }));

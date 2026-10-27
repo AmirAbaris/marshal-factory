@@ -245,6 +245,14 @@ export function modalHost(sandboxId: string): JobHost {
     async writeFile(path, text) {
       try {
         await (await handle(sandboxId)).filesystem.writeText(text, path);
+        return;
+      } catch (error) {
+        if (isGone(error)) throw gone(sandboxId, error);
+      }
+      // Modal's writeText creates no directories; most writes land in one that exists, so mkdir only on a miss.
+      await run("mkdir", ["-p", path.slice(0, path.lastIndexOf("/")) || "/"], { timeoutMs: 30_000 });
+      try {
+        await (await handle(sandboxId)).filesystem.writeText(text, path);
       } catch (error) {
         throw gone(sandboxId, error);
       }

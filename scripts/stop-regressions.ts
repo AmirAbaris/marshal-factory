@@ -201,6 +201,9 @@ try {
   const before = interrupts.length;
   assert.deepEqual(await retryStop(d, t0 + 320 * S), { retried: D });
   assert.equal(interrupts.length, before + 1, "the retry interrupts at once");
+  const firstRound = interrupts.slice(0, before).filter((i) => i.threadId === "thread-D").map((i) => i.requestId);
+  assert.ok(firstRound.length > 0 && new Set(firstRound).size === 1, "within one round the request id repeats, so T3 ignores the repeat");
+  assert.ok(!firstRound.includes(interrupts[before]!.requestId), "the retry is a new request id, so T3 does not take it for a repeat");
   assert.deepEqual([(await stopOf(D)).state, (await stopOf(D)).retries], ["escalated", 1]);
   assert.deepEqual(await retryStop(d, t0 + 321 * S), { refused: "The stop is not waiting on you." }, "a retry is only offered for an unconfirmed stop");
   activity.set("thread-D", idle);

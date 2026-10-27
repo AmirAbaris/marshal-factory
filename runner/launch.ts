@@ -1,3 +1,4 @@
+import { dirname } from "node:path";
 import { z } from "zod";
 import type { ExecError } from "../lib/exec";
 import type { RepoName } from "../lib/github/app";
@@ -5,7 +6,7 @@ import { HostGoneError, hosts, localHost, type JobHost } from "../lib/host";
 import { terminateSandbox } from "../lib/modal-host";
 import { builtVersions, imageProblem, REPO_DIR } from "../lib/sandbox";
 import { modalSecretName, parseDetail, repoImage } from "../lib/onboarding";
-import { RECIPE_PATH } from "../lib/recipe";
+import { RECIPE_PATH, UNMERGED_RECIPE_PATH, type Recipe } from "../lib/recipe";
 import { listThreads, showThread, startThread as t3Start } from "../lib/t3-client";
 import { PENDING } from "./binding";
 import { thisMachine } from "./heartbeat";
@@ -354,11 +355,41 @@ export function sandboxStart(row: RepoSettingsRow | undefined, base: { imageId: 
   }
 }
 
-/** A repo with a recipe tells the thread where its setup lives, since the thread's worktree starts bare. */
-const withRecipeNote = (message: string, row: RepoSettingsRow | undefined) =>
-  parseDetail(row?.onboarding_detail).recipe
-    ? `${message}\n\nThis repository's setup recipe is ${RECIPE_PATH}: run its setup commands in your worktree before anything else, and use its checks to verify.`
-    : message;
+/** The recipe a job's worktree lacks because it is not on main yet; null when main has it or there is none. */
+export function unmergedRecipe(row: RepoSettingsRow | undefined): Recipe | null {
+  const detail = parseDetail(row?.onboarding_detail);
+  if (!detail.recipe) return null;
+  switch (detail.recipeSource) {
+    case "committed":
+      return null;
+    case "agent":
+    case undefined:
+      return detail.recipe;
+    default: {
+      const never: never = detail.recipeSource;
+      throw new Error(`unknown recipe source ${String(never)}`);
+    }
+  }
+}
+
+/**
+ * A repo with a recipe tells the thread where its setup lives, since the thread's worktree starts
+ * bare. One only on the onboarding PR is spelled out, since the worktree, cut from main, has none.
+ */
+export function withRecipeNote(message: string, row: RepoSettingsRow | undefined) {
+  const detail = parseDetail(row?.onboarding_detail);
+  if (!detail.recipe) return message;
+  const unmerged = unmergedRecipe(row);
+  if (!unmerged) return `${message}\n\nThis repository's setup recipe is ${RECIPE_PATH}: run its setup commands in your worktree before anything else, and use its checks to verify.`;
+  const checks = Object.entries(unmerged.checks ?? {});
+  return [
+    message,
+    "",
+    `This repository's setup recipe is not on main yet${detail.recipePr ? ` (it waits in ${detail.recipePr})` : ""}, so your worktree has no ${RECIPE_PATH}. Run these setup commands in your worktree before anything else:`,
+    ...unmerged.setup.map((command) => `    ${command}`),
+    ...(checks.length > 0 ? ["", "Verify with these checks; factory-verify runs the same ones:", ...checks.map(([name, command]) => `    ${name}: ${command}`)] : []),
+  ].join("\n");
+}
 
 export async function launchInSandboxes(pending: readonly LaunchEntry[], slot: LaunchSlot, claimed: Claimed = async () => {}, registry: Registry = []) {
   const limits = config.factory.sandbox;
@@ -438,6 +469,11 @@ export async function launchInSandboxes(pending: readonly LaunchEntry[], slot: L
         };
         const outcome = await setupSandbox(host, setup, limits.codexModel);
         noteTokenWritten(created.sandboxId);
+        const unmerged = unmergedRecipe(registry.find((r) => r.repo === entry.repo));
+        if (unmerged) {
+          await host.run("mkdir", ["-p", dirname(UNMERGED_RECIPE_PATH)], { timeoutMs: 30_000 });
+          await host.writeFile(UNMERGED_RECIPE_PATH, JSON.stringify(unmerged));
+        }
         ran = outcome.choice;
         if (outcome.fallback) {
           await recordHarness(entry.key, lease.marker, ran);

@@ -22,13 +22,14 @@ import {
 //   bun scripts/sandbox-image.ts
 // The base layers come from Dockerfile commands and Modal caches them. The factory's hook and MCP
 // entry points are bundled here with Bun, one self-contained file each at the path the wiring
-// names, so the sandbox needs no checkout and no install. A sandbox from the base gets those files,
+// names, so the sandbox needs no checkout and no install; `factory-verify` on PATH runs
+// hooks/verify.ts. A sandbox from the base gets those files,
 // and its filesystem snapshot, kept indefinitely, is the image. T3, Claude Code, Codex and PStack
 // install at the versions factory.sandbox pins, and the build fails unless the sandbox reports
 // exactly those. Rerun it after the hooks or a pin change.
 
 const root = join(import.meta.dirname, "..");
-const ENTRIES = ["hooks/report.ts", "hooks/budget.ts", "mcp/factory-report.ts"];
+const ENTRIES = ["hooks/report.ts", "hooks/budget.ts", "hooks/verify.ts", "mcp/factory-report.ts"];
 const limits = loadLimits().sandbox;
 
 const b64 = (text: string) => Buffer.from(text).toString("base64");
@@ -42,6 +43,9 @@ echo "password=$(cat ${GITHUB_TOKEN_PATH})"
 `;
 const ghWrapper = `#!/bin/sh
 GH_TOKEN="$(cat ${GITHUB_TOKEN_PATH} 2>/dev/null)" exec /usr/bin/gh "$@"
+`;
+const verifyWrapper = `#!/bin/sh
+exec bun ${FACTORY_ROOT}/hooks/verify.ts "$@"
 `;
 
 const t0 = Date.now();
@@ -93,6 +97,7 @@ try {
       ` && codex plugin marketplace add ${PSTACK_DIR} && codex plugin add ${PSTACK_PLUGIN}`,
     install("/usr/local/bin/git-credential-factory", credentialHelper),
     install("/usr/local/bin/gh", ghWrapper),
+    install("/usr/local/bin/factory-verify", verifyWrapper),
     "RUN git config --global user.name marshal-factory && git config --global user.email marshal-factory@users.noreply.github.com" +
       " && git config --global credential.https://github.com.helper factory && git config --global init.defaultBranch main",
   ]);
@@ -117,6 +122,8 @@ try {
   if (drift.length > 0) throw new Error(`the build sandbox does not match the pins: ${rebuildText(drift)}`);
   log(`versions: ${Object.entries(built).map(([component, version]) => `${component} ${version}`).join(" | ")} | bun ${await sh(sandbox, "bun --version")}`);
   await sh(sandbox, `cd /tmp && echo '{}' | bun ${FACTORY_ROOT}/hooks/report.ts && echo '{}' | bun ${FACTORY_ROOT}/hooks/budget.ts`);
+  // Outside a git repo factory-verify refuses with exit 2, which shows the bundle loads.
+  await sh(sandbox, `cd /tmp && { factory-verify --no-post 2>/dev/null; test $? -eq 2; }`);
   log("hook bundles run");
 
   const image = await sandbox.snapshotFilesystem({ ttlMs: null, timeoutMs: 300_000 });

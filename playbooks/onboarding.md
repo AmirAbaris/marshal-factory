@@ -37,7 +37,7 @@ Write `.factory/setup.json`:
 - `system`: apt package names the sandbox needs beyond its base (Debian bookworm with git, curl, Node 22, Bun, gh). Leave it out when nothing is missing.
 - `runtimes`: pin a version only when the repo pins one (`.nvmrc`, `engines`, `packageManager`, CI's setup step). The factory installs a pinned runtime only when the sandbox lacks it.
 - `setup`: the commands that install dependencies, in order, run from the repo root. Use the lockfile's frozen install. No command may prompt.
-- `checks`: one command each for whichever of `test`, `lint`, `typecheck` and `build` the repo has. Leave a check out rather than inventing one.
+- `checks`: one command each for whichever of `test`, `lint`, `typecheck` and `build` the repo has. Leave a check out rather than inventing one. These are the checks every factory job must pass at its PR's exact head (`factory-verify`) before the factory merges it, so each must run from a clean checkout after `setup`, without a human. A repo with no checks never merges on its own.
 - `env`: names and purposes only.
 - `warmKey`: globs whose change makes installed dependencies stale, usually the lockfiles and manifests. Leave it out for the defaults (every common lockfile).
 - Services (databases, queues) are not supported yet. If a check needs one, leave that check out and say so in the PR.

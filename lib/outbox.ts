@@ -118,6 +118,8 @@ export type FlushResult = {
   rejected: string[];
   /** Undelivered events still queued. */
   left: number;
+  /** Event ids ingest refused that could not be moved aside; they stay queued and the flush goes on. */
+  stuck: string[];
   /** Ingest's spend per branch, merged over the batches. */
   spend: Record<string, number>;
   error?: string;
@@ -133,7 +135,7 @@ type Queued = { name: string; event: FactoryEvent };
 export async function flushOutbox(fs: OutboxFs, state: string, send: Send, { budgetMs, batchSize = 50 }: { budgetMs: number; batchSize?: number }): Promise<FlushResult> {
   const deadline = Date.now() + budgetMs;
   const dir = outboxDir(state);
-  const result: FlushResult = { delivered: 0, rejected: [], left: 0, spend: {} };
+  const result: FlushResult = { delivered: 0, rejected: [], left: 0, stuck: [], spend: {} };
   if (!(await fs.exists(dir))) return result;
   const names = (await fs.list(dir)).filter((name) => name.endsWith(".json")).sort();
   result.left = names.length;
@@ -144,8 +146,14 @@ export async function flushOutbox(fs: OutboxFs, state: string, send: Send, { bud
     result.left -= batch.length;
     Object.assign(result.spend, delivery.spend);
   };
+  // A refused event never delivers, so one that cannot be moved aside stays queued without holding back the events after it.
   const setAside = async ({ name, event }: Queued) => {
-    await fs.writeFile(join(rejectedDir(state), name), JSON.stringify(event));
+    try {
+      await fs.writeFile(join(rejectedDir(state), name), JSON.stringify(event));
+    } catch {
+      result.stuck.push(event.eventId);
+      return;
+    }
     await fs.remove(join(dir, name));
     result.rejected.push(event.eventId);
     result.left--;

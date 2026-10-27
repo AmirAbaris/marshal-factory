@@ -1,6 +1,7 @@
 import "./test-guard";
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { eq, inArray, like, sql } from "drizzle-orm";
@@ -8,7 +9,7 @@ import type { OnboardingDetail } from "../lib/onboarding";
 import { fake, fakeModal, sandboxes, type FakeSandbox } from "./fake-modal";
 
 const { db } = await import("../db/client");
-const { intents, jobs, repoSettings } = await import("../db/schema");
+const { codexSlotLeases, intents, jobs, repoSettings } = await import("../db/schema");
 type RepoRow = typeof repoSettings.$inferSelect;
 const { linearJob } = await import("./fixtures");
 const { jobId } = await import("../lib/sources/shapes");
@@ -25,6 +26,7 @@ const { threads } = await import("../runner/threads");
 const { sandboxRuntime } = await import("../runner/sandbox");
 const { launchInSandboxes, sandboxStart } = await import("../runner/launch");
 const runner = await import("../runner/onboarding");
+const { ORPHAN_LEASE_MS, releaseOrphanLeases } = await import("../runner/lifecycle");
 
 modal.api = fakeModal;
 
@@ -63,6 +65,32 @@ assert.deepEqual(recipes.parseCheckResults("test\t0\nlint\t1\nbogus\t0\n", recip
   { name: "test", command: "bun test", ok: true },
   { name: "lint", command: "bun run lint", ok: false, note: "exited 1" },
 ]);
+// A Python pin installs that version and fails the build when python3 is still another one. Fakes stand in for every installer.
+const pyBin = mkdtempSync(join(tmpdir(), "onb-python-"));
+const fakeTool = (name: string, body: string) => writeFileSync(join(pyBin, name), `#!/bin/bash\n${body}\n`, { mode: 0o755 });
+fakeTool("python3", `cat ${pyBin}/version`);
+fakeTool("uv", `echo "uv $*" >> ${pyBin}/calls; if [ "$1 $2" = "python find" ]; then echo /opt/uv-python/cpython/bin/python3; fi`);
+fakeTool("apt-get", `echo "apt-get $*" >> ${pyBin}/calls`);
+fakeTool("ln", `echo "ln $*" >> ${pyBin}/calls`);
+const buildWithPython = (installed: string) => {
+  writeFileSync(join(pyBin, "version"), `Python ${installed}\n`);
+  writeFileSync(join(pyBin, "calls"), "");
+  const result = spawnSync("bash", ["-c", buildScript({ runtimes: { python: "3.12" }, setup: ["true"], checks: {} }, pyBin, { checks: false })], {
+    env: { ...process.env, PATH: `${pyBin}:/usr/bin:/bin` },
+    encoding: "utf8",
+  });
+  return { code: result.status, calls: readFileSync(join(pyBin, "calls"), "utf8"), out: result.stdout };
+};
+const pinned = buildWithPython("3.12.4");
+assert.deepEqual([pinned.code, pinned.calls], [0, ""], "the pinned Python already there installs nothing");
+const stale = buildWithPython("3.11.2");
+assert.match(stale.calls, /^uv python install 3\.12$/m, "another Python installs the pin with uv");
+assert.match(stale.calls, /^ln -sf \/opt\/uv-python\/cpython\/bin\/python3 \/usr\/local\/bin\/python3$/m, "and puts it first on PATH");
+assert.doesNotMatch(stale.calls, /apt-get/, "not Debian's python3");
+assert.equal(stale.code, 13, "a build whose python3 is still not the pin fails");
+assert.match(stale.out, /python3 is Python 3\.11\.2, not the pinned 3\.12/);
+assert.equal(buildWithPython("3.120.1").code, 13, "3.120 is not 3.12");
+assert.equal(recipes.BUILD_EXIT[13], "installing the pinned Python failed");
 const leaky = "DATABASE_URL=postgres://u:hunter2@h/db\nAuthorization: Bearer abcdefghijklmnop\nghp_abcdefghijklmnopqrstuvwxyz0123\nok line";
 const redacted = recipes.redact(leaky, ["DATABASE_URL"]);
 assert.ok(!/hunter2|abcdefghijklmnop|ghp_/.test(redacted), redacted);
@@ -117,6 +145,16 @@ const push = githubPushIntent("push", {
 });
 assert.deepEqual(push && { ...push, detail: JSON.parse(push.detail!) }, { kind: "repo_push", key: "repo-push:o/r:abc", detail: { repo: "o/r", after: "abc", files: ["a", "bun.lock", ".factory/setup.json"] } });
 assert.equal(githubPushIntent("push", { ref: "refs/heads/feature", repository: { default_branch: "main", full_name: "o/r" } }), null);
+const pushFlags = (body: Record<string, unknown>) => {
+  const intent = githubPushIntent("push", { ref: "refs/heads/main", after: "def", repository: { default_branch: "main", full_name: "o/r" }, ...body });
+  return Boolean(JSON.parse(intent!.detail!).truncated);
+};
+const srcCommits = (n: number) => Array.from({ length: n }, (_, i) => ({ modified: [`src/${i}.ts`] }));
+assert.equal(pushFlags({ commits: srcCommits(19) }), false, "a push GitHub lists in full names its files");
+assert.equal(pushFlags({ commits: srcCommits(20) }), true, "a push with as many commits as GitHub lists may hide a lockfile, so it counts as touching everything");
+assert.equal(pushFlags({ commits: srcCommits(3), size: 40 }), true, "so does one whose size says commits were left out");
+assert.equal(pushFlags({ commits: srcCommits(3), distinct_size: 25 }), true);
+assert.equal(pushFlags({ commits: srcCommits(1), forced: true }), true, "and a forced push, whose commits say nothing of what it rewound");
 
 // Runner wiring, as the sandbox regressions do it.
 const events: { event: string; detail: Record<string, unknown> }[] = [];
@@ -168,7 +206,7 @@ const COMMITTED = `${NS}/committed`;
 const AGENT = `${NS}/agent`;
 const BROKEN = `${NS}/broken`;
 const LAUNCH = `${NS}/launch`;
-const jobIds = [`onb-${stamp}-warm`, `onb-${stamp}-old`, `onb-${stamp}-wait`];
+const jobIds = [`onb-${stamp}-warm`, `onb-${stamp}-old`, `onb-${stamp}-wait`, `onb-${stamp}-race`];
 const VALUE = `s3cr3t-value-${stamp}`;
 const logged: string[] = [];
 const realLog = console.log;
@@ -280,9 +318,30 @@ try {
   await db.update(repoSettings).set({ enabled: false }).where(eq(repoSettings.repo, COMMITTED));
 
   // No recipe on main: one agent thread writes it, the result comes back, the sandbox goes.
+  // The slot is leased before the sandbox exists: a job leasing while it is created cannot take it.
+  const { leaseSlot } = await import("../runner/lifecycle");
+  const raceKey = `ONBR-${stamp % 100000}`;
+  await db.insert(jobs).values(linearJob(jobIds[3]!, raceKey, { repo: LAUNCH }));
+  const leases = async () => (await db.select().from(codexSlotLeases).where(inArray(codexSlotLeases.slot, [slotA, slotB]))).map((l) => [l.slot, l.holder_kind, l.holder_id]);
   await insert(AGENT, "analyzing");
+  let raced: string | undefined = "not tried";
+  let recordedWhileCreating: unknown;
+  modal.api = {
+    ...fakeModal,
+    create: async (spec) => {
+      raced = await leaseSlot(eq(jobs.key, raceKey), [slotA]);
+      const run = (await detail(AGENT)).run;
+      recordedWhileCreating = [run?.kind, run?.slot, run?.sandboxId, await leases()];
+      return fakeModal.create(spec);
+    },
+  };
   const agentStart = await runner.onboardRepo(AGENT);
+  modal.api = fakeModal;
   assert.deepEqual(agentStart, { repo: AGENT, agent: "thread-onb" });
+  assert.equal(raced, undefined, "a job cannot lease the slot an onboarding run took while its sandbox is created");
+  assert.deepEqual(recordedWhileCreating, ["agent", slotA, undefined, [[slotA, "onboarding", AGENT]]], "the lease and the run holding it are written together, before the sandbox");
+  assert.deepEqual(await leases(), [[slotA, "onboarding", AGENT]], "the run holds the slot's lease");
+  await assert.rejects(db.update(jobs).set({ codex_slot: slotA }).where(eq(jobs.key, raceKey)), (e: { cause?: { code?: string } }) => e.cause?.code === "23505", "nor can a job be written onto it");
   d = await detail(AGENT);
   assert.deepEqual([d.run?.kind, d.run?.threadId, d.run?.slot], ["agent", "thread-onb", slotA]);
   const agentBox = sandboxOf(d.run?.sandboxId);
@@ -292,8 +351,7 @@ try {
   assert.match(startExec.input, /\/work\/onboarding\/result\.json/);
   assert.equal(agentBox.files.has("/root/.config/marshal-factory/config.json"), false, "an onboarding run reports to no job");
   assert.match(JSON.stringify(await runner.onboardRepo(AGENT)), /an agent run is in flight/, "a second onboard waits for the first");
-  const { leaseSlot } = await import("../runner/lifecycle");
-  assert.equal(await leaseSlot(sql`false`, [slotA]), undefined, "a job cannot lease the slot the agent holds");
+  assert.equal(await leaseSlot(eq(jobs.key, raceKey), [slotA]), undefined, "a job cannot lease the slot the agent holds");
   await runner.advanceOnboarding();
   assert.equal((await detail(AGENT)).run?.kind, "agent", "a running thread is left alone");
   threadState = "stopped";
@@ -305,7 +363,44 @@ try {
   assert.equal(agentRow.onboarding_state, "needs_input", "a required env var without a value waits for the owner");
   assert.deepEqual([d.recipeSource, d.recipePr, d.missingSecrets, d.run, d.checks?.length], ["agent", `https://github.com/${AGENT}/pull/7`, ["API_KEY"], undefined, 1]);
   assert.equal(agentBox.terminated, true, "the onboarding sandbox is torn down");
+  assert.deepEqual(await leases(), [], "and its slot's lease is released");
   threadState = "running";
+
+  // A run that never gets recorded hands its lease back: here the sandbox cannot be created.
+  const FLAKY = `${NS}/flaky`;
+  await insert(FLAKY, "analyzing");
+  modal.api = { ...fakeModal, create: async () => Promise.reject(new Error("modal is down")) };
+  await assert.rejects(runner.onboardRepo(FLAKY), /modal is down/);
+  modal.api = fakeModal;
+  assert.deepEqual(await leases(), [], "a failed sandbox create releases the slot");
+  assert.equal(await leaseSlot(eq(jobs.key, raceKey), [slotA]), slotA, "which a job can then lease");
+  assert.deepEqual(await leases(), [[slotA, "job", jobId("linear", jobIds[3]!)]]);
+  await db.update(jobs).set({ codex_slot: null }).where(eq(jobs.key, raceKey));
+  assert.deepEqual(await leases(), [], "clearing the job's slot releases it");
+
+  // A runner that dies between taking the slot and creating the sandbox: the next tick hands the slot back.
+  const DIED = `${NS}/died`;
+  await insert(DIED, "analyzing", { run: { kind: "agent", machine: TEST_MACHINE_ID, startedAt: new Date().toISOString(), slot: slotA } });
+  assert.deepEqual(await leases(), [[slotA, "onboarding", DIED]]);
+  await runner.advanceOnboarding();
+  d = await detail(DIED);
+  assert.deepEqual([(await row(DIED)).onboarding_state, d.run, await leases()], ["failed", undefined, []], "the abandoned run is cleared and its lease released");
+  assert.match(d.failure!.reason, /stopped before its sandbox was created/);
+
+  // Leases no job or onboarding run records, such as one an older runner left between leasing and recording, are reaped.
+  const longAgo = new Date(Date.now() - ORPHAN_LEASE_MS - 60_000);
+  await db.insert(codexSlotLeases).values([
+    { slot: slotA, holder_kind: "onboarding", holder_id: DIED, leased_at: longAgo },
+    { slot: slotB, holder_kind: "job", holder_id: jobId("linear", jobIds[3]!), leased_at: longAgo },
+  ]);
+  assert.deepEqual((await releaseOrphanLeases()).sort(), [slotA, slotB].sort());
+  assert.deepEqual(await leases(), [], "orphan leases are released");
+  await db.insert(codexSlotLeases).values({ slot: slotA, holder_kind: "onboarding", holder_id: DIED });
+  assert.deepEqual(await releaseOrphanLeases(), [], "a fresh lease is left to the runner taking it");
+  await db.delete(codexSlotLeases).where(eq(codexSlotLeases.slot, slotA));
+  await db.update(jobs).set({ codex_slot: slotA }).where(eq(jobs.key, raceKey));
+  assert.deepEqual(await releaseOrphanLeases(Date.now() + 2 * ORPHAN_LEASE_MS), [], "a lease its job still records stays");
+  await db.update(jobs).set({ codex_slot: null }).where(eq(jobs.key, raceKey));
 
   // Secrets: the value goes to the store and nowhere else; the names are recorded and the build starts.
   console.log = (...args: unknown[]) => void logged.push(args.map(String).join(" "));
@@ -380,8 +475,8 @@ try {
   const launchImage = { ...warmImage, id: "im-warm-launch" };
   fake.images.set("im-warm-launch", new Map());
   fake.images.set("im-base", new Map());
-  await insert(LAUNCH, "ready", { recipe, image: launchImage, secretsSet: ["API_KEY"] });
-  await db.insert(jobs).values(jobIds.map((id, i) => linearJob(id, `ONB${i}-${stamp % 100000}`, { repo: LAUNCH })));
+  await insert(LAUNCH, "ready", { recipe, recipeSource: "committed", image: launchImage, secretsSet: ["API_KEY"] });
+  await db.insert(jobs).values(jobIds.slice(0, 3).map((id, i) => linearJob(id, `ONB${i}-${stamp % 100000}`, { repo: LAUNCH })));
   const slot = { id: TEST_MACHINE_ID, repos: [LAUNCH], maxInFlight: 1000 };
   sandboxRuntime.slots = () => [slotA, slotB];
   config.factory.sandbox.maxParallel = 100;
@@ -399,10 +494,19 @@ try {
   assert.ok(argvs.includes(`git -C ${REPO_DIR} checkout --quiet -B main origin/main`), "the checkout moves to origin/main");
   assert.ok(argvs.includes(`bash -c ${recipe.setup[0]}`), "and setup runs again");
   assert.match(warmBox.execs.find((e) => e.argv[2] === "start")!.input, /setup recipe is \.factory\/setup\.json/, "the thread is told about the recipe");
+  assert.equal(warmBox.files.has(recipes.UNMERGED_RECIPE_PATH), false, "a recipe on main is read from the worktree");
+  // A recipe only on the onboarding PR is not in the worktree, cut from main: the thread gets its commands, factory-verify a copy.
+  const prDetail = { recipe, recipeSource: "agent" as const, recipePr: `https://github.com/${LAUNCH}/pull/3`, image: launchImage, secretsSet: ["API_KEY"] };
+  await db.update(repoSettings).set({ onboarding_detail: prDetail }).where(eq(repoSettings.repo, LAUNCH));
   sandboxRuntime.image = () => ({ ...baseImage, builtAt: "2026-10-29T00:00:00.000Z" });
   await launchInSandboxes([entry(1)], slot, async () => {}, await registryNow());
   const [oldJob] = await db.select().from(jobs).where(eq(jobs.id, jobId("linear", jobIds[1]!)));
   const oldBox = sandboxOf(oldJob!.sandbox_id!);
+  const prMessage = oldBox.execs.find((e) => e.argv[2] === "start")!.input;
+  assert.doesNotMatch(prMessage, /setup recipe is \.factory\/setup\.json/, "the thread is not sent to a recipe its worktree lacks");
+  assert.match(prMessage, /not on main yet \(it waits in https:\/\/github\.com\/.+\/pull\/3\)/);
+  assert.ok(prMessage.includes(`    ${recipe.setup[0]}`) && prMessage.includes(`    test: ${recipe.checks!.test}`), "it gets the setup and check commands inline");
+  assert.deepEqual(JSON.parse(oldBox.files.get(recipes.UNMERGED_RECIPE_PATH)!), recipe, "and factory-verify gets the recipe in the sandbox");
   assert.equal(oldBox.spec!.imageId, "im-base", "an outdated warm image falls back to the base image");
   assert.ok(oldBox.execs.some((e) => e.argv[0] === "git" && e.argv[1] === "clone"), "which clones as before");
   assert.ok(events.some((e) => e.event === "sandbox:warm-image-outdated"));
@@ -423,5 +527,6 @@ try {
   await db.delete(jobs).where(inArray(jobs.id, jobIds.map((id) => jobId("linear", id))));
   await db.delete(intents).where(like(intents.detail, `${NS}/%`));
   await db.delete(repoSettings).where(like(repoSettings.repo, `${NS}/%`));
+  await db.delete(codexSlotLeases).where(inArray(codexSlotLeases.slot, [slotA, slotB]));
   process.exit(process.exitCode ?? 0);
 }

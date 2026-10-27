@@ -8,7 +8,7 @@ const OWNER = "owner@example.com";
 process.env.FACTORY_OWNER_EMAILS = OWNER;
 
 const { db } = await import("../db/client");
-const { auditLog, events, jobs, repoSettings } = await import("../db/schema");
+const { auditLog, events, jobEvidence, jobs, repoSettings } = await import("../db/schema");
 const { linearJob } = await import("./fixtures");
 const { jobId } = await import("../lib/sources/shapes");
 const { SOURCES } = await import("../lib/sources");
@@ -81,6 +81,8 @@ const input = (over: Partial<DecisionInput> = {}): DecisionInput => ({
   pr: facts(),
   headSeenAt: NOW - 60_000,
   now: NOW,
+  evidence: { state: "verified", sha: "h1", passed: 4, total: 4, producer: "agent" },
+  runner: { kind: "unavailable", reason: "the run isn't in a Modal sandbox, so the factory can't run them itself" },
   ...over,
 });
 const handsOver = (over: Partial<DecisionInput>, pattern: RegExp, why: string) => {
@@ -119,6 +121,33 @@ assert.deepEqual(pending, { outcome: "pending", reasons: ["Waiting for checks, B
 assert.equal(decideMerge(input({ pr: facts({ mergeable: "unknown" }) })).outcome, "pending", "so is GitHub computing mergeability");
 handsOver({ pr: facts({ checks: "pending" }), headSeenAt: NOW - 61 * 60_000 }, /^Checks didn't finish within 60 minutes\.$/, "pending past the timeout");
 handsOver({ pr: facts({ checks: "pending" }), attempt: 2 }, /attempt 2/, "a hard failure does not wait for checks");
+
+// --- verified at head
+const auto = { policy: { ...DEFAULT_POLICY, autonomy: "auto" as const } };
+handsOver({ evidence: { state: "no_checks" } }, /^No checks defined for this repo\.$/, "a repo with no checks never merges on its own");
+handsOver({ evidence: { state: "failed", sha: "h1", failed: ["test", "build"], passed: 2, total: 4 } }, /^Checks failed at h1: test, build\.$/, "a failed check at the head");
+handsOver({ evidence: { state: "missing" } }, /^Not verified at h1: no checks were reported for it; the run isn't in a Modal sandbox/, "no evidence and nobody to verify");
+handsOver({ evidence: { state: "stale", sha: "h0" } }, /^Not verified at h1: the latest checks ran at h0;/, "evidence for an older commit");
+handsOver({ evidence: { state: "dirty", sha: "h1" } }, /uncommitted changes/, "a dirty tree proves nothing");
+handsOver({ evidence: { state: "incomplete", sha: "h1", missing: ["build"] } }, /didn't include build/, "a required check that didn't run");
+assert.deepEqual(
+  decideMerge(input({ ...auto, evidence: { state: "stale", sha: "h0" }, runner: { kind: "available" } })),
+  { outcome: "pending", reasons: ["Waiting for verification at h1."], verify: true },
+  "stale evidence under auto waits for the runner, which may start",
+);
+assert.deepEqual(
+  decideMerge(input({ ...auto, evidence: { state: "missing" }, runner: { kind: "running" } })),
+  { outcome: "pending", reasons: ["Waiting for verification at h1."] },
+  "a running verification is waited for, not started again",
+);
+assert.deepEqual(
+  decideMerge(input({ ...auto, evidence: { state: "missing" }, runner: { kind: "available" }, pr: facts({ checks: "pending" }) })),
+  { outcome: "pending", reasons: ["Waiting for checks, verification at h1."] },
+  "the runner waits until verification is all that is left",
+);
+handsOver({ ...auto, evidence: { state: "missing" }, runner: { kind: "failed", reason: "the job's sandbox is gone" } }, /couldn't run the checks itself: the job's sandbox is gone\.$/, "a runner verification that couldn't run");
+handsOver({ ...auto, evidence: { state: "missing" }, runner: { kind: "available" }, headSeenAt: NOW - 61 * 60_000 }, /^Verification at h1 didn't finish within 60 minutes\.$/, "verification past the timeout");
+handsOver({ ...auto, evidence: { state: "failed", sha: "h1", failed: ["lint"], passed: 3, total: 4 }, runner: { kind: "available" } }, /Checks failed at h1: lint/, "failed evidence is not re-run");
 
 // --- GitHub parsing
 const run = (name: string, status: string, conclusion: string | null) => ({ name, status, conclusion });
@@ -219,6 +248,9 @@ async function insert(name: string, over: Partial<typeof jobs.$inferInsert>) {
   return k;
 }
 const auditsOf = async (k: string) => db.select().from(auditLog).where(eq(auditLog.job_id, (await row(k)).id));
+const passedCheck = { name: "test" as const, command: "bun run test", exitCode: 0, startedAt: new Date(NOW).toISOString(), durationMs: 1200, outputTail: "ok", passed: true };
+const verified = (k: string, sha: string) =>
+  db.insert(jobEvidence).values({ job_key: k, sha, attempt: 1, repo: REPO, clean: true, producer: "agent", source: "package", checks: [passedCheck], event_id: `md-evidence-${k}-${sha}`, recorded_at: new Date() });
 
 try {
   // Policy: defaults when unset; owner checks and validation live in repositories-regressions.
@@ -272,6 +304,7 @@ try {
   const CODEX = await insert("CODEX", { stage: "pr", pr_url: prUrl(5), provider: "codex" });
   const WORKING = await insert("WORKING", { stage: "implementing", pr_url: prUrl(6) });
   labels.set(LABELED, ["factory", "review"]);
+  for (const k of [GOOD, ASLEEP, LABELED, CODEX]) await verified(k, "h1");
   const only = { only: [GOOD, ASLEEP, LABELED, OFF, CODEX, WORKING] };
 
   const first = await decideMerges({ ...only, now: at(0) });
@@ -288,6 +321,7 @@ try {
       headSeenAt: new Date(at(0)).toISOString(),
       stageEventId: prEvent("GOOD"),
       evaluatedAt: undefined,
+      evidence: { state: "verified", sha: "h1", passed: 1, total: 1, producer: "agent" },
       review: {
         headSha: "h1",
         fileCount: 1,
@@ -319,6 +353,7 @@ try {
 
   // A new head: recomputed, pending while checks run, then a handover once they time out.
   heads.set(prUrl(1), "h2");
+  await verified(GOOD, "h2");
   checks = "pending";
   const t1 = at(30);
   assert.deepEqual(await decideMerges({ only: [GOOD], now: t1 }), [`${GOOD}:pending`]);
@@ -356,6 +391,7 @@ try {
   const ids = (await db.select({ id: jobs.id }).from(jobs).where(like(jobs.id, `${jobId("linear", "merge-regress-")}%`))).map((j) => j.id);
   if (ids.length > 0) await db.delete(auditLog).where(inArray(auditLog.job_id, ids));
   if (keys.length > 0) await db.delete(events).where(inArray(events.job_key, keys));
+  if (keys.length > 0) await db.delete(jobEvidence).where(inArray(jobEvidence.job_key, keys));
   await db.delete(jobs).where(like(jobs.id, `${jobId("linear", "merge-regress-")}%`));
   await db.delete(repoSettings).where(inArray(repoSettings.repo, [REPO, OFF_REPO]));
   process.exit(process.exitCode ?? 0);

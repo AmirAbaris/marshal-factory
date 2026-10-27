@@ -6,6 +6,7 @@ import { db } from "@/db/client";
 import {
   agentsOverviewQuery,
   jobAuditQuery,
+  jobEvidenceQuery,
   jobsQuery,
   jobStagesQuery,
   load,
@@ -25,17 +26,19 @@ async function loadDetail(raw: string | undefined): Promise<DetailProps | undefi
   const sessionId = raw && parseSessionId(raw);
   if (!sessionId) return undefined;
   const { jobKey, jobId } = await runJob(sessionId);
-  const [agents, events, stages, audit] = await Promise.all([
+  const [agents, events, stages, audit, evidence] = await Promise.all([
     load(sessionAgentsQuery(sessionId)),
     load(sessionEventsQuery(sessionId)),
     load(jobKey ? jobStagesQuery(jobKey) : sessionStagesQuery(sessionId)),
     jobId ? load(jobAuditQuery(jobId)) : undefined,
+    jobId && jobKey ? load(jobEvidenceQuery(jobKey)) : undefined,
   ]);
   const stagesPath = jobKey
     ? `/api/live/jobs/${encodeURIComponent(jobKey)}/stages`
     : `/api/live/runs/${encodeURIComponent(sessionId)}/stages`;
   const auditFeed = audit && jobKey ? { feed: audit, path: `/api/live/jobs/${encodeURIComponent(jobKey)}/audit` } : undefined;
-  return { sessionId, agents, events, stages, stagesPath, audit: auditFeed };
+  const evidenceFeed = evidence && jobKey ? { feed: evidence, path: `/api/live/jobs/${encodeURIComponent(jobKey)}/evidence` } : undefined;
+  return { sessionId, agents, events, stages, stagesPath, audit: auditFeed, evidence: evidenceFeed };
 }
 
 async function Panel({ view, searchParams }: { view: PanelView; searchParams: Promise<Record<string, string | string[] | undefined>> }) {

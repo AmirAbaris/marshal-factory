@@ -1,8 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { and, eq, isNotNull, inArray } from "drizzle-orm";
 import { db } from "../db/client";
-import { auditLog, jobs, type AuditRow } from "../db/schema";
+import { auditLog, jobEvidence, jobs, type AuditRow, type RepoSettingsRow } from "../db/schema";
+import { headEvidence, type EvidenceRow, type HeadEvidence } from "../lib/evidence";
 import { attemptBranch } from "../lib/factory";
+import { parseDetail } from "../lib/onboarding";
+import { CHECKS, type CheckName, type Recipe } from "../lib/recipe";
 import type { ApproveDetail } from "../lib/inbox";
 import type { RepoName } from "../lib/github/app";
 import { github } from "../lib/github/pulls";
@@ -17,6 +20,8 @@ import {
   type RepoPolicy,
   type ReviewSummary,
   reviewSummary,
+  type RunnerVerification,
+  type RunnerVerificationRecord,
 } from "../lib/merge-decision";
 import { readRepoSettings, resolvePolicy } from "../lib/settings";
 import { parseJob, parseJobs, sourceFor } from "../lib/sources";
@@ -24,7 +29,8 @@ import type { Job, JobId } from "../lib/sources/types";
 import { branchSpend } from "../lib/spend";
 import { thisMachine } from "./heartbeat";
 import { mergeNow, recoverMerges, storeDecision, storedDecision, syncComments } from "./merge-service";
-import { harnessDrivers, jobTracked } from "./ops";
+import { harnessDrivers, ingestClient, jobTracked } from "./ops";
+import { runnerVerification, startVerification } from "./verify";
 
 // The timer's pass over this machine's jobs in pr: decides whether each PR merges on its own and
 // stores the decision on the job. GitHub and the source only; a hibernated sandbox stays asleep.
@@ -33,6 +39,9 @@ import { harnessDrivers, jobTracked } from "./ops";
 // when the decision changes. Under auto a merge decision merges at once, on facts read in the
 // same pass, through runner/merge-service.ts; a refusal hands over and is not retried for that
 // head. The owner's approval, from the inbox or run detail, merges through the same service.
+// Each pass also reads the attempt's evidence (job_evidence) for the PR head: no merge without
+// checks passed at exactly that commit. Under auto, when that is all that is missing, the runner
+// verifies the head itself in the job's sandbox (runner/verify.ts) and the decision waits for it.
 
 export const RECHECK_MS = 15 * 60_000;
 
@@ -46,9 +55,28 @@ async function prFacts(prUrl: string, repo: RepoName, headSha: string, baseRef: 
   return { headSha, mergeable, behindBy, files, checks: state.checks, bugbot: { review: state.bugbot, findings } };
 }
 
-type Evaluated = { decision: Decision; headSha: string | null; headSeenAt: number | null; review?: ReviewSummary } | "unchanged";
+type Evaluated =
+  | { decision: Decision; headSha: string | null; headSeenAt: number | null; review?: ReviewSummary; evidence?: HeadEvidence; runner?: RunnerVerification }
+  | "unchanged";
 
-async function evaluate(job: Job, policy: RepoPolicy, previous: MergeDecision | null, tracked: boolean, now: number): Promise<Evaluated> {
+/** The checks a repo's recorded recipe requires; null when the factory knows no recipe for it. */
+export function requiredChecks(rows: readonly RepoSettingsRow[], repo: string): { recipe: Recipe | null; required: CheckName[] | null } {
+  const recipe = parseDetail(rows.find((r) => r.repo === repo)?.onboarding_detail).recipe ?? null;
+  return { recipe, required: recipe ? CHECKS.filter((name) => recipe.checks[name]) : null };
+}
+
+/** This attempt's evidence, one row per commit. */
+async function attemptEvidence(job: Job): Promise<EvidenceRow[]> {
+  const rows = await db
+    .select()
+    .from(jobEvidence)
+    .where(and(eq(jobEvidence.job_key, job.key), eq(jobEvidence.attempt, job.attempt)));
+  return rows.map((r) => ({ sha: r.sha, clean: r.clean, producer: r.producer, source: r.source, checks: r.checks, recordedAt: r.recorded_at }));
+}
+
+const sameEvidence = (a: HeadEvidence | undefined, b: HeadEvidence) => JSON.stringify(a) === JSON.stringify(b);
+
+async function evaluate(job: Job, policy: RepoPolicy, previous: MergeDecision | null, tracked: boolean, now: number, required: CheckName[] | null): Promise<Evaluated> {
   const sameReport = previous !== null && previous.autonomy === policy.autonomy && previous.stageEventId === job.stage_event_id;
   if (policy.autonomy === "off") {
     return sameReport ? "unchanged" : { decision: OFF_DECISION, headSha: null, headSeenAt: null };
@@ -59,7 +87,9 @@ async function evaluate(job: Job, policy: RepoPolicy, previous: MergeDecision | 
   const sameHead = previous?.headSha === detail.headSha;
   const fresh = previous !== null && now - Date.parse(previous.evaluatedAt) < RECHECK_MS;
   const unsettled = previous?.outcome === "pending" || (previous?.outcome === "merge" && previous.autonomy === "auto");
-  if (sameReport && sameHead && fresh && !unsettled) return "unchanged";
+  const evidence = headEvidence(await attemptEvidence(job), detail.headSha, required);
+  if (sameReport && sameHead && fresh && !unsettled && sameEvidence(previous.evidence, evidence)) return "unchanged";
+  const runner = runnerVerification(job, detail.headSha, policy, previous, now);
 
   const branch = attemptBranch(job.key, job.attempt);
   const [pr, labels, spend] = await Promise.all([
@@ -79,8 +109,20 @@ async function evaluate(job: Job, policy: RepoPolicy, previous: MergeDecision | 
     pr,
     headSeenAt,
     now,
+    evidence,
+    runner,
   });
-  return { decision, headSha: detail.headSha, headSeenAt, review: reviewSummary(pr) };
+  return { decision, headSha: detail.headSha, headSeenAt, review: reviewSummary(pr), evidence, runner };
+}
+
+/** The runner's verification record for this head: failed once it couldn't, running once it started. */
+function verificationRecord(job: Job, previous: MergeDecision | null, result: Exclude<Evaluated, "unchanged">, recipe: Recipe | null, now: number): RunnerVerificationRecord | undefined {
+  const sha = result.headSha;
+  if (!sha) return undefined;
+  const kept = previous?.verification?.sha === sha ? previous.verification : undefined;
+  if (result.runner?.kind === "failed") return { sha, at: kept?.at ?? new Date(now).toISOString(), state: "failed", reason: result.runner.reason };
+  if (result.decision.verify && startVerification(job, sha, recipe, (event) => ingestClient.post(event))) return { sha, at: new Date(now).toISOString(), state: "running" };
+  return kept;
 }
 
 export async function decideMerges({ now = Date.now(), only }: { now?: number; only?: string[] } = {}) {
@@ -101,14 +143,17 @@ export async function decideMerges({ now = Date.now(), only }: { now?: number; o
     try {
       const policy = resolvePolicy(policies, job.repo);
       const previous = storedDecision(job);
-      const result = await evaluate(job, policy, previous, jobTracked(job, drivers), now);
+      const { recipe, required } = requiredChecks(policies, job.repo);
+      const result = await evaluate(job, policy, previous, jobTracked(job, drivers), now, required);
       if (result === "unchanged") {
         if (previous) await syncComments(job, previous);
         continue;
       }
       // GitHub refused this head before; asking again would only be refused again.
       const blocked = previous?.blocked && previous.headSha === result.headSha ? previous.blocked : undefined;
-      const decision = blocked && result.decision.outcome === "merge" && policy.autonomy === "auto" ? { outcome: "handover" as const, reasons: [blockedReason(blocked)] } : result.decision;
+      const decided = { outcome: result.decision.outcome, reasons: result.decision.reasons };
+      const decision = blocked && decided.outcome === "merge" && policy.autonomy === "auto" ? { outcome: "handover" as const, reasons: [blockedReason(blocked)] } : decided;
+      const verification = verificationRecord(job, previous, result, recipe, now);
       const next: MergeDecision = {
         ...decision,
         autonomy: policy.autonomy,
@@ -119,6 +164,8 @@ export async function decideMerges({ now = Date.now(), only }: { now?: number; o
         ...(blocked && { blocked }),
         ...(previous?.comments && { comments: previous.comments }),
         ...(result.review && { review: result.review }),
+        ...(result.evidence && { evidence: result.evidence }),
+        ...(verification && { verification }),
       };
       const stored = await storeDecision(job, previous, next);
       if (stored === "gone") continue;
