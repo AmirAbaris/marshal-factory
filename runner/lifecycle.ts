@@ -18,6 +18,7 @@ import { flushSandboxOutbox } from "./outbox";
 import { isolated } from "./reconcile";
 import { CodexLoginError, createJobSandbox, installCodexLogin, markSlotUnusable, pairT3, sandboxRuntime, startT3, stopT3, usableSlots, writeGithubToken } from "./sandbox";
 import { threads } from "./threads";
+import { verifyingKeys } from "./verify";
 
 // What happens to a job's Modal sandbox after its launch. A sandbox bills by the second while it
 // runs, idle or not, so a job that waits on the outside world gives its sandbox up:
@@ -255,8 +256,9 @@ export async function hibernateIdle(now = Date.now()) {
     .select()
     .from(jobs)
     .where(and(await mine(), inArray(jobs.stage, [...HIBERNATE_STAGES]), isNotNull(jobs.sandbox_id), isNull(jobs.sandbox_snapshot), isNotNull(jobs.t3_thread_id), notPending));
+  const verifying = verifyingKeys();
   return each(rows, async (row) => {
-    if (stopOwed(row)) return undefined;
+    if (stopOwed(row) || verifying.has(row.key)) return undefined;
     const quietSince = Math.max(row.stage_at?.getTime() ?? row.updated_at.getTime(), wokenAt.get(row.key) ?? 0);
     if (now - quietSince < graceMs) return undefined;
     const sandboxId = row.sandbox_id!;

@@ -1,5 +1,7 @@
 import { z } from "zod";
 import { ASSESSMENT_CHECKS, CHECK_LABELS, type MergeAssessment } from "./assessment";
+import { headEvidenceSchema, notVerifiedWhy, shortSha, type HeadEvidence } from "./evidence";
+import { globToRegExp, matchesAny } from "./globs";
 
 // Whether a factory PR would merge on its own. The agent recommends (lib/assessment.ts); the
 // runner enforces hard limits that no recommendation overrides. Pure, so the runner pass and the
@@ -87,6 +89,20 @@ export const reviewSchema = z.object({
 });
 export type ReviewSummary = z.infer<typeof reviewSchema>;
 
+export const verificationSchema = z.object({
+  sha: z.string(),
+  at: z.string(),
+  state: z.enum(["running", "failed"]),
+  reason: z.string().optional(),
+});
+export type RunnerVerificationRecord = z.infer<typeof verificationSchema>;
+
+/**
+ * Whether the runner can settle an unproven head by running the checks itself: it may start, it is
+ * running them, it tried and couldn't, or it can't for this job at all.
+ */
+export type RunnerVerification = { kind: "available" } | { kind: "running" } | { kind: "failed"; reason: string } | { kind: "unavailable"; reason: string };
+
 export const mergeDecisionSchema = z.object({
   outcome: z.enum(MERGE_OUTCOMES),
   reasons: z.array(z.string()),
@@ -110,6 +126,10 @@ export const mergeDecisionSchema = z.object({
   review: reviewSchema.optional(),
   /** Set when the owner approved this head in the inbox or run detail; the merge then skips the agent's and the policy's reasons. */
   approvedBy: z.string().optional(),
+  /** What the evidence proved about headSha when the decision read it; absent when autonomy is off or before evidence existed. */
+  evidence: headEvidenceSchema.optional(),
+  /** The runner's own run of the checks at headSha in the job's sandbox; at most one per head. */
+  verification: verificationSchema.optional(),
 });
 export type MergeDecision = z.infer<typeof mergeDecisionSchema>;
 
@@ -143,33 +163,15 @@ export type DecisionInput = {
   headSeenAt: number;
   now: number;
   checksTimeoutMs?: number;
+  /** What the evidence for this attempt proves about the PR head; see lib/evidence.ts. */
+  evidence: HeadEvidence;
+  runner: RunnerVerification;
 };
 
-export type Decision = { outcome: MergeOutcome; reasons: string[] };
+/** `verify` is set when only verification at the head stands between the PR and a merge, and the runner may run it. */
+export type Decision = { outcome: MergeOutcome; reasons: string[]; verify?: true };
 
-const escape = (text: string) => text.replace(/[.+^${}()|[\]\\]/g, "\\$&");
-
-/** `**` spans directories, `*` and `?` stay inside one; a leading `**\/` also matches the root. */
-export function globToRegExp(glob: string) {
-  let source = "";
-  for (let i = 0; i < glob.length; i++) {
-    const c = glob[i]!;
-    if (c === "*" && glob[i + 1] === "*") {
-      if (glob[i + 2] === "/") {
-        source += "(?:.*/)?";
-        i += 2;
-      } else {
-        source += ".*";
-        i += 1;
-      }
-    } else if (c === "*") source += "[^/]*";
-    else if (c === "?") source += "[^/]";
-    else source += escape(c);
-  }
-  return new RegExp(`^${source}$`);
-}
-
-export const matchesAny = (path: string, globs: readonly string[]) => globs.some((glob) => globToRegExp(glob).test(path));
+export { globToRegExp, matchesAny };
 
 const MANIFEST = /(^|\/)package\.json$/;
 const DEPENDENCY_LINE = /^([+-])\s*"([^"]+)"\s*:\s*"[~^>=<v\s]*(\d+)[^"]*"\s*,?\s*$/;
@@ -226,11 +228,48 @@ function agentReasons({ tracked, assessment }: DecisionInput) {
   return failed.length > 0 ? failed : ["The agent recommends handing over."];
 }
 
-function waitingOn(pr: PrFacts) {
+/** The verified-at-head limit: what the agent or the runner ran at exactly the PR's head. */
+function evidenceReasons({ evidence, runner }: DecisionInput, pr: PrFacts): string[] {
+  const head = shortSha(pr.headSha);
+  switch (evidence.state) {
+    case "verified":
+      return [];
+    case "no_checks":
+      return ["No checks defined for this repo."];
+    case "failed":
+      return [`Checks failed at ${head}: ${evidence.failed.join(", ")}.`];
+    case "missing":
+    case "stale":
+    case "dirty":
+    case "incomplete":
+      switch (runner.kind) {
+        case "available":
+        case "running":
+          return [];
+        case "failed":
+          return [`Not verified at ${head}: ${notVerifiedWhy(evidence)}, and the factory couldn't run the checks itself: ${runner.reason}.`];
+        case "unavailable":
+          return [`Not verified at ${head}: ${notVerifiedWhy(evidence)}; ${runner.reason}.`];
+        default: {
+          const never: never = runner;
+          throw new Error(`unknown runner verification ${String(never)}`);
+        }
+      }
+    default: {
+      const never: never = evidence;
+      throw new Error(`unknown evidence state ${String(never)}`);
+    }
+  }
+}
+
+const verificationWait = (pr: PrFacts) => `verification at ${shortSha(pr.headSha)}`;
+
+function waitingOn(input: DecisionInput, pr: PrFacts) {
   const waiting: string[] = [];
   if (pr.checks === "pending") waiting.push("checks");
   if (pr.bugbot.review.state === "pending") waiting.push("Bugbot");
   if (pr.mergeable === "unknown") waiting.push("GitHub's mergeability check");
+  if (evidenceReasons(input, pr).length === 0 && input.evidence.state !== "verified") waiting.push(verificationWait(pr));
   return waiting;
 }
 
@@ -240,12 +279,15 @@ export const OFF_DECISION: Decision = { outcome: "handover", reasons: [] };
 export function decideMerge(input: DecisionInput): Decision {
   if (input.policy.autonomy === "off") return OFF_DECISION;
   if (!input.pr) throw new Error("decideMerge needs the PR's facts unless autonomy is off");
-  const reasons = [...agentReasons(input), ...hardLimits(input, input.pr)];
+  const reasons = [...agentReasons(input), ...hardLimits(input, input.pr), ...evidenceReasons(input, input.pr)];
   if (reasons.length > 0) return { outcome: "handover", reasons };
-  const waiting = waitingOn(input.pr);
+  const waiting = waitingOn(input, input.pr);
   if (waiting.length > 0) {
     const timeout = input.checksTimeoutMs ?? CHECKS_TIMEOUT_MS;
-    if (input.now - input.headSeenAt < timeout) return { outcome: "pending", reasons: [`Waiting for ${waiting.join(", ")}.`] };
+    if (input.now - input.headSeenAt < timeout) {
+      const onlyVerification = waiting.length === 1 && waiting[0] === verificationWait(input.pr) && input.runner.kind === "available";
+      return { outcome: "pending", reasons: [`Waiting for ${waiting.join(", ")}.`], ...(onlyVerification && { verify: true as const }) };
+    }
     return { outcome: "handover", reasons: [`${waiting.join(", ")} didn't finish within ${minutes(timeout)} minutes.`.replace(/^./, (c) => c.toUpperCase())] };
   }
   return { outcome: "merge", reasons: [] };
