@@ -132,7 +132,7 @@ async function runIntent(intent: IntentRow) {
   if (!(await leaseIntent(intent.id, machine.id))) return { id: intent.id, skipped: "leased by another machine" };
   const latencyMs = Date.now() - intent.created_at.getTime();
   const result = await handle(intent).catch((error: unknown) => ({ error: String(error) }));
-  // A failed intent stays open and the timer retries it, so a Linear or T3 hiccup cannot eat a
+  // A failed intent stays open and the timer retries it, so a source or T3 hiccup cannot eat a
   // stop. After its kind's INTENT_ATTEMPTS it is closed with the error kept in result.
   const failed = "error" in result;
   const attempts = intent.attempts + 1;
@@ -180,12 +180,12 @@ const startupReconcile = () => reconcile({ tick, cleanup: () => ops.cleanup(), l
  * without any webhook, and the PR check catches a conflict GitHub settled after a push's recheck.
  */
 async function tick() {
-  // Each check on its own: one failing (Linear or GitHub down) must not skip the others this tick.
+  // Each check on its own: one failing (a source or GitHub down) must not skip the others this tick.
   return {
     // First, so stage reports a hook or MCP call could not deliver reach the board before anything reads it.
     outbox: await isolated(flushLocalOutbox),
     claimed: await isolated(() => ops.claim()),
-    // An answer can land before its question reached Linear, and its intent then finds nothing.
+    // An answer can land before its question reached the source, and its intent then finds nothing.
     resumed: await isolated(ops.resumeAnswered),
     // Stops whose webhook never arrived; before deliverStops, so a new stop is messaged this tick.
     stopsReconciled: await isolated(() => ops.reconcileStops()),
