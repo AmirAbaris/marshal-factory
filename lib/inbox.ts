@@ -109,16 +109,18 @@ export function inboxReason(item: InboxItem<InboxJob & Pick<JobRow, "question" |
 /** The actions each kind offers; the panel shows these and the actions refuse the rest. */
 export const INBOX_ACTIONS = {
   question: ["answer"],
-  revert_failed: ["request_changes", "dismiss"],
+  revert_failed: ["follow_up", "dismiss"],
   handover: ["approve", "request_changes", "close"],
   failed: ["close", "dismiss"],
 } as const satisfies Record<InboxKind, readonly InboxAction[]>;
-export type InboxAction = "answer" | "approve" | "request_changes" | "close" | "dismiss";
+export type InboxAction = "answer" | "approve" | "request_changes" | "follow_up" | "close" | "dismiss";
 
 export const allows = (kind: InboxKind | null, action: InboxAction) =>
   kind !== null && (INBOX_ACTIONS[kind] as readonly InboxAction[]).includes(action);
 
 export const MAX_FEEDBACK_CHARS = 20_000;
+/** A follow-up's text goes into a new issue, whose description holds 10,000 characters with the failure's facts. */
+export const MAX_FOLLOW_UP_CHARS = 8_000;
 
 /** An approve_merge intent: the owner, and the head they reviewed; null when they saw no head. */
 export const approveDetailSchema = z.object({ actor: z.string(), headSha: z.string().nullable() });
@@ -127,7 +129,16 @@ export type ApproveDetail = z.infer<typeof approveDetailSchema>;
 /** A request_changes intent. `id` is the replay key: one per panel request or GitHub review. */
 export const feedbackDetailSchema = z.discriminatedUnion("from", [
   z.object({ from: z.literal("panel"), id: z.string(), actor: z.string(), body: z.string() }),
-  z.object({ from: z.literal("github"), id: z.string(), reviewId: z.number().int(), reviewer: z.string(), state: z.string(), body: z.string() }),
+  z.object({
+    from: z.literal("github"),
+    id: z.string(),
+    reviewId: z.number().int(),
+    reviewer: z.string(),
+    state: z.string(),
+    body: z.string(),
+    /** The PR's head branch, so a review that lands before the job records its PR still finds the job. */
+    branch: z.string().optional(),
+  }),
 ]);
 export type FeedbackDetail = z.infer<typeof feedbackDetailSchema>;
 
@@ -139,31 +150,50 @@ export type ReviewComment = { path: string; line: number | null; body: string };
 const quote = (text: string) => text.trim().replace(/^/gm, "> ");
 
 /** The turn a thread gets when the owner, in the panel or on GitHub, asks for changes. */
-export function changesMessage({
-  prUrl,
-  feedback,
-  comments = [],
-  revertFailed = false,
-}: {
-  prUrl: string;
-  feedback: FeedbackDetail;
-  comments?: readonly ReviewComment[];
-  revertFailed?: boolean;
-}) {
+export function changesMessage({ prUrl, feedback, comments = [] }: { prUrl: string; feedback: FeedbackDetail; comments?: readonly ReviewComment[] }) {
   const who = feedback.from === "github" ? `The reviewer (@${feedback.reviewer} on GitHub)` : "The reviewer";
-  const lead = revertFailed
-    ? `Main went red after the factory merged ${prUrl}, and the automatic revert failed. ${who} asked for changes:`
-    : `${who} requested changes on ${prUrl}:`;
-  const next = revertFailed
-    ? "Fix main in a new pull request from a fresh branch off main, then report it with report_stage and a fresh assessment."
-    : "Update the same branch and PR, then report the PR again with a fresh assessment.";
   return [
-    lead,
+    `${who} requested changes on ${prUrl}:`,
     "",
     ...(feedback.body.trim() ? [quote(feedback.body), ""] : []),
     ...(comments.length > 0
       ? ["Comments on the code:", "", ...comments.flatMap((c) => [`- ${c.path}${c.line ? `:${c.line}` : ""}`, quote(c.body).replace(/^/gm, "  "), ""])]
       : []),
-    next,
+    "Update the same branch and PR, then report the PR again with a fresh assessment.",
   ].join("\n");
+}
+
+type FollowUpJob = Pick<JobRow, "key" | "url" | "pr_url">;
+
+/**
+ * The issue filed to fix main after a factory merge went red and its revert failed. The merged
+ * attempt's worktree is gone, so the fix is a new job rather than more turns on the old thread.
+ */
+export function followUpIssue(job: FollowUpJob, decision: MergeDecision | null, body: string) {
+  const watch = decision?.watch;
+  const base = decision?.merged?.base ?? "main";
+  return {
+    title: `Fix ${base}: revert of ${job.key} failed`,
+    description: [
+      body.trim(),
+      "",
+      "---",
+      "",
+      `Main went red after the factory merged ${job.key}${job.pr_url ? ` (${job.pr_url})` : ""}, and the automatic revert failed.`,
+      "",
+      ...(watch && watch.failed.length > 0 ? [`- Failed checks on ${base}: ${watch.failed.join(", ")}`] : []),
+      ...(job.pr_url ? [`- Merged pull request: ${job.pr_url}`] : []),
+      ...(decision?.merged ? [`- Merge commit: ${decision.merged.sha}`] : []),
+      `- Why the revert failed: ${watch?.reason ?? "not recorded"}`,
+      ...(watch?.revertPr ? [`- Revert pull request: ${watch.revertPr}`] : []),
+      `- Original issue: ${job.url}`,
+    ].join("\n"),
+  };
+}
+
+/** What the follow-up's text box starts with, for the owner to edit. */
+export function followUpHint(job: Pick<JobRow, "key">, decision: MergeDecision | null) {
+  const failed = decision?.watch?.failed ?? [];
+  const base = decision?.merged?.base ?? "main";
+  return `Get ${base} green again after ${job.key}${failed.length > 0 ? `: ${failed.join(", ")} failed` : ""}.`;
 }

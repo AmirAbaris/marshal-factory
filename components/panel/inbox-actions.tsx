@@ -1,8 +1,8 @@
 "use client";
 
-import { GitMergeIcon, MessageSquareReplyIcon, SendIcon, XIcon } from "lucide-react";
+import { FilePlusIcon, GitMergeIcon, MessageSquareReplyIcon, SendIcon, XIcon } from "lucide-react";
 import { type ReactNode, useEffect, useRef, useState } from "react";
-import { answerQuestion, approveMerge, closeJob, dismissJob, inboxIntentOutcome, requestChanges } from "@/app/actions/inbox";
+import { answerQuestion, approveMerge, closeJob, dismissJob, fileFollowUp, inboxIntentOutcome, requestChanges } from "@/app/actions/inbox";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import {
   AlertDialog,
@@ -21,8 +21,9 @@ import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
 import { toastManager } from "@/components/ui/toast";
 import type { JobRow } from "@/db/schema";
-import { INBOX_ACTIONS, MAX_FEEDBACK_CHARS, type InboxAction, type InboxKind } from "@/lib/inbox";
+import { followUpHint, INBOX_ACTIONS, MAX_FEEDBACK_CHARS, MAX_FOLLOW_UP_CHARS, type InboxAction, type InboxKind } from "@/lib/inbox";
 import type { InboxOutcome, IntentOutcome } from "@/lib/inbox-actions";
+import type { MergeDecision } from "@/lib/merge-decision";
 
 const POLL_MS = 1_500;
 /** The runner works one step at a time, so a busy queue can hold a request for a few minutes. */
@@ -72,7 +73,7 @@ function useInboxAction() {
     try {
       const sent = await send().catch((e: unknown): InboxOutcome => ({ ok: false, message: e instanceof Error ? e.message : String(e) }));
       if (!sent.ok) return setError(sent.message);
-      const outcome: IntentOutcome = sent.intentId ? await follow(sent.intentId) : { status: "done", message: done };
+      const outcome: IntentOutcome = sent.intentId ? await follow(sent.intentId) : { status: "done", message: sent.message ?? done };
       if (!mounted.current) {
         // The item left the inbox, which is how success usually looks; say so anyway.
         if (outcome.status === "done") toastManager.add({ type: "success", title: outcome.message });
@@ -116,6 +117,8 @@ function Compose({
   label,
   description,
   placeholder,
+  initial = "",
+  maxLength = MAX_FEEDBACK_CHARS,
   submit,
   icon,
   disabled,
@@ -125,13 +128,16 @@ function Compose({
   label: string;
   description: string;
   placeholder: string;
+  /** Text the box starts with, for the owner to edit. */
+  initial?: string;
+  maxLength?: number;
   submit: string;
   icon: ReactNode;
   disabled: boolean;
   loading: boolean;
   onSend: (text: string, clear: () => void) => void;
 }) {
-  const [text, setText] = useState("");
+  const [text, setText] = useState(initial);
   const send = () => text.trim() && onSend(text, () => setText(""));
   return (
     <Field className="w-full">
@@ -140,7 +146,7 @@ function Compose({
         value={text}
         onChange={(e) => setText(e.target.value)}
         placeholder={placeholder}
-        maxLength={MAX_FEEDBACK_CHARS}
+        maxLength={maxLength}
         disabled={disabled}
         onKeyDown={(e) => {
           if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
@@ -240,7 +246,19 @@ function CloseButton({ job, kind, disabled, loading, onClose }: { job: JobRow; k
 }
 
 /** The actions an inbox item offers, each recorded for the job's runner. */
-export function InboxActions({ job, kind, headSha, reviewReady }: { job: JobRow; kind: InboxKind; headSha: string | null; reviewReady: boolean }) {
+export function InboxActions({
+  job,
+  kind,
+  decision,
+  headSha,
+  reviewReady,
+}: {
+  job: JobRow;
+  kind: InboxKind;
+  decision: MergeDecision | null;
+  headSha: string | null;
+  reviewReady: boolean;
+}) {
   const { busy, error, run } = useInboxAction();
   const actions: readonly InboxAction[] = INBOX_ACTIONS[kind];
   const has = (a: InboxAction) => actions.includes(a);
@@ -287,13 +305,27 @@ export function InboxActions({ job, kind, headSha, reviewReady }: { job: JobRow;
       {has("request_changes") && (
         <Compose
           label="Request changes"
-          description={kind === "revert_failed" ? "Sent to the agent, which fixes main in a new pull request." : "Sent to the agent, which updates the same branch and PR."}
+          description="Sent to the agent, which updates the same branch and PR."
           placeholder="What should change"
           submit="Request changes"
           icon={<MessageSquareReplyIcon data-icon="inline-start" />}
           disabled={disabled}
           loading={loading("request_changes")}
           onSend={(text, clear) => void run("request_changes", () => requestChanges(job.id, requestId(), text), "Sent to the agent.", clear)}
+        />
+      )}
+      {has("follow_up") && (
+        <Compose
+          label="File a follow-up"
+          description="Filed as a new issue with the failed checks, the merged PR and why the revert failed; the factory picks it up as a new job."
+          placeholder="What the fix should do"
+          initial={followUpHint(job, decision)}
+          maxLength={MAX_FOLLOW_UP_CHARS}
+          submit="File a follow-up"
+          icon={<FilePlusIcon data-icon="inline-start" />}
+          disabled={disabled}
+          loading={loading("follow_up")}
+          onSend={(text, clear) => void run("follow_up", () => fileFollowUp(job.id, requestId(), text), "Filed the follow-up.", clear)}
         />
       )}
       {buttons}

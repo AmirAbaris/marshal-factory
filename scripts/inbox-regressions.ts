@@ -4,7 +4,9 @@ import { createHmac } from "node:crypto";
 import { eq, inArray, like } from "drizzle-orm";
 import type { JobRow } from "../db/schema";
 import type { MergeAssessment } from "../lib/assessment";
+import type { Harness } from "../lib/harness";
 import type { MergeDecision } from "../lib/merge-decision";
+import type { FileDraft } from "../lib/sources/types";
 
 const OWNER = "owner@example.com";
 process.env.FACTORY_OWNER_EMAILS = OWNER;
@@ -22,12 +24,12 @@ const { ingest } = await import("../lib/ingest");
 const { hosts, localHost } = await import("../lib/host");
 const { github, pullsClient } = await import("../lib/github/pulls");
 const { writeRepoAutonomy } = await import("../lib/settings");
-const { allows, changesMessage, feedbackDetailSchema, inboxItems, inboxKind, isDismissed } = await import("../lib/inbox");
+const { allows, changesMessage, feedbackDetailSchema, followUpHint, followUpIssue, inboxItems, inboxKind, isDismissed } = await import("../lib/inbox");
 const { approvalBlockers, reviewSummary } = await import("../lib/merge-decision");
 const { githubIntent } = await import("../lib/webhooks");
 const inbox = await import("../lib/inbox-actions");
 const { approveMerge } = await import("../runner/merge-decision");
-const { closeJob, requestChanges } = await import("../runner/inbox");
+const { closeJob, forwardReview, REVIEW_WAIT_MS, requestChanges } = await import("../runner/inbox");
 const { ingestClient, threads } = await import("../runner/ops");
 const { INTENT_ROUTES } = await import("../runner/intents");
 const { serve } = await import("./serve");
@@ -87,7 +89,9 @@ assert.deepEqual(
 assert.equal(isDismissed(pool.find((j) => j.key === "DISMISSED")!), true);
 assert.equal(isDismissed(pool.find((j) => j.key === "FAILED-AGAIN")!), false, "a failure after the dismissal shows again");
 assert.ok(allows("handover", "approve") && allows("handover", "request_changes") && allows("handover", "close"));
-assert.ok(allows("revert_failed", "request_changes") && allows("revert_failed", "dismiss") && !allows("revert_failed", "approve"));
+assert.ok(allows("revert_failed", "follow_up") && allows("revert_failed", "dismiss") && !allows("revert_failed", "approve"));
+assert.ok(!allows("revert_failed", "request_changes"), "the merged attempt's worktree is gone, so a failed revert takes a follow-up job instead");
+assert.ok(!allows("handover", "follow_up") && !allows("failed", "follow_up"));
 assert.ok(allows("failed", "dismiss") && allows("failed", "close") && !allows("failed", "request_changes"));
 assert.ok(allows("question", "answer") && !allows("question", "approve") && !allows(null, "dismiss"));
 
@@ -123,6 +127,21 @@ assert.equal(githubIntent("pull_request_review", review({}, { login: "cursor[bot
 assert.equal(githubIntent("pull_request_review", review({}, { login: "marshal-factory-ski043[bot]", type: "Bot" })), null, "nor is the factory's App");
 assert.equal(githubIntent("pull_request_review", review({ state: "approved" })), null, "an approval asks for nothing");
 assert.equal(githubIntent("pull_request_review", { ...review(), action: "edited" }), null, "an edit is not a new review");
+const onBranch = githubIntent("pull_request_review", { ...review(), pull_request: { html_url: "https://github.com/o/r/pull/1", head: { ref: "factory/FAC-5" } } });
+const branchDetail = feedbackDetailSchema.parse(JSON.parse(onBranch!.detail!));
+assert.equal(branchDetail.from === "github" ? branchDetail.branch : null, "factory/FAC-5", "the head branch finds a job that has not recorded its PR yet");
+
+const followUp = followUpIssue(
+  { key: "FAC-9", url: "https://linear.app/x/issue/FAC-9", pr_url: "https://github.com/o/r/pull/9" },
+  decision({ merged, watch: watch("revert_failed") }),
+  " Fix the flaky import. ",
+);
+assert.equal(followUp.title, "Fix main: revert of FAC-9 failed");
+assert.match(followUp.description, /^Fix the flaky import\.\n\n---\n\nMain went red after the factory merged FAC-9 \(https:\/\/github\.com\/o\/r\/pull\/9\), and the automatic revert failed\./);
+for (const fact of ["- Failed checks on main: ci", "- Merged pull request: https://github.com/o/r/pull/9", "- Why the revert failed: git revert failed", "- Original issue: https://linear.app/x/issue/FAC-9"]) {
+  assert.ok(followUp.description.includes(fact), `the follow-up carries "${fact}"`);
+}
+assert.equal(followUpHint({ key: "FAC-9" }, decision({ merged, watch: watch("revert_failed") })), "Get main green again after FAC-9: ci failed.");
 
 const framed = changesMessage({ prUrl: "https://github.com/o/r/pull/1", feedback: { from: "panel", id: "panel:1", actor: OWNER, body: "Use the existing hook." } });
 assert.match(framed, /^The reviewer requested changes on https:\/\/github\.com\/o\/r\/pull\/1:\n\n> Use the existing hook\.\n\nUpdate the same branch and PR, then report the PR again with a fresh assessment\.$/);
@@ -190,7 +209,12 @@ threads.send = async (thread, message) => {
   sent.push({ thread, message });
 };
 const woken: string[] = [];
-hosts.wake = async (job) => (woken.push(job.key), localHost);
+let failWake = false;
+hosts.wake = async (job) => {
+  if (failWake) throw new Error("the sandbox did not wake");
+  woken.push(job.key);
+  return localHost;
+};
 ingestClient.post = async (event) => ingest(db, [eventSchema.parse(event)]);
 SOURCES.linear.labels = async () => ["factory"];
 SOURCES.linear.note = async () => {};
@@ -239,7 +263,18 @@ async function job(name: string, over: Partial<typeof jobs.$inferInsert>, pull?:
 const owner = { email: OWNER, emailVerified: true };
 const stranger = { email: "someone@example.com", emailVerified: true };
 const replies: { key: string; requestId: string; body: string }[] = [];
-const deps = (user: typeof owner | null = owner) => ({ db, user: async () => user, reply: async (j: { key: string }, requestId: string, body: string) => void replies.push({ key: j.key, requestId, body }) });
+const filed: FileDraft[] = [];
+const harnesses: Harness[] = [{ id: "claudeAgent", driver: "claudeAgent", name: "Claude Code", enabled: true, models: [] }];
+const deps = (user: typeof owner | null = owner) => ({
+  db,
+  user: async () => user,
+  reply: async (j: { key: string }, requestId: string, body: string) => void replies.push({ key: j.key, requestId, body }),
+  newJob: {
+    user: async () => user,
+    harnesses: async () => harnesses,
+    file: async (draft: FileDraft) => (filed.push(draft), { key: `FAC-${filed.length}`, url: `https://linear.app/x/issue/FAC-${filed.length}` }),
+  },
+});
 const intentRows = (k: string) => db.select().from(intents).where(eq(intents.job_id, jobId("linear", `inbox-regress-${k}`)));
 const putsTo = (n: number) => writes.filter((w) => w.method === "PUT" && w.path === `/repos/${REPO}/pulls/${n}/merge`);
 
@@ -357,15 +392,66 @@ try {
   assert.deepEqual(await (await ingestFunction.fetch(reviewBody(deliveries[2]!, { login: "cursor[bot]", type: "Bot" }))).json(), { duplicate: false, intent: null });
   const reviewIntents = await intentRows(REVIEWED);
   assert.deepEqual(reviewIntents.map((i) => i.id), [`github:review:${9000 + stamp}`], "one intent per review id, tied to the job by its PR");
-  const reviewFeedback = feedbackDetailSchema.parse(JSON.parse(reviewIntents[0]!.detail!));
-  assert.deepEqual(await requestChanges(reviewIntents[0]!.job_id, reviewFeedback), { sent: REVIEWED, moved: true });
+  const reviewIntent = reviewIntents[0]!;
+  const parsedReview = feedbackDetailSchema.parse(JSON.parse(reviewIntent.detail!));
+  assert.equal(parsedReview.from, "github");
+  const reviewFeedback = parsedReview as Extract<typeof parsedReview, { from: "github" }>;
+  const forward = (intent: Parameters<typeof forwardReview>[0], fb = reviewFeedback, now?: number) => forwardReview(intent, fb, TEST_MACHINE_ID, now);
+  assert.deepEqual(await forward(reviewIntent), { sent: REVIEWED, moved: true });
   assert.match(sent.at(-1)!.message, /^The reviewer \(@jan on GitHub\) requested changes on .*pull\/7:\n\n> Rename the helper\.\n\nComments on the code:\n\n- src\/a\.ts:12\n  > This name is unclear\./);
-  assert.deepEqual(await requestChanges(reviewIntents[0]!.job_id, reviewFeedback), { skipped: "already sent" });
-  assert.deepEqual(await requestChanges(null, reviewFeedback), { skipped: "the pull request is not a factory job's" }, "a review on another PR is ignored");
+  assert.deepEqual(await forward(reviewIntent), { skipped: "already sent" }, "a review already delivered closes its intent");
+  const stray = { id: `github:review:stray-${stamp}`, job_id: null, pr_url: "https://github.com/o/r/pull/999", created_at: new Date() };
+  assert.deepEqual(await forward(stray), { skipped: "the pull request is not a factory job's" }, "a review on another PR is ignored");
   const before = sent.length;
   const later = { ...reviewFeedback, id: "review:later", reviewId: 1 };
-  assert.deepEqual(await requestChanges(reviewIntents[0]!.job_id, later), { sent: REVIEWED, moved: false }, "a thread already at work only hears it");
+  assert.deepEqual(await forward(reviewIntent, later), { sent: REVIEWED, moved: false }, "a thread already at work only hears it");
   assert.equal(sent.length, before + 1);
+
+  // --- GitHub reviews the job can't take yet stay open; finished jobs and old attempts close them
+  const reviewIntentRow = async (name: string, over: { job_id?: ReturnType<typeof jobId> | null; pr_url: string; created_at?: Date }) => {
+    const id = `github:review:inbox-regress-${name}-${stamp}`;
+    await db.insert(intents).values({ id, kind: "request_changes", job_id: over.job_id ?? null, pr_url: over.pr_url, created_at: over.created_at ?? new Date() });
+    return (await db.select().from(intents).where(eq(intents.id, id)))[0]!;
+  };
+  const EARLY = await job("EARLY", { stage: "implementing" });
+  const early = await reviewIntentRow("early", { pr_url: prUrl(9) });
+  const earlyFeedback = { ...reviewFeedback, id: "review:early", branch: `factory/${EARLY}` };
+  assert.deepEqual(await forward(early, earlyFeedback), { waiting: "the job has no pull request yet" }, "a review before the job records its PR waits");
+  assert.equal((await db.select().from(intents).where(eq(intents.id, early.id)))[0]!.job_id, (await row(EARLY)).id, "the branch ties the intent to the job, so it routes to the job's machine");
+  assert.deepEqual(await forward({ ...early, job_id: null }, { ...earlyFeedback, branch: `factory/${EARLY}-a2` }), { skipped: "the pull request is not a factory job's" }, "another attempt's branch is not this job's");
+  pulls.set(keyOf(REPO, 9), { repo: REPO, number: 9, head: "h9", state: "open", merged: null, mergeable: true, behind: 0, checks: "success", files: [], merge: { status: 200, body: {} } });
+  await db.update(jobs).set({ stage: "pr", pr_url: prUrl(9) }).where(eq(jobs.key, EARLY));
+  assert.deepEqual(await forward({ ...early, job_id: null }, earlyFeedback), { sent: EARLY, moved: true }, "the retry finds the job by its PR now and forwards it");
+
+  const ASKING = await job("ASKING", { stage: "waiting", pr_url: prUrl(10) });
+  const asking = await reviewIntentRow("asking", { job_id: (await row(ASKING)).id, pr_url: prUrl(10) });
+  const askingFeedback = { ...reviewFeedback, id: "review:asking" };
+  assert.deepEqual(await forward(asking, askingFeedback), { waiting: "the job is waiting" }, "a job waiting on a question takes it after the answer");
+  const dropped = await forward(asking, askingFeedback, asking.created_at.getTime() + REVIEW_WAIT_MS + 1);
+  assert.deepEqual(dropped, { refused: "@jan's review never reached the agent: after 24 hours the job is waiting." }, "after a day the review is given up");
+  const askingAudit = await db.select().from(auditLog).where(eq(auditLog.job_id, (await row(ASKING)).id));
+  assert.deepEqual(askingAudit.map((a) => [a.action, a.actor, a.target, a.result]), [["review_dropped", "@jan on GitHub", prUrl(10), "refused"]], "with an audit row");
+  await forward(asking, askingFeedback, asking.created_at.getTime() + REVIEW_WAIT_MS + 2);
+  assert.equal((await db.select().from(auditLog).where(eq(auditLog.job_id, (await row(ASKING)).id))).length, 1, "a replay adds no second row");
+
+  const ASLEEP = await job("ASLEEP", { sandbox_snapshot: "im-asleep" }, { number: 11 });
+  const asleep = await reviewIntentRow("asleep", { job_id: (await row(ASLEEP)).id, pr_url: prUrl(11) });
+  failWake = true;
+  assert.deepEqual(await forward(asleep, { ...reviewFeedback, id: "review:asleep" }), { waiting: "the sandbox did not wake" }, "a sandbox that fails to wake is tried again");
+  failWake = false;
+  assert.deepEqual((await row(ASLEEP)).delivered_feedback_ids, [], "and nothing is claimed");
+
+  const ELSEWHERE = await job("ELSEWHERE", { machine_id: "another-machine" }, { number: 12 });
+  const elsewhere = await reviewIntentRow("elsewhere", { pr_url: prUrl(12) });
+  assert.deepEqual(await forward(elsewhere, { ...reviewFeedback, id: "review:elsewhere" }), { waiting: "the job runs on another machine" });
+  assert.equal((await db.select().from(intents).where(eq(intents.id, elsewhere.id)))[0]!.job_id, (await row(ELSEWHERE)).id, "the retry goes to the job's machine");
+
+  const DONE = await job("DONE", { stage: "merged" }, { number: 13 });
+  const done = await reviewIntentRow("done", { job_id: (await row(DONE)).id, pr_url: prUrl(13) });
+  assert.deepEqual(await forward(done, { ...reviewFeedback, id: "review:done" }), { refused: "The job is merged, so there is no work to change." }, "a finished job closes the intent");
+  const RETRIED = await job("RETRIED", { attempt: 2 }, { number: 14 });
+  const oldPr = await reviewIntentRow("old-pr", { job_id: (await row(RETRIED)).id, pr_url: prUrl(15) });
+  assert.deepEqual(await forward(oldPr, { ...reviewFeedback, id: "review:old-pr" }), { skipped: "the pull request is not a factory job's" }, "a review on an earlier attempt's PR closes");
 
   // --- answer: the owner's reply in the source, then the usual resume
   const ASKED = await job("ASKED", { stage: "waiting", question: "Which list?" });
@@ -395,6 +481,45 @@ try {
   assert.deepEqual([dismissed.stage, inboxKind(dismissed)], ["failed", null], "dismiss only hides it");
   assert.deepEqual(await inbox.dismissJob(deps(), failedId), { ok: false, message: "Only a failed job can be dismissed." });
 
+  // --- a failed revert: a follow-up job, filed like the panel's New job, with the original's overrides
+  const revertDecision = decision({ merged, watch: { ...watch("revert_failed"), revertPr: "https://github.com/o/r/pull/90" } });
+  const REVERTED = await job("REVERTED", {
+    stage: "merged",
+    pr_url: prUrl(16),
+    url: "https://linear.app/x/issue/REVERTED",
+    merge_decision: revertDecision,
+    ticket_overrides: { provider: "claudeAgent", execution: "modal", notes: [] },
+  });
+  const revertedId = (await row(REVERTED)).id;
+  assert.equal(inboxKind(await row(REVERTED)), "revert_failed");
+  const id4 = crypto.randomUUID();
+  for (const user of [null, stranger]) assert.equal((await inbox.fileFollowUp(deps(user), revertedId, id4, "Fix it.")).ok, false);
+  assert.deepEqual(await inbox.fileFollowUp(deps(), revertedId, id4, "  "), { ok: false, message: "Write what the follow-up should fix." });
+  assert.deepEqual(await inbox.fileFollowUp(deps(), handId, id4, "Fix it."), { ok: false, message: "Only a merge whose revert failed takes a follow-up." });
+  assert.equal(filed.length, 0, "nothing is filed for a refused request");
+  assert.deepEqual(await inbox.requestChanges(deps(), revertedId, id4, "Fix it."), { ok: false, message: "The job is no longer waiting on your review." }, "the merged attempt takes no changes");
+
+  const followed = await inbox.fileFollowUp(deps(), revertedId, id4, "Pin the import order.");
+  assert.deepEqual(followed, { ok: true, intentId: null, message: "Filed FAC-1. The factory picks it up as a new job." });
+  assert.equal(filed.length, 1);
+  const draft = filed[0]!;
+  assert.equal(draft.requestId, id4, "the request id keys the issue, so a retry files it once");
+  assert.equal(draft.title, `Fix main: revert of ${REVERTED} failed`);
+  for (const fact of ["Pin the import order.", "- Failed checks on main: ci", `- Merged pull request: ${prUrl(16)}`, "- Why the revert failed: git revert failed", "- Revert pull request: https://github.com/o/r/pull/90"]) {
+    assert.ok(draft.description.includes(fact), `the issue carries "${fact}"`);
+  }
+  assert.deepEqual(draft.labels, [{ group: "Harness", name: "Claude Code" }, { group: "Runs on", name: "Modal" }], "with the original job's overrides");
+  assert.equal(inboxKind(await row(REVERTED)), null, "the failed revert leaves the inbox");
+  const followAudit = await db.select().from(auditLog).where(eq(auditLog.job_id, revertedId));
+  assert.deepEqual(followAudit.map((a) => [a.action, a.actor, a.target, a.head_sha, a.result]), [["follow_up_filed", OWNER, "https://linear.app/x/issue/FAC-1", "m", "ok"]], "the audit log links the new issue");
+  assert.equal((await intentRows(REVERTED)).length, 0, "no runner intent: the merged attempt's thread is not involved");
+
+  harnesses[0]!.enabled = false;
+  const REVERTED2 = await job("REVERTED2", { stage: "merged", merge_decision: revertDecision, ticket_overrides: { provider: "claudeAgent", notes: [] } });
+  assert.equal((await inbox.fileFollowUp(deps(), (await row(REVERTED2)).id, crypto.randomUUID(), "Fix it.")).ok, true);
+  assert.equal(filed.at(-1)!.labels, undefined, "a harness turned off since falls back to Settings instead of blocking the fix");
+  harnesses[0]!.enabled = true;
+
   console.log("inbox regressions passed");
 } catch (error) {
   console.error(error);
@@ -405,6 +530,7 @@ try {
     await db.delete(auditLog).where(inArray(auditLog.job_id, ids));
     await db.delete(intents).where(inArray(intents.job_id, ids));
   }
+  await db.delete(intents).where(like(intents.id, `github:review:inbox-regress-%-${stamp}`));
   await db.delete(webhookDeliveries).where(like(webhookDeliveries.delivery_id, `github:inbox-regress-${stamp}-%`));
   if (keys.length > 0) await db.delete(events).where(inArray(events.job_key, keys));
   await db.delete(jobs).where(like(jobs.id, `${jobId("linear", "inbox-regress-")}%`));

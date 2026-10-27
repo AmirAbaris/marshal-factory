@@ -25,7 +25,7 @@ const { isolated, reconcile } = await import("./reconcile");
 const { stopDeliverable } = await import("./binding");
 const { inferUntracked } = await import("./untracked");
 const { approveMerge, decideMerges } = await import("./merge-decision");
-const { closeJob, requestChanges } = await import("./inbox");
+const { closeJob, forwardReview, requestChanges } = await import("./inbox");
 const { approveDetailSchema, closeDetailSchema, feedbackDetailSchema } = await import("../lib/inbox");
 const { watchMerges } = await import("./post-merge");
 const { syncLinearLabels } = await import("./overrides");
@@ -73,8 +73,13 @@ async function handle(intent: IntentRow) {
       return openT3(intent.job_id!);
     case "approve_merge":
       return { approval: await approveMerge(intent.job_id!, approveDetailSchema.parse(JSON.parse(intent.detail ?? "null"))), synced: await ops.writeBack() };
-    case "request_changes":
-      return { changes: await requestChanges(intent.job_id, feedbackDetailSchema.parse(JSON.parse(intent.detail ?? "null"))) };
+    case "request_changes": {
+      const feedback = feedbackDetailSchema.parse(JSON.parse(intent.detail ?? "null"));
+      if (feedback.from === "panel") return { changes: await requestChanges(intent.job_id, feedback) };
+      // A review its job can't take yet fails this try, so the intent stays open for the retry.
+      const changes = await forwardReview(intent, feedback, machine.id);
+      return "waiting" in changes ? { error: `waiting: ${changes.waiting}` } : { changes };
+    }
     case "close_job":
       return { close: await closeJob(intent.job_id!, closeDetailSchema.parse(JSON.parse(intent.detail ?? "null"))), synced: await ops.writeBack() };
     default: {

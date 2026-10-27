@@ -2,20 +2,23 @@ import { and, eq, inArray } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import { z } from "zod";
 import * as schema from "@/db/schema";
-import { intents, jobs, type IntentKind, type JobRow } from "@/db/schema";
+import { auditLog, intents, jobs, type IntentKind, type JobRow } from "@/db/schema";
 import { isOwner, type SessionUser } from "@/lib/auth/owner";
 import type { RepoName } from "@/lib/github/app";
 import type { PullsClient } from "@/lib/github/pulls";
 import {
   allows,
+  followUpIssue,
   inboxKind,
   MAX_FEEDBACK_CHARS,
+  MAX_FOLLOW_UP_CHARS,
   type ApproveDetail,
   type CloseDetail,
   type FeedbackDetail,
   type InboxAction,
 } from "@/lib/inbox";
 import { mergeDecisionSchema, reviewSummary, type ReviewSummary } from "@/lib/merge-decision";
+import { createJob, type NewJobDeps } from "@/lib/new-job";
 import { parseJob } from "@/lib/sources";
 import type { Job, JobId } from "@/lib/sources/types";
 
@@ -29,10 +32,13 @@ export type InboxDeps = {
   user: () => Promise<SessionUser | null | undefined>;
   /** Posts the owner's answer in the job's source; see SourceAdapter.reply. */
   reply: (job: Job, requestId: string, body: string) => Promise<void>;
+  /** Files a job the way the panel's New job does. */
+  newJob: NewJobDeps;
   now?: () => Date;
 };
 
-export type InboxOutcome = { ok: true; intentId: string | null } | { ok: false; message: string };
+/** An action done at once has no intent, and may say what it did. */
+export type InboxOutcome = { ok: true; intentId: string | null; message?: string } | { ok: false; message: string };
 
 const OWNER_ONLY = "Only the factory owner can act on the inbox.";
 const requestIdSchema = z.uuid();
@@ -41,6 +47,7 @@ const NOT_OFFERED: Record<InboxAction, string> = {
   answer: "The job is no longer waiting on an answer.",
   approve: "The pull request is no longer waiting on your review.",
   request_changes: "The job is no longer waiting on your review.",
+  follow_up: "Only a merge whose revert failed takes a follow-up.",
   close: "The job is no longer waiting on you.",
   dismiss: "Only a failed job can be dismissed.",
 };
@@ -84,6 +91,47 @@ export async function requestChanges(deps: InboxDeps, jobId: JobId, requestId: s
   if (!found.ok) return found;
   const detail: FeedbackDetail = { from: "panel", id: `panel:${requestId}`, actor: found.actor, body: text.data };
   return record(deps, found.job, "request_changes", requestId, detail);
+}
+
+/** Leaves room in the issue's 10,000 characters for the facts the follow-up adds. */
+const followUpSchema = z.string().trim().min(1, "Write what the follow-up should fix.").max(MAX_FOLLOW_UP_CHARS, "The follow-up is too long.");
+
+/**
+ * Files a new issue to fix main after a merge whose revert failed, with the original job's harness
+ * and execution overrides, then takes the item out of the inbox. The merged attempt's worktree is
+ * gone, so its thread can't do the fix. The request id keys the issue, so a retry files it once.
+ */
+export async function fileFollowUp(deps: InboxDeps, jobId: JobId, requestId: string, body: string): Promise<InboxOutcome> {
+  if (badRequest(requestId)) return { ok: false, message: "The request is not valid." };
+  const text = followUpSchema.safeParse(body);
+  if (!text.success) return { ok: false, message: text.error.issues[0]!.message };
+  const found = await ownerJob(deps, jobId, "follow_up");
+  if (!found.ok) return found;
+  const { job } = found;
+  const decision = mergeDecisionSchema.safeParse(job.merge_decision).data ?? null;
+  const issue = followUpIssue(job, decision, text.data);
+  const overrides = job.ticket_overrides;
+  // A harness turned off since the original ran falls back to Settings rather than blocking the fix.
+  const provider = overrides?.provider && (await deps.newJob.harnesses())?.some((h) => h.id === overrides.provider && h.enabled) ? overrides.provider : undefined;
+  const filed = await createJob(deps.newJob, { ...issue, requestId, provider, execution: overrides?.execution });
+  if (!filed.ok) return { ok: false, message: filed.message };
+  const now = (deps.now ?? (() => new Date()))();
+  await deps.db.update(jobs).set({ dismissed_at: now }).where(eq(jobs.id, job.id));
+  await deps.db
+    .insert(auditLog)
+    .values({
+      id: `follow-up:${requestId}`,
+      at: now,
+      actor: found.actor,
+      action: "follow_up_filed",
+      job_id: job.id,
+      target: filed.url,
+      head_sha: decision?.merged?.sha ?? "",
+      result: "ok",
+      detail: `Filed ${filed.identifier} to fix main after the revert of ${job.key} failed.`,
+    })
+    .onConflictDoNothing();
+  return { ok: true, intentId: null, message: `Filed ${filed.identifier}. The factory picks it up as a new job.` };
 }
 
 /** Answers the job's question in its source as a reply, then asks its runner to resume it. */

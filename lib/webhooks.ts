@@ -48,7 +48,7 @@ const githubReviewSchema = z.object({
     body: z.string().nullable().optional(),
     user: z.object({ login: z.string(), type: z.string() }).nullable(),
   }),
-  pull_request: z.object({ html_url: z.string() }),
+  pull_request: z.object({ html_url: z.string(), head: z.object({ ref: z.string() }).optional() }),
 });
 
 /** Reviews the factory forwards to the thread; an approval or a dismissal asks for nothing. */
@@ -69,6 +69,7 @@ function reviewIntent(body: unknown): IntentDraft | null {
     reviewer: review.user.login,
     state: review.state.toLowerCase(),
     body: review.body ?? "",
+    ...(pull_request.head && { branch: pull_request.head.ref }),
   };
   return { kind: "request_changes", key: detail.id, prUrl: pull_request.html_url, detail: JSON.stringify(detail) };
 }

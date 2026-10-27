@@ -25,7 +25,8 @@ export const INTENT_ROUTES = {
 /**
  * How often a failing intent is tried before it is closed with its error. A pairing link is asked
  * for by someone watching the panel, so it fails at once rather than retrying for a day; so does
- * an approval after a few tries, since the owner sees the error and can approve again.
+ * an approval after a few tries, since the owner sees the error and can approve again. A GitHub
+ * review that waits on its job gives up after REVIEW_WAIT_MS, so its tries outlast that day.
  */
 export const INTENT_ATTEMPTS = {
   claim: 50,
@@ -35,7 +36,7 @@ export const INTENT_ATTEMPTS = {
   recheck_conflicts: 50,
   open_t3: 1,
   approve_merge: 3,
-  request_changes: 50,
+  request_changes: 60,
   close_job: 50,
 } as const satisfies Record<IntentKind, number>;
 

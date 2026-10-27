@@ -306,7 +306,7 @@ function Detail({ item, card }: { item: Item; card: BoardCard | undefined }) {
         {wantsReview && job.pr_url && <Review loaded={loaded} prUrl={job.pr_url} />}
       </ScrollArea>
       <div className="shrink-0 border-t px-4.5 py-3.5">
-        <InboxActions job={job} kind={kind} headSha={review?.headSha ?? null} reviewReady={!wantsReview || loaded.kind !== "loading"} />
+        <InboxActions job={job} kind={kind} decision={item.decision} headSha={review?.headSha ?? null} reviewReady={!wantsReview || loaded.kind !== "loading"} />
       </div>
     </aside>
   );
