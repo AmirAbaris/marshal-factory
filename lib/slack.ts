@@ -83,6 +83,9 @@ export const SLACK_ACTION_IDS = {
 export const SLACK_LINK_ACTION_IDS = { panel: "link:panel", pr: "link:pr", source: "link:source" } as const;
 /** The actions block's id is this plus the event id, so a click finds its slack_messages row. */
 export const ITEM_BLOCK_PREFIX = "item:";
+/** Level 3's job sources, as the app manifest in docs/operations.md declares them. */
+export const SLACK_COMMAND = "/factory";
+export const SLACK_SHORTCUT_CALLBACK_ID = "send_to_factory";
 
 export type NotifyJob = InboxJob &
   Pick<JobRow, "id" | "source" | "title" | "url" | "repo" | "attempt" | "provider" | "question" | "stage_summary" | "answered_at">;
