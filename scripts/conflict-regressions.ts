@@ -49,7 +49,7 @@ try {
 
   await db.insert(jobs).values(linearJob(`${id}-bad`, `bad-${id}`, { stage: "pr", pr_url: bad.url, machine_id: TEST_MACHINE_ID }));
 
-  const first = await checkPullRequests();
+  const first = await checkPullRequests({ only: [id, `bad-${id}`, `${id}-LOOSE`] });
   assert.deepEqual(sent, ["thread-1"], "a bad PR earlier in the pass does not stop the conflicting one from being sent back");
   assert.equal((await db.select().from(jobs).where(eq(jobs.id, jid)))[0]!.conflict_head, "head-3", "the head is claimed");
   const errorFor = (result: typeof first, key: string) => result.errors.find((e) => e.key === key)?.error;
@@ -57,7 +57,7 @@ try {
   assert.match(errorFor(first, id) ?? "", /deployed ingest function/, "the sent-back PR then posts implementing");
   assert.match(errorFor(first, loose.job_key) ?? "", /deployed ingest function/, "and the hand-started runs are still checked for a merge");
 
-  const second = await checkPullRequests();
+  const second = await checkPullRequests({ only: [id, `bad-${id}`, `${id}-LOOSE`] });
   assert.deepEqual(second.conflicts, [], "a second pass over the same head does nothing");
   assert.equal(errorFor(second, id), undefined, "and has nothing to post for it");
   assert.deepEqual(sent, ["thread-1"], "and sends nothing");

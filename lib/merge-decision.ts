@@ -152,7 +152,8 @@ export type PrFacts = {
 
 export type DecisionInput = {
   policy: RepoPolicy;
-  tracked: boolean;
+  /** False when the attempt recorded no usage, or used a model without a price; see lib/spend.ts. */
+  costKnown: boolean;
   assessment: MergeAssessment | null;
   attempt: number;
   spendUsd: number;
@@ -219,9 +220,11 @@ function hardLimits(input: DecisionInput, pr: PrFacts) {
   return reasons;
 }
 
-function agentReasons({ tracked, assessment }: DecisionInput) {
-  // A harness whose cost is not tracked can't be held to its budget, whatever it assessed.
-  if (!tracked) return ["This harness doesn't report its cost, so its PRs never merge on their own."];
+export const COST_UNKNOWN_REASON = "This run's cost is unknown, so it can't be held to its budget.";
+
+function agentReasons({ costKnown, assessment }: DecisionInput) {
+  // A run whose cost is unknown can't be held to its budget, whatever it assessed.
+  if (!costKnown) return [COST_UNKNOWN_REASON];
   if (!assessment) return ["The agent didn't report a merge assessment."];
   if (assessment.recommendation === "merge") return [];
   const failed = ASSESSMENT_CHECKS.filter((name) => !assessment.checks[name].ok).map((name) => `${CHECK_LABELS[name]}: ${assessment.checks[name].note}`);

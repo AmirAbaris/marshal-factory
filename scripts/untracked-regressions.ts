@@ -108,14 +108,14 @@ try {
 
   // The PR merges: the PR check moves it on like any tracked job's.
   pullStates.set(prUrl(1), { state: "merged", mergeable: "unknown", headSha: "h", title: "t" });
-  const checked = await checkPullRequests();
+  const checked = await checkPullRequests({ only: keys });
   assert.ok(!checked.errors.some((e) => keys.includes(e.key)), JSON.stringify(checked));
   assert.equal((await row(PR)).stage, "merged");
 
   // A conflict sends the thread back; once it settles again the job is back in pr with the same PR.
   const CONFLICT = await insert("CONFLICT", { stage: "pr", stage_at: hourAgo, pr_url: prUrl(4) });
   pullStates.set(prUrl(4), { state: "open", mergeable: "conflicting", headSha: "head-c", title: "t" });
-  const sentBack = await checkPullRequests();
+  const sentBack = await checkPullRequests({ only: keys });
   assert.ok(sentBack.conflicts.includes(CONFLICT), JSON.stringify(sentBack));
   assert.equal((await row(CONFLICT)).stage, "implementing");
   assert.ok(sent.some((s) => s.threadId === `thread-${CONFLICT}` && /conflicts with main/.test(s.message)));

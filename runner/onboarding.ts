@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { asc, eq, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "../db/client";
 import { repoSettings, type RepoSettingsRow } from "../db/schema";
@@ -505,9 +505,9 @@ export async function repoPushed(push: RepoPushDetail) {
  * The next build this machine may start, one at a time: a repo waiting for its first or a wanted
  * image, else, lazily, a ready repo whose image no longer fits the base image.
  */
-export async function startBuilds() {
+export async function startBuilds({ only }: { only?: readonly string[] } = {}) {
   const machine = await thisMachine();
-  const rows = await db.select().from(repoSettings).orderBy(asc(repoSettings.onboarding_at));
+  const rows = await db.select().from(repoSettings).where(onlyRepos(only)).orderBy(asc(repoSettings.onboarding_at));
   if (rows.some((r) => parseDetail(r.onboarding_detail).run?.kind === "build" && parseDetail(r.onboarding_detail).run?.machine === machine.id)) return undefined;
   const base = launchable();
   if ("problem" in base) return undefined;
@@ -529,6 +529,9 @@ export async function startBuilds() {
   return next ? startBuild(next, base.image) : undefined;
 }
 
+/** Regressions name their own repos, so rows a test branch copied from a real database never take part. */
+const onlyRepos = (only: readonly string[] | undefined) => (only ? inArray(repoSettings.repo, [...only]) : undefined);
+
 /** Sandboxes the last reap found with no row pointing at them; a second sighting ends them. */
 let suspects = new Set<string>();
 
@@ -548,9 +551,12 @@ const REAP_EVERY_MS = 5 * 60_000;
 let lastReap = 0;
 
 /** The timer's onboarding pass: this machine's runs move on, then a build starts if one is due. */
-export async function advanceOnboarding() {
+export async function advanceOnboarding({ only }: { only?: readonly string[] } = {}) {
   const machine = await thisMachine();
-  const rows = await db.select().from(repoSettings).where(sql`${repoSettings.onboarding_detail} ? 'run' or ${repoSettings.onboarding_state} in ('building', 'rebuilding', 'ready')`);
+  const rows = await db
+    .select()
+    .from(repoSettings)
+    .where(and(sql`${repoSettings.onboarding_detail} ? 'run' or ${repoSettings.onboarding_state} in ('building', 'rebuilding', 'ready')`, onlyRepos(only)));
   const results: unknown[] = [];
   for (const row of rows) {
     const run = parseDetail(row.onboarding_detail).run;
@@ -573,7 +579,7 @@ export async function advanceOnboarding() {
       advancing.delete(row.repo);
     }
   }
-  const started = await startBuilds();
+  const started = await startBuilds({ only });
   const reapDue = (rows.length > 0 || suspects.size > 0) && Date.now() - lastReap >= REAP_EVERY_MS;
   const reaped = reapDue ? await reapOnboarding(await db.select().from(repoSettings)) : [];
   if (reapDue) lastReap = Date.now();

@@ -191,10 +191,11 @@ async function tick() {
     stopsReconciled: await isolated(() => ops.reconcileStops()),
     stopsDelivered: await isolated(() => ops.deliverStops()),
     pullRequests: await isolated(ops.checkPullRequests),
+    // Before the merge decisions, so a run that just opened its PR is decided on its latest cost.
+    reconciled: await isolated(ops.reconcileUsage),
     // After the PR check, so a merged or conflicting PR has already left pr.
     mergeDecisions: await isolated(() => decideMerges()),
     mainWatched: await isolated(() => watchMerges()),
-    reconciled: await isolated(ops.reconcileUsage),
     overBudget: await isolated(ops.enforceBudget),
     // Harnesses without hooks report no stage or PR; read them from GitHub and the thread instead.
     untracked: await isolated(() => inferUntracked()),
@@ -299,7 +300,7 @@ setInterval(() => {
     return { ...result, ...(cleaned !== undefined && { cleaned }), ...(labels !== undefined && { labels }) };
   });
   // Its own step, so a snapshot that takes minutes never pushes the tick past its timeout.
-  void serial("onboarding", advanceOnboarding);
+  void serial("onboarding", () => advanceOnboarding());
   // Intents the subscription may not have delivered.
   void openIntents().then(takeIntents);
 }, ops.config.factory.tickSeconds * 1000);

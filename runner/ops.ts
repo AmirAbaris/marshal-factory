@@ -5,14 +5,13 @@ import { STAGES, type Stage, type Usage } from "../lib/events";
 import { allSources, jobId, parseJob, parseJobs, sourceFor } from "../lib/sources";
 import { parseJobId, SOURCE_SHAPES } from "../lib/sources/shapes";
 import type { Job, JobDraft, JobId, JobSource, SourceAdapter } from "../lib/sources/types";
-import type { IngestResult } from "../lib/ingest";
 import { canTransition, runnerEventId } from "../lib/stages";
 import { branchSpend } from "../lib/spend";
 import { subagentTranscripts, sumUsage, transcriptPathFor } from "../lib/transcript";
 import { checkoutRepo, cleanupRepo, cleanupSubagentWorktrees } from "../lib/worktrees";
 import { github } from "../lib/github/pulls";
 import { claimConflict, conflictMessage, unclaimedRunsWithPr } from "../lib/conflicts";
-import { attemptBranch, isJobKey } from "../lib/factory";
+import { attemptBranch, isJobKey, isMcpSession } from "../lib/factory";
 import { attemptBranchSql } from "../lib/branch-sql";
 import { nudgeMessage, watch } from "../lib/watchdog";
 import { isTracked } from "../lib/harness";
@@ -21,7 +20,6 @@ import { readSettings, resolveExecution, resolveHarness, type HarnessChoice } fr
 import type { Execution } from "../lib/execution";
 import type { TicketRecord } from "../lib/ticket-overrides";
 import { readRegistry, registerRepos, routeRepo, type Registry } from "../lib/repositories";
-import { forbidInTest } from "../lib/test-mode";
 import { ensureAwake, HostGoneError, hosts, isHibernated, type JobHost } from "../lib/host";
 import { modalHost } from "../lib/modal-host";
 import { requestedStop } from "../lib/stop";
@@ -30,6 +28,10 @@ import { config } from "./config";
 import { thisMachine } from "./heartbeat";
 import { leaseSlot, teardownSandbox } from "./lifecycle";
 import { confirmStops, stopDelivered } from "./stops";
+import { postEvent } from "./ingest-client";
+import { recordCodexUsage } from "./codex-usage";
+
+export { ingestClient, postEvent } from "./ingest-client";
 import { threads } from "./threads";
 import { claimReplies, qaBlock, resumeMessage } from "../lib/resume";
 
@@ -56,12 +58,12 @@ const STOPPABLE = STAGES.filter((stage) => canTransition(stage, "failed", "stop"
  * and the next timer pass retries it, while the rest of this pass goes on. A job no machine holds,
  * such as a resume waiting for a fresh thread, has no thread to send back, but its merge counts.
  */
-export async function checkPullRequests() {
+export async function checkPullRequests({ only }: { only?: readonly string[] } = {}) {
   const open = parseJobs(
     await db
       .select()
       .from(jobs)
-      .where(and(or(await mine(), isNull(jobs.machine_id)), isNotNull(jobs.pr_url), ne(jobs.stage, "merged")))
+      .where(and(or(await mine(), isNull(jobs.machine_id)), isNotNull(jobs.pr_url), ne(jobs.stage, "merged"), only ? inArray(jobs.key, [...only]) : undefined))
       .orderBy(asc(jobs.key)),
   );
   const conflicts: string[] = [];
@@ -80,7 +82,7 @@ export async function checkPullRequests() {
     });
   }
 
-  for (const run of await unclaimedRunsWithPr(db)) {
+  for (const run of (await unclaimedRunsWithPr(db)).filter((r) => !only || only.includes(r.job_key!))) {
     await each(run.job_key!, run.pr_url!, async () => {
       if ((await github.pullRequest(run.pr_url!)).state === "merged") await postMerged(run.job_key!, run.pr_url!, run.session_id);
     });
@@ -143,26 +145,6 @@ async function sendBackForConflict(job: Job, head: string) {
     jobKey: job.key,
   });
   return true;
-}
-
-/** Where the runner's own events go; regressions swap `post` for the ingest projection itself. */
-export const ingestClient = {
-  async post(event: Record<string, unknown>): Promise<Pick<IngestResult, "refused">> {
-    forbidInTest("the deployed ingest function");
-    const res = await fetch(config.ingestUrl, {
-      method: "POST",
-      headers: { authorization: `Bearer ${config.secret}`, "content-type": "application/json" },
-      body: JSON.stringify(event),
-      signal: AbortSignal.timeout(15_000),
-    });
-    if (!res.ok) throw new Error(`ingest answered ${res.status}: ${await res.text()}`);
-    return (await res.json()) as Pick<IngestResult, "refused">;
-  },
-};
-
-export async function postEvent(event: Record<string, unknown>) {
-  const { refused } = await ingestClient.post(event);
-  for (const refusal of refused) console.log(JSON.stringify({ at: new Date().toISOString(), event: "stage refused", ...refusal }));
 }
 
 const threadAlive = async (threadId: string | null, host: JobHost) => (await threads.state(threadId, host)) !== "gone";
@@ -354,12 +336,13 @@ export async function watchdogFail(job: Pick<JobRow, "id" | "key" | "external_id
 /**
  * Rebuilds usage from transcripts for factory runs whose numbers fell behind, such as a run
  * interrupted before its Stop hook. It goes through the same greatest() projection as every
- * usage event, keyed on the totals, so replays and live updates cannot double count. A run whose
- * sandbox is gone has no transcripts left to read; it is skipped and the rest go on.
+ * usage event, keyed on the totals, so replays and live updates cannot double count. A Codex run
+ * (`mcp:` session) is read from its rollouts instead, every pass, since nothing else reports it. A
+ * run whose sandbox is gone has no transcripts left to read; it is skipped and the rest go on.
  */
 export async function reconcileUsage({ only }: { only?: string[] } = {}) {
   const recent = await db
-    .select({ run: runs, sandbox_id: jobs.sandbox_id, sandbox_snapshot: jobs.sandbox_snapshot })
+    .select({ run: runs, sandbox_id: jobs.sandbox_id, sandbox_snapshot: jobs.sandbox_snapshot, stage: jobs.stage })
     .from(runs)
     .leftJoin(jobs, eq(jobs.key, runs.job_key))
     .where(
@@ -370,11 +353,14 @@ export async function reconcileUsage({ only }: { only?: string[] } = {}) {
       ),
     );
   const fixed: string[] = [];
-  for (const { run, sandbox_id, sandbox_snapshot } of recent) {
+  for (const { run, sandbox_id, sandbox_snapshot, stage } of recent) {
     // A hibernated job's transcripts are in its snapshot; its thread is settled, so nothing is behind.
     if (isHibernated({ key: run.job_key!, sandbox_id, sandbox_snapshot })) continue;
     try {
-      if (await reconcileRun(run, hosts.forJob({ key: run.job_key!, sandbox_id }))) fixed.push(run.job_key!);
+      const host = hosts.forJob({ key: run.job_key!, sandbox_id });
+      // A merged or failed job's thread is done, so its subagents are settled.
+      const final = stage === "merged" || stage === "failed";
+      if (await (isMcpSession(run.session_id) ? recordCodexUsage(run, host, { final }) : reconcileRun(run, host))) fixed.push(run.job_key!);
     } catch (error) {
       if (!(error instanceof HostGoneError)) throw error;
       console.log(JSON.stringify({ at: new Date().toISOString(), event: "reconcile:skipped", key: run.job_key, session: run.session_id, reason: error.message }));
@@ -419,7 +405,7 @@ async function reconcileRun(run: RunRow, host: JobHost) {
 /** Backstop for the budget hook: a working job over its attempt's cap fails even if its thread never reports it. */
 export async function enforceBudget() {
   const working = await db.select().from(jobs).where(and(await mine(), inArray(jobs.stage, IN_FLIGHT)));
-  const spend = await branchSpend(db, working.map((j) => attemptBranch(j.key, j.attempt)));
+  const spend = await branchSpend(db, working.map((j) => attemptBranch(j.key, j.attempt)), config.factory.pricing);
   const over: string[] = [];
   for (const job of working) {
     const usd = spend[attemptBranch(job.key, job.attempt)] ?? 0;
@@ -444,7 +430,7 @@ export async function enforceBudget() {
  * merges, so every machine writes it back; source writes are keyed on the stage event, so two
  * machines writing the same one converge.
  */
-export async function writeBack() {
+export async function writeBack({ only }: { only?: readonly string[] } = {}) {
   const pending = parseJobs(
     await db
       .select()
@@ -456,6 +442,7 @@ export async function writeBack() {
           or(isNull(jobs.synced_event_id), ne(jobs.synced_event_id, jobs.stage_event_id)),
           // A stop is written back once it is confirmed or marked unconfirmed, not while it is on its way.
           sql`not ${stoppingSql}`,
+          only ? inArray(jobs.key, [...only]) : undefined,
         ),
       )
       .orderBy(asc(jobs.key)),

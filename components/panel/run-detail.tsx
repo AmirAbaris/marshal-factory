@@ -13,6 +13,7 @@ import { harnessLabel, type Harness } from "@/lib/harness";
 import { parseInventory, t3ThreadLink, UNKNOWN } from "@/lib/machine";
 import { sourceLink } from "@/lib/sources/shapes";
 import { parseStop, stopLine, stopView } from "@/lib/stop";
+import { runFeedPath } from "@/lib/run-links";
 import { RUNS_ON_LABELS, ticketRecordSchema } from "@/lib/ticket-overrides";
 import { runsOn } from "./cards";
 import { AgentTree } from "./agent-tree";
@@ -131,9 +132,8 @@ export function RunDetail({
   events: Feed<EventRow>;
   stages: Feed<EventRow>;
 }) {
-  const base = `/api/live/runs/${encodeURIComponent(run.session_id)}`;
-  const { rows: agentRows } = useFeed(agents, `${base}/agents`);
-  const { rows: eventRows } = useFeed(events, `${base}/events`);
+  const { rows: agentRows } = useFeed(agents, runFeedPath("agents", run.session_id));
+  const { rows: eventRows } = useFeed(events, runFeedPath("events", run.session_id));
   const { rows: stageRows } = useFeed(stages, stagesPath);
   const stage = job?.stage ?? run.stage;
   const link = job && sourceLink(job);

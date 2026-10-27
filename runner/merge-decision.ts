@@ -26,10 +26,11 @@ import {
 import { readRepoSettings, resolvePolicy } from "../lib/settings";
 import { parseJob, parseJobs, sourceFor } from "../lib/sources";
 import type { Job, JobId } from "../lib/sources/types";
-import { branchSpend } from "../lib/spend";
+import { branchCosts } from "../lib/spend";
 import { thisMachine } from "./heartbeat";
 import { mergeNow, recoverMerges, storeDecision, storedDecision, syncComments } from "./merge-service";
-import { harnessDrivers, ingestClient, jobTracked } from "./ops";
+import { config } from "./config";
+import { ingestClient } from "./ops";
 import { runnerVerification, startVerification } from "./verify";
 
 // The timer's pass over this machine's jobs in pr: decides whether each PR merges on its own and
@@ -76,7 +77,7 @@ async function attemptEvidence(job: Job): Promise<EvidenceRow[]> {
 
 const sameEvidence = (a: HeadEvidence | undefined, b: HeadEvidence) => JSON.stringify(a) === JSON.stringify(b);
 
-async function evaluate(job: Job, policy: RepoPolicy, previous: MergeDecision | null, tracked: boolean, now: number, required: CheckName[] | null): Promise<Evaluated> {
+async function evaluate(job: Job, policy: RepoPolicy, previous: MergeDecision | null, now: number, required: CheckName[] | null): Promise<Evaluated> {
   const sameReport = previous !== null && previous.autonomy === policy.autonomy && previous.stageEventId === job.stage_event_id;
   if (policy.autonomy === "off") {
     return sameReport ? "unchanged" : { decision: OFF_DECISION, headSha: null, headSeenAt: null };
@@ -92,18 +93,19 @@ async function evaluate(job: Job, policy: RepoPolicy, previous: MergeDecision | 
   const runner = runnerVerification(job, detail.headSha, policy, previous, now);
 
   const branch = attemptBranch(job.key, job.attempt);
-  const [pr, labels, spend] = await Promise.all([
+  const [pr, labels, costs] = await Promise.all([
     prFacts(job.pr_url!, job.repo as RepoName, detail.headSha, detail.baseRef, detail.mergeable),
     sourceFor(job.source).labels(job),
-    branchSpend(db, [branch]),
+    branchCosts(db, [branch], config.factory.pricing),
   ]);
+  const cost = costs[branch] ?? { usd: 0, known: false };
   const headSeenAt = sameHead && previous.headSeenAt ? Date.parse(previous.headSeenAt) : now;
   const decision = decideMerge({
     policy,
-    tracked,
+    costKnown: cost.known,
     assessment: job.merge_assessment,
     attempt: job.attempt,
-    spendUsd: spend[branch] ?? 0,
+    spendUsd: cost.usd,
     budgetUsd: job.budget_usd,
     labels,
     pr,
@@ -138,13 +140,12 @@ export async function decideMerges({ now = Date.now(), only }: { now?: number; o
   );
   if (rows.length === 0) return errors.length > 0 ? { changed, errors } : changed;
   const policies = await readRepoSettings(db);
-  const drivers = harnessDrivers();
   for (const job of rows) {
     try {
       const policy = resolvePolicy(policies, job.repo);
       const previous = storedDecision(job);
       const { recipe, required } = requiredChecks(policies, job.repo);
-      const result = await evaluate(job, policy, previous, jobTracked(job, drivers), now, required);
+      const result = await evaluate(job, policy, previous, now, required);
       if (result === "unchanged") {
         if (previous) await syncComments(job, previous);
         continue;

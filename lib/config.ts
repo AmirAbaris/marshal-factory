@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { z } from "zod";
 import { DEFAULT_MODEL, DEFAULT_PROVIDER } from "./harness";
+import { pricingSchema } from "./pricing";
 import { inTestMode } from "./test-mode";
 
 export const CONFIG_PATH = process.env.MARSHAL_FACTORY_CONFIG ?? join(homedir(), ".config/marshal-factory/config.json");
@@ -67,6 +68,8 @@ export const factorySchema = z
     failAfterNudgeMinutes: z.number().positive().default(30),
     /** USD one attempt at a job may spend across its runs, main sessions plus subagents; claims copy it onto the job. */
     budgetUsd: z.number().positive().default(5),
+    /** USD per million tokens by model id, over lib/pricing.ts's defaults; null makes a model's cost unknown. The runner's budget and merge decisions use it; the panel shows the defaults. */
+    pricing: pricingSchema.default({}),
     /** Days a failed job keeps its worktree for a human to look at before cleanup removes it. */
     cleanupGraceDays: z.number().nonnegative().default(3),
     /** How long the runner watches the base branch's checks after it merged a PR, reverting when they fail. */

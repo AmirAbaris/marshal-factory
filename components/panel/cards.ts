@@ -5,6 +5,7 @@ import { evidenceLine, parseSummary, type EvidenceLine } from "@/lib/evidence";
 import { attemptBranch, isMcpSession } from "@/lib/factory";
 import { harnessLabel, isTracked, type Harness, type Tracking } from "@/lib/harness";
 import { parseInventory, UNKNOWN } from "@/lib/machine";
+import { costKnown } from "@/lib/pricing";
 import { mergeDecisionSchema, type MergeDecision } from "@/lib/merge-decision";
 import { sourceLink } from "@/lib/sources/shapes";
 import { parseStop, stopView, type StopView } from "@/lib/stop";
@@ -53,7 +54,7 @@ export function t3EnvironmentId(machine: Pick<MachineRow, "inventory"> | undefin
   return t3 && t3 !== UNKNOWN ? t3.environmentId : null;
 }
 
-/** What the card can show of the harness's run: Codex jobs whose report server posted have stages but no cost. */
+/** What the card can show of the harness's run: a Codex job whose report server posted has stages, and its cost once the runner read a priced usage. */
 export type CardHarness = { name: string; tracking: Tracking };
 
 export type RunsOn = { kind: "modal"; sandbox: SandboxState | null } | { kind: "local"; machineId: string };
@@ -82,7 +83,7 @@ export function harnessLine(harness: CardHarness) {
     case "full":
       return harness.name;
     case "stages":
-      return `${harness.name} · no cost tracking`;
+      return `${harness.name} · cost unknown`;
     case "none":
       return `${harness.name} · not tracked`;
     default: {
@@ -121,7 +122,8 @@ export function boardCards(jobs: readonly JobRow[], runs: readonly RunRow[], har
     const known = harnesses.find((h) => h.id === provider);
     const name = known?.name ?? harnessLabel(provider);
     if (isTracked(known?.driver ?? provider)) return { name, tracking: "full" };
-    return { name, tracking: attemptRuns.some((r) => isMcpSession(r.session_id)) ? "stages" : "none" };
+    if (!attemptRuns.some((r) => isMcpSession(r.session_id))) return { name, tracking: "none" };
+    return { name, tracking: costKnown(attemptRuns) ? "full" : "stages" };
   };
   const byKey = groupBy(
     runs.filter((r) => r.job_key !== null),
