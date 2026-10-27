@@ -14,6 +14,8 @@ const { NO_OVERRIDES } = await import("../lib/ticket-overrides");
 type Adapter = NonNullable<NonNullable<Parameters<typeof claim>[0]>["sources"]>[number];
 
 const prefix = `claim-regress-${Date.now()}`;
+// Only this script's jobs: the test branch copies a real database.
+const ours = async () => (await db.select({ key: jobs.key }).from(jobs).where(like(jobs.key, `${prefix}-%`))).map((j) => j.key);
 const REPO = "ski043/factory-demo";
 const slot = (id: string, over: Partial<{ repos: string[]; maxInFlight: number }> = {}) => ({ id, repos: [REPO], maxInFlight: 1, ...over });
 const ownerOf = async (key: string) => (await db.select().from(jobs).where(eq(jobs.key, key)))[0]!.machine_id;
@@ -95,7 +97,7 @@ try {
   ]);
   github.pullRequest = async (url) =>
     url === pr(3) ? { state: "open", mergeable: "conflicting", headSha: "h", title: "t" } : { state: "merged", mergeable: "unknown", headSha: "h", title: "t" };
-  const checked = await checkPullRequests();
+  const checked = await checkPullRequests({ only: await ours() });
   const erroredKeys = checked.errors.map((e) => e.key);
   assert.ok(erroredKeys.includes(`${prefix}-resume`), "a merged PR of a job no machine holds is posted as merged (refused in test mode)");
   assert.ok(!erroredKeys.includes(`${prefix}-their-pr`), "another machine's PR is left to that machine");
@@ -107,7 +109,7 @@ try {
   linear.writeBack = async (job, transition) => (written.push(`${job.key}:${transition.stage}`), true);
   await db.update(jobs).set({ stage: "merged", stage_event_id: "e-merged" }).where(eq(jobs.key, `${prefix}-resume`));
   await db.update(jobs).set({ stage_event_id: "e-theirs" }).where(eq(jobs.key, `${prefix}-their-pr`));
-  await writeBack();
+  await writeBack({ only: await ours() });
   assert.ok(written.includes(`${prefix}-resume:merged`), "the merge of a job no machine holds reaches its source");
   assert.ok(!written.some((w) => w.startsWith(`${prefix}-their-pr:`)), "another machine's job is written back by that machine");
 
@@ -119,7 +121,7 @@ try {
     if (job.key === `${prefix}-wb-bad`) throw new Error("Linear says the issue is gone");
     return true;
   };
-  await assert.rejects(writeBack(), /could not write back .*wb-bad: Linear says the issue is gone/, "a failing write-back is reported");
+  await assert.rejects(writeBack({ only: await ours() }), /could not write back .*wb-bad: Linear says the issue is gone/, "a failing write-back is reported");
   const synced = async (key: string) => (await db.select().from(jobs).where(eq(jobs.key, key)))[0]!.synced_event_id;
   assert.equal(await synced(`${prefix}-wb-good`), "e-good", "and the job after it is still written back");
   assert.equal(await synced(`${prefix}-wb-bad`), null, "while the failed one stays unsynced for the next pass");

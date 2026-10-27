@@ -65,6 +65,8 @@ fake.answer = (_sandbox, argv) => {
 };
 
 const key = (name: string) => `LC${name}-${stamp}`;
+// Only this script's jobs: the test branch copies a real database.
+const ours = async () => (await db.select({ key: jobs.key }).from(jobs).where(like(jobs.key, `LC%-${stamp}`))).map((j) => j.key);
 const ids: string[] = [];
 const runKeys: string[] = [];
 const row = async (k: string) => (await db.select().from(jobs).where(eq(jobs.key, k)))[0]!;
@@ -122,7 +124,7 @@ try {
 
   // Wake: a conflict send-back starts a sandbox from the snapshot with a fresh slot, token and T3, then sends.
   github.pullRequest = async (url) => ({ state: "open", mergeable: url === h.pr_url ? "conflicting" : "mergeable", headSha: "head-1", title: "t" });
-  const checked = await checkPullRequests();
+  const checked = await checkPullRequests({ only: await ours() });
   assert.deepEqual(checked.conflicts, [], "the implementing event cannot post in a regression");
   assert.match(checked.errors.find((e) => e.key === H)?.error ?? "", /deployed ingest function/, JSON.stringify(checked));
   const woken = await row(H);

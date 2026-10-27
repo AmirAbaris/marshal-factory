@@ -58,12 +58,12 @@ const STOPPABLE = STAGES.filter((stage) => canTransition(stage, "failed", "stop"
  * and the next timer pass retries it, while the rest of this pass goes on. A job no machine holds,
  * such as a resume waiting for a fresh thread, has no thread to send back, but its merge counts.
  */
-export async function checkPullRequests() {
+export async function checkPullRequests({ only }: { only?: readonly string[] } = {}) {
   const open = parseJobs(
     await db
       .select()
       .from(jobs)
-      .where(and(or(await mine(), isNull(jobs.machine_id)), isNotNull(jobs.pr_url), ne(jobs.stage, "merged")))
+      .where(and(or(await mine(), isNull(jobs.machine_id)), isNotNull(jobs.pr_url), ne(jobs.stage, "merged"), only ? inArray(jobs.key, [...only]) : undefined))
       .orderBy(asc(jobs.key)),
   );
   const conflicts: string[] = [];
@@ -82,7 +82,7 @@ export async function checkPullRequests() {
     });
   }
 
-  for (const run of await unclaimedRunsWithPr(db)) {
+  for (const run of (await unclaimedRunsWithPr(db)).filter((r) => !only || only.includes(r.job_key!))) {
     await each(run.job_key!, run.pr_url!, async () => {
       if ((await github.pullRequest(run.pr_url!)).state === "merged") await postMerged(run.job_key!, run.pr_url!, run.session_id);
     });
@@ -428,7 +428,7 @@ export async function enforceBudget() {
  * merges, so every machine writes it back; source writes are keyed on the stage event, so two
  * machines writing the same one converge.
  */
-export async function writeBack() {
+export async function writeBack({ only }: { only?: readonly string[] } = {}) {
   const pending = parseJobs(
     await db
       .select()
@@ -440,6 +440,7 @@ export async function writeBack() {
           or(isNull(jobs.synced_event_id), ne(jobs.synced_event_id, jobs.stage_event_id)),
           // A stop is written back once it is confirmed or marked unconfirmed, not while it is on its way.
           sql`not ${stoppingSql}`,
+          only ? inArray(jobs.key, [...only]) : undefined,
         ),
       )
       .orderBy(asc(jobs.key)),

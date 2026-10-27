@@ -300,7 +300,7 @@ setInterval(() => {
     return { ...result, ...(cleaned !== undefined && { cleaned }), ...(labels !== undefined && { labels }) };
   });
   // Its own step, so a snapshot that takes minutes never pushes the tick past its timeout.
-  void serial("onboarding", advanceOnboarding);
+  void serial("onboarding", () => advanceOnboarding());
   // Intents the subscription may not have delivered.
   void openIntents().then(takeIntents);
 }, ops.config.factory.tickSeconds * 1000);

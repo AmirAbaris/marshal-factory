@@ -35,6 +35,8 @@ process.env.FACTORY_OWNER_EMAILS = OWNER;
 const owner = { email: OWNER, emailVerified: true };
 const stamp = Date.now();
 const NS = `test-onb-${stamp}`;
+// The test branch copies a real database, whose repos must never take this machine's build slot.
+const ours = async () => (await db.select({ repo: repoSettings.repo }).from(repoSettings).where(like(repoSettings.repo, `${NS}/%`))).map((r) => r.repo);
 const { parseRecipe, buildScript, warmKeyTouched, BUILD_FILES } = recipes;
 
 // The recipe schema.
@@ -255,10 +257,10 @@ try {
   assert.equal(builder.spec!.tags.label, undefined, "the job reap never sees it");
   assert.match(builder.files.get(BUILD_FILES.script)!, /libvips-dev/);
   assert.ok(builder.execs.some((e) => e.argv.join(" ") === `git clone --quiet https://github.com/${COMMITTED}.git ${REPO_DIR}`));
-  await runner.advanceOnboarding();
+  await runner.advanceOnboarding({ only: await ours() });
   assert.equal((await row(COMMITTED)).onboarding_state, "building", "a build still running stays building");
   await finishBuild(COMMITTED, 0);
-  await runner.advanceOnboarding();
+  await runner.advanceOnboarding({ only: await ours() });
   const built = await row(COMMITTED);
   d = onboarding.parseDetail(built.onboarding_detail);
   assert.equal(built.onboarding_state, "ready");
@@ -281,13 +283,13 @@ try {
   await runner.repoPushed({ repo: COMMITTED, files: ["bun.lock"] });
   assert.ok((await detail(COMMITTED)).rebuild, "a push during a build wants another one after it");
   await finishBuild(COMMITTED, 0);
-  await runner.advanceOnboarding();
+  await runner.advanceOnboarding({ only: await ours() });
   d = await detail(COMMITTED);
   assert.notEqual(d.image?.id, firstImage);
   assert.ok(fake.deletedImages.includes(firstImage), "the old image is deleted once the new one is recorded");
   assert.equal(d.run?.kind, "build", "and the wanted rebuild starts");
   await finishBuild(COMMITTED, 0);
-  await runner.advanceOnboarding();
+  await runner.advanceOnboarding({ only: await ours() });
   assert.equal((await row(COMMITTED)).onboarding_state, "ready");
   committed[COMMITTED] = JSON.stringify({ ...valid, setup: ["bun install"] });
   await runner.repoPushed({ repo: COMMITTED, files: [".factory/setup.json"] });
@@ -295,7 +297,7 @@ try {
   assert.deepEqual([d.recipe?.setup, d.run?.reason, (await row(COMMITTED)).onboarding_state], [["bun install"], "the recipe changed on main", "rebuilding"], "a merged recipe change rebuilds from main's recipe");
   assert.equal(d.run?.checks, true, "and a changed committed recipe is checked again");
   await finishBuild(COMMITTED, 20, "== setup 1: bun install\nDATABASE_URL=postgres://u:pw@h/db\nerror: lockfile had changes");
-  await runner.advanceOnboarding();
+  await runner.advanceOnboarding({ only: await ours() });
   const broke = await row(COMMITTED);
   d = onboarding.parseDetail(broke.onboarding_detail);
   assert.equal(broke.onboarding_state, "failed");
@@ -308,11 +310,11 @@ try {
   await db.update(repoSettings).set({ onboarding_state: "ready" }).where(eq(repoSettings.repo, COMMITTED));
   const rebuiltBase = { ...baseImage, builtAt: "2026-10-28T00:00:00.000Z" };
   sandboxRuntime.image = () => rebuiltBase;
-  await runner.advanceOnboarding();
+  await runner.advanceOnboarding({ only: await ours() });
   d = await detail(COMMITTED);
   assert.deepEqual([(await row(COMMITTED)).onboarding_state, d.run?.reason, d.run?.kind], ["rebuilding", "the base image was rebuilt since", "build"]);
   await finishBuild(COMMITTED, 0);
-  await runner.advanceOnboarding();
+  await runner.advanceOnboarding({ only: await ours() });
   assert.equal((await detail(COMMITTED)).image?.base.builtAt, rebuiltBase.builtAt);
   sandboxRuntime.image = () => baseImage;
   await db.update(repoSettings).set({ enabled: false }).where(eq(repoSettings.repo, COMMITTED));
@@ -352,12 +354,12 @@ try {
   assert.equal(agentBox.files.has("/root/.config/marshal-factory/config.json"), false, "an onboarding run reports to no job");
   assert.match(JSON.stringify(await runner.onboardRepo(AGENT)), /an agent run is in flight/, "a second onboard waits for the first");
   assert.equal(await leaseSlot(eq(jobs.key, raceKey), [slotA]), undefined, "a job cannot lease the slot the agent holds");
-  await runner.advanceOnboarding();
+  await runner.advanceOnboarding({ only: await ours() });
   assert.equal((await detail(AGENT)).run?.kind, "agent", "a running thread is left alone");
   threadState = "stopped";
   const agentRecipe = { ...valid, env: [{ name: "API_KEY", purpose: "the payments sandbox", required: true }] };
   agentBox.files.set(runner.ONBOARDING_RESULT, JSON.stringify({ recipe: agentRecipe, prUrl: `https://github.com/${AGENT}/pull/7`, checks: [{ name: "test", command: "bun test", ok: true }], summary: "Installs with bun." }));
-  await runner.advanceOnboarding();
+  await runner.advanceOnboarding({ only: await ours() });
   const agentRow = await row(AGENT);
   d = onboarding.parseDetail(agentRow.onboarding_detail);
   assert.equal(agentRow.onboarding_state, "needs_input", "a required env var without a value waits for the owner");
@@ -382,7 +384,7 @@ try {
   const DIED = `${NS}/died`;
   await insert(DIED, "analyzing", { run: { kind: "agent", machine: TEST_MACHINE_ID, startedAt: new Date().toISOString(), slot: slotA } });
   assert.deepEqual(await leases(), [[slotA, "onboarding", DIED]]);
-  await runner.advanceOnboarding();
+  await runner.advanceOnboarding({ only: await ours() });
   d = await detail(DIED);
   assert.deepEqual([(await row(DIED)).onboarding_state, d.run, await leases()], ["failed", undefined, []], "the abandoned run is cleared and its lease released");
   assert.match(d.failure!.reason, /stopped before its sandbox was created/);
@@ -445,7 +447,7 @@ try {
   assert.deepEqual(agentBuild.spec!.namedSecrets, [onboarding.modalSecretName(AGENT)], "the build sandbox gets the repo's secret by name");
   assert.equal(d.run?.checks, false, "an agent's recipe was checked by the agent");
   await finishBuild(AGENT, 0);
-  await runner.advanceOnboarding();
+  await runner.advanceOnboarding({ only: await ours() });
   assert.equal((await row(AGENT)).onboarding_state, "ready");
   await db.update(repoSettings).set({ enabled: false }).where(eq(repoSettings.repo, AGENT));
 
@@ -453,7 +455,7 @@ try {
   await insert(BROKEN, "analyzing");
   await runner.onboardRepo(BROKEN);
   threadState = "stopped";
-  await runner.advanceOnboarding();
+  await runner.advanceOnboarding({ only: await ours() });
   d = await detail(BROKEN);
   assert.deepEqual([(await row(BROKEN)).onboarding_state, d.failure?.reason, d.failure?.log], ["failed", "The onboarding agent ended without writing its result.", "I wrote the recipe."]);
   threadState = "running";
@@ -462,7 +464,7 @@ try {
   await runner.onboardRepo(BROKEN);
   threadState = "stopped";
   sandboxOf((await detail(BROKEN)).run?.sandboxId).files.set(runner.ONBOARDING_RESULT, JSON.stringify({ failed: "the repo needs a running Postgres for every check" }));
-  await runner.advanceOnboarding();
+  await runner.advanceOnboarding({ only: await ours() });
   assert.equal((await detail(BROKEN)).failure?.reason, "The onboarding agent could not write a recipe: the repo needs a running Postgres for every check");
   threadState = "running";
   sandboxRuntime.image = () => null;
