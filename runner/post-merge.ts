@@ -11,7 +11,7 @@ import { parseJobs } from "../lib/sources";
 import type { Job } from "../lib/sources/types";
 import { config } from "./config";
 import { thisMachine } from "./heartbeat";
-import { auditFactory, storedDecision, syncComments } from "./merge-decision";
+import { auditFactory, mergeRevert, storedDecision, syncComments } from "./merge-service";
 import { factoryCheckouts } from "./ops";
 
 // After the factory merges a PR, the timer watches the merge commit's checks on the base branch
@@ -92,7 +92,7 @@ export async function revertMerge(prUrl: string, merged: FactoryMerge, failed: r
         ].join("\n\n"),
       })
     ).url;
-    const result = await github.mergePull(url, head, { method: merged.method, title, message: "Reverted by the factory" });
+    const result = await mergeRevert(url, head, merged.method, title);
     if (result.kind !== "merged") return { ok: false, reason: `GitHub didn't merge the revert: ${result.message || result.kind}`, url };
     return { ok: true, url };
   } catch (error) {

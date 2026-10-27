@@ -306,11 +306,11 @@ try {
   assert.deepEqual(approval, { ok: true, intentId: `panel:approve_merge:${id1}` });
   assert.deepEqual(await inbox.approveMerge(deps(), handId, id1, "h1"), approval, "a double submit records one intent");
   const [approveIntent] = await intentRows(HAND);
-  assert.deepEqual([approveIntent!.kind, JSON.parse(approveIntent!.detail!)], ["approve_merge", { actor: OWNER, headSha: "h1" }]);
+  assert.deepEqual([approveIntent!.kind, JSON.parse(approveIntent!.detail!)], ["approve_merge", { actor: OWNER, headSha: "h1", via: "inbox" }]);
   assert.deepEqual(await inbox.intentOutcome(deps(), approveIntent!.id), { status: "pending" });
 
   // --- approve: the auto-merge path, blocked only by facts
-  const approved = await approveMerge(handId, { actor: OWNER, headSha: "h1" });
+  const approved = await approveMerge(handId, { actor: OWNER, headSha: "h1", via: "inbox" });
   assert.deepEqual(approved, { merged: "merge-1" }, "the agent's handover, a protected path and the size limit do not block the owner");
   assert.deepEqual(putsTo(1).map((w) => [w.body.sha, w.body.merge_method]), [["h1", "squash"]], "one merge, pinned to the reviewed head");
   const merged1 = await row(HAND);
@@ -319,25 +319,26 @@ try {
   assert.equal(merged1.merge_decision!.watch!.state, "watching", "and the post-merge watch starts");
   assert.equal(merged1.merge_decision!.approvedBy, OWNER);
   const audits = await db.select().from(auditLog).where(eq(auditLog.job_id, handId));
-  assert.deepEqual(audits.map((a) => [a.action, a.actor]).sort(), [["merge_requested", OWNER], ["merge_succeeded", "factory"]]);
-  assert.match(audits.find((a) => a.action === "merge_succeeded")!.detail!, /Approved in the inbox by owner@example\.com/);
-  assert.deepEqual(await approveMerge(handId, { actor: OWNER, headSha: "h1" }), { merged: "merge-1" }, "a replay finds the merge recorded");
+  assert.deepEqual(audits.map((a) => [a.action, a.actor]).sort(), [["merge_requested", OWNER], ["merge_succeeded", OWNER]], "the owner who approved is the merge's actor");
+  assert.match(audits.find((a) => a.action === "merge_succeeded")!.detail!, /^Merged by the factory as merge-1 \(squash\) via inbox · Approved in the inbox by owner@example\.com/);
+  assert.equal(merged1.merge_decision!.merged!.via, "inbox");
+  assert.deepEqual(await approveMerge(handId, { actor: OWNER, headSha: "h1", via: "inbox" }), { merged: "merge-1" }, "a replay finds the merge recorded");
   assert.equal(putsTo(1).length, 1, "and never merges twice");
   await db.update(intents).set({ handled_at: new Date(), result: JSON.stringify({ approval: approved }) }).where(eq(intents.id, approveIntent!.id));
   assert.deepEqual(await inbox.intentOutcome(deps(), approveIntent!.id), { status: "done", message: "Merged as merge-1. The factory now watches main." });
 
   const RED = await job("RED", {}, { number: 2, checks: "failure", behind: 3 });
-  assert.deepEqual(await approveMerge((await row(RED)).id, { actor: OWNER, headSha: null }), {
+  assert.deepEqual(await approveMerge((await row(RED)).id, { actor: OWNER, headSha: null, via: "inbox" }), {
     blocked: "A check failed on the latest commit. The branch is 3 commits behind its base.",
   });
   assert.equal(putsTo(2).length, 0, "facts block before GitHub is asked to merge");
   const MOVED = await job("MOVED", {}, { number: 3 });
-  assert.deepEqual(await approveMerge((await row(MOVED)).id, { actor: OWNER, headSha: "old" }), {
+  assert.deepEqual(await approveMerge((await row(MOVED)).id, { actor: OWNER, headSha: "old", via: "inbox" }), {
     refused: "The pull request moved to h3 since you reviewed old. Review the new commit first.",
   });
   assert.equal(putsTo(3).length, 0);
   const DENIED = await job("DENIED", {}, { number: 4, merge: { status: 403, body: { message: "Resource not accessible by integration" } } });
-  assert.deepEqual(await approveMerge((await row(DENIED)).id, { actor: OWNER, headSha: "h4" }), {
+  assert.deepEqual(await approveMerge((await row(DENIED)).id, { actor: OWNER, headSha: "h4", via: "inbox" }), {
     blocked: "The factory's GitHub App can't merge in this repo: Resource not accessible by integration",
   });
   assert.equal((await row(DENIED)).merge_decision!.blocked, "Resource not accessible by integration", "a refusal is recorded like auto-merge's");

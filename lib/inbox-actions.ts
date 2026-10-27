@@ -77,7 +77,7 @@ export async function approveMerge(deps: InboxDeps, jobId: JobId, requestId: str
   if (badRequest(requestId)) return { ok: false, message: "The request is not valid." };
   const found = await ownerJob(deps, jobId, "approve");
   if (!found.ok) return found;
-  return record(deps, found.job, "approve_merge", requestId, { actor: found.actor, headSha } satisfies ApproveDetail);
+  return record(deps, found.job, "approve_merge", requestId, { actor: found.actor, headSha, via: "inbox" } satisfies ApproveDetail);
 }
 
 const feedbackSchema = z.string().trim().min(1, "Write what should change.").max(MAX_FEEDBACK_CHARS, "The feedback is too long.");
