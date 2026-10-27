@@ -7,7 +7,7 @@ import { Controller, useForm } from "react-hook-form";
 import { z } from "zod";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from "@/components/ui/field";
+import { Field, FieldDescription, FieldError, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { authClient } from "@/lib/auth/client";
 import { attempt } from "./attempt";
@@ -52,12 +52,12 @@ export function VerifyEmailForm({ email }: { email: string }) {
       </CardHeader>
       <CardContent>
         <form onSubmit={form.handleSubmit(onSubmit)} noValidate>
-          <FieldGroup>
+          <div className="flex flex-col gap-5">
             <Controller
               name="otp"
               control={form.control}
               render={({ field, fieldState }) => (
-                <Field data-invalid={fieldState.invalid}>
+                <Field invalid={fieldState.invalid}>
                   <FieldLabel htmlFor="otp">Verification code</FieldLabel>
                   <Input
                     {...field}
@@ -68,18 +68,18 @@ export function VerifyEmailForm({ email }: { email: string }) {
                     aria-invalid={fieldState.invalid}
                   />
                   {resent && <FieldDescription>A new code is on its way.</FieldDescription>}
-                  <FieldError errors={[fieldState.error]} />
+                  {fieldState.error && <FieldError match>{fieldState.error.message}</FieldError>}
                 </Field>
               )}
             />
-            <FieldError errors={[form.formState.errors.root]} />
+            {form.formState.errors.root && <FieldError match>{form.formState.errors.root.message}</FieldError>}
             <Button type="submit" disabled={form.formState.isSubmitting}>
               {form.formState.isSubmitting ? "Verifying" : "Verify"}
             </Button>
             <Button type="button" variant="ghost" onClick={resend}>
               Send a new code
             </Button>
-          </FieldGroup>
+          </div>
         </form>
       </CardContent>
     </Card>

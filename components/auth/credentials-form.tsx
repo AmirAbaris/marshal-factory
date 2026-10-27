@@ -7,7 +7,7 @@ import { Controller, useForm } from "react-hook-form";
 import { z } from "zod";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Field, FieldError, FieldGroup, FieldLabel } from "@/components/ui/field";
+import { Field, FieldError, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { authClient } from "@/lib/auth/client";
 import { attempt } from "./attempt";
@@ -68,15 +68,15 @@ export function CredentialsForm({ mode }: { mode: keyof typeof MODES }) {
       </CardHeader>
       <CardContent>
         <form onSubmit={form.handleSubmit(onSubmit)} noValidate>
-          <FieldGroup>
+          <div className="flex flex-col gap-5">
             <Controller
               name="email"
               control={form.control}
               render={({ field, fieldState }) => (
-                <Field data-invalid={fieldState.invalid}>
+                <Field invalid={fieldState.invalid}>
                   <FieldLabel htmlFor="email">Email</FieldLabel>
                   <Input {...field} id="email" type="email" autoComplete="email" aria-invalid={fieldState.invalid} />
-                  <FieldError errors={[fieldState.error]} />
+                  {fieldState.error && <FieldError match>{fieldState.error.message}</FieldError>}
                 </Field>
               )}
             />
@@ -84,7 +84,7 @@ export function CredentialsForm({ mode }: { mode: keyof typeof MODES }) {
               name="password"
               control={form.control}
               render={({ field, fieldState }) => (
-                <Field data-invalid={fieldState.invalid}>
+                <Field invalid={fieldState.invalid}>
                   <FieldLabel htmlFor="password">Password</FieldLabel>
                   <Input
                     {...field}
@@ -93,15 +93,15 @@ export function CredentialsForm({ mode }: { mode: keyof typeof MODES }) {
                     autoComplete={config.passwordAutoComplete}
                     aria-invalid={fieldState.invalid}
                   />
-                  <FieldError errors={[fieldState.error]} />
+                  {fieldState.error && <FieldError match>{fieldState.error.message}</FieldError>}
                 </Field>
               )}
             />
-            <FieldError errors={[form.formState.errors.root]} />
+            {form.formState.errors.root && <FieldError match>{form.formState.errors.root.message}</FieldError>}
             <Button type="submit" disabled={form.formState.isSubmitting}>
               {form.formState.isSubmitting ? config.pending : config.submit}
             </Button>
-          </FieldGroup>
+          </div>
         </form>
       </CardContent>
     </Card>

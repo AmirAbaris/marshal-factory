@@ -5,11 +5,11 @@ import { useEffect, useRef, useState, useTransition } from "react";
 import { mergeJob } from "@/app/actions/merge";
 import {
   AlertDialog,
-  AlertDialogCancel,
-  AlertDialogContent,
+  AlertDialogClose,
   AlertDialogDescription,
   AlertDialogFooter,
   AlertDialogHeader,
+  AlertDialogPopup,
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
@@ -67,42 +67,40 @@ export function MergeButton({ jobId, jobKey }: { jobId: JobId; jobKey: string })
         if (next) setOutcome(null);
       }}
     >
-      <AlertDialogTrigger asChild>
-        <Button size="sm" disabled={!target}>
-          {target ? <GitMergeIcon data-icon="inline-start" /> : <Spinner data-icon="inline-start" />}
-          Merge
-        </Button>
+      <AlertDialogTrigger disabled={!target} render={<Button size="sm" />}>
+        {target ? <GitMergeIcon data-icon="inline-start" /> : <Spinner data-icon="inline-start" />}
+        Merge
       </AlertDialogTrigger>
       {target && (
-        <AlertDialogContent>
+        <AlertDialogPopup>
           <AlertDialogHeader>
             <AlertDialogTitle>Merge this pull request?</AlertDialogTitle>
-            <AlertDialogDescription asChild>
-              <div className="flex flex-col gap-1.5">
-                <span className="font-medium text-foreground">{target.title}</span>
-                <span>
-                  Squashes <span className="font-mono">{target.headSha.slice(0, 7)}</span> into{" "}
-                  <span className="font-mono">{target.repo}</span>. A newer push since you opened this run stops the merge.
+            <AlertDialogDescription render={<div />} className="flex flex-col gap-1.5">
+              <span className="font-medium text-foreground">{target.title}</span>
+              <span>
+                Squashes <span className="font-mono">{target.headSha.slice(0, 7)}</span> into{" "}
+                <span className="font-mono">{target.repo}</span>. A newer push since you opened this run stops the merge.
+              </span>
+              {target.mergeable === "conflicting" && (
+                <span className="text-warning">GitHub reports a conflict with the base branch.</span>
+              )}
+              {outcome && !outcome.ok && (
+                <span role="alert" className="text-destructive">
+                  {outcome.message}
                 </span>
-                {target.mergeable === "conflicting" && (
-                  <span className="text-warning">GitHub reports a conflict with the base branch.</span>
-                )}
-                {outcome && !outcome.ok && (
-                  <span role="alert" className="text-destructive">
-                    {outcome.message}
-                  </span>
-                )}
-              </div>
+              )}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel disabled={pending}>Cancel</AlertDialogCancel>
+            <AlertDialogClose disabled={pending} render={<Button variant="outline" />}>
+              Cancel
+            </AlertDialogClose>
             <Button onClick={confirm} disabled={pending}>
               {pending && <Spinner data-icon="inline-start" />}
               Squash and merge
             </Button>
           </AlertDialogFooter>
-        </AlertDialogContent>
+        </AlertDialogPopup>
       )}
     </AlertDialog>
   );

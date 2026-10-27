@@ -6,8 +6,8 @@ import { useState, useTransition, type ReactNode } from "react";
 import { saveSettings } from "@/app/actions/settings";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
-import { Field, FieldDescription, FieldGroup, FieldLabel } from "@/components/ui/field";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Field, FieldDescription, FieldLabel } from "@/components/ui/field";
+import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
 import type { MachineRow, SettingsRow } from "@/db/schema";
 import { DEFAULT_EXECUTION, EXECUTIONS, type Execution } from "@/lib/execution";
@@ -217,7 +217,8 @@ export function SettingsForm({ machines, saved, merging }: { machines: Feed<Mach
   const unchanged = saved !== null && saved.provider === provider && saved.model === model && saved.execution === execution;
   const chosen = describe(harnesses, provider, model);
 
-  const pickHarness = (id: string) => {
+  const pickHarness = (id: string | null) => {
+    if (id === null) return;
     const next = harnesses.find((h) => h.id === id);
     setProvider(id);
     if (!next?.models.some((m) => m.slug === model)) setModel(next?.models[0]?.slug ?? "");
@@ -256,29 +257,35 @@ export function SettingsForm({ machines, saved, merging }: { machines: Feed<Mach
                 few minutes; once one has, you can pick a harness here.
               </p>
             ) : (
-              <FieldGroup>
+              <div className="flex flex-col gap-5">
                 <Field>
                   <FieldLabel htmlFor="settings-harness">Harness</FieldLabel>
-                  <Select value={harness ? provider : ""} onValueChange={pickHarness}>
+                  <Select
+                    items={harnesses.map((h) => ({ value: h.id, label: h.name }))}
+                    value={harness ? provider : null}
+                    onValueChange={pickHarness}
+                  >
                     <SelectTrigger id="settings-harness" className="w-full">
                       <SelectValue placeholder="Pick a harness" />
                     </SelectTrigger>
-                    <SelectContent>
+                    <SelectPopup>
                       {harnesses.map((h) => (
                         <SelectItem key={h.id} value={h.id}>
                           {h.name}
                           {h.name !== h.id && <span className="font-mono text-xs text-muted-foreground">{h.id}</span>}
                         </SelectItem>
                       ))}
-                    </SelectContent>
+                    </SelectPopup>
                   </Select>
                   <FieldDescription>The enabled T3 providers your machines report.</FieldDescription>
                 </Field>
                 <Field>
                   <FieldLabel htmlFor="settings-model">Model</FieldLabel>
                   <Select
-                    value={modelKnown ? model : ""}
+                    items={harness?.models.map((m) => ({ value: m.slug, label: m.name })) ?? []}
+                    value={modelKnown ? model : null}
                     onValueChange={(slug) => {
+                      if (slug === null) return;
                       setModel(slug);
                       setSavedNow(false);
                     }}
@@ -287,41 +294,43 @@ export function SettingsForm({ machines, saved, merging }: { machines: Feed<Mach
                     <SelectTrigger id="settings-model" className="w-full">
                       <SelectValue placeholder={harness && harness.models.length === 0 ? "T3 lists no models for this harness" : "Pick a model"} />
                     </SelectTrigger>
-                    <SelectContent>
+                    <SelectPopup>
                       {harness?.models.map((m) => (
                         <SelectItem key={m.slug} value={m.slug}>
                           {m.name}
                           {m.name !== m.slug && <span className="font-mono text-xs text-muted-foreground">{m.slug}</span>}
                         </SelectItem>
                       ))}
-                    </SelectContent>
+                    </SelectPopup>
                   </Select>
                 </Field>
                 {harness && !chosen.tracked && <UntrackedWarning name={chosen.harness} />}
                 <Field>
                   <FieldLabel htmlFor="settings-execution">Run jobs on</FieldLabel>
                   <Select
+                    items={EXECUTIONS.map((e) => ({ value: e, label: EXECUTION_LABELS[e] }))}
                     value={execution}
                     onValueChange={(value) => {
-                      setExecution(value as Execution);
+                      if (value === null) return;
+                      setExecution(value);
                       setSavedNow(false);
                     }}
                   >
                     <SelectTrigger id="settings-execution" className="w-full">
                       <SelectValue />
                     </SelectTrigger>
-                    <SelectContent>
+                    <SelectPopup>
                       {EXECUTIONS.map((e) => (
                         <SelectItem key={e} value={e}>
                           {EXECUTION_LABELS[e]}
                         </SelectItem>
                       ))}
-                    </SelectContent>
+                    </SelectPopup>
                   </Select>
                   <FieldDescription>Modal runs each job in its own sandbox; this Mac runs it in the runner&apos;s T3.</FieldDescription>
                 </Field>
                 {execution === "modal" && <SandboxReadinessList readiness={readiness} />}
-              </FieldGroup>
+              </div>
             )}
             {failure && (
               <p role="alert" className="text-sm text-destructive">
