@@ -188,6 +188,7 @@ try {
       repos: async () => inventoryA.repos,
       harnesses: async () => inventoryA.harnesses,
       sandbox: async () => inventoryA.sandbox,
+      slack: async () => inventoryA.slack,
     },
     inventoryMs: 600_000,
     timeoutMs: 200,

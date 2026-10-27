@@ -102,11 +102,12 @@ export function inventoryCollectors(): InventoryCollectors {
       ),
     harnesses: async () => readHarnesses(),
     sandbox: async () => sandboxReadiness(factory.sandbox),
+    slack: async () => ({ configured: Boolean(process.env.SLACK_BOT_TOKEN?.trim()), owner: Boolean(process.env.SLACK_OWNER_USER_ID?.trim()) }),
   };
 }
 
 export async function collectInventory(collectors: InventoryCollectors): Promise<Inventory> {
-  const [runnerSha, t3, connect, projects, repos, harnesses, sandbox] = await Promise.all([
+  const [runnerSha, t3, connect, projects, repos, harnesses, sandbox, slack] = await Promise.all([
     settle(collectors.runnerSha),
     settle(collectors.t3),
     settle(collectors.connect),
@@ -114,8 +115,9 @@ export async function collectInventory(collectors: InventoryCollectors): Promise
     collectors.repos().catch((): Inventory["repos"] => []),
     settle(collectors.harnesses),
     settle(collectors.sandbox),
+    settle(collectors.slack),
   ]);
-  return { runnerSha, t3, connect, projects, repos, harnesses, sandbox };
+  return { runnerSha, t3, connect, projects, repos, harnesses, sandbox, slack };
 }
 
 export async function writeHeartbeat(machine: Machine, heartbeat: Heartbeat, now: Date) {

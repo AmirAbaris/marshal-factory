@@ -18,7 +18,9 @@ import type { AssessmentInput } from "../lib/assessment";
 import type { CheckSource, EvidenceCheck, EvidenceSummary, Producer } from "../lib/evidence";
 import { DEFAULT_EXECUTION, type Execution } from "../lib/execution";
 import type { Autonomy, MergeDecision } from "../lib/merge-decision";
+import type { NotificationConfig } from "../lib/notifications";
 import { ONBOARDING_STATES, type OnboardingDetail } from "../lib/onboarding";
+import type { NotifyKind, SlackMessageState } from "../lib/slack";
 import type { JobId, JobSource } from "../lib/sources/shapes";
 import type { StopRecord } from "../lib/stop";
 import type { TicketRecord } from "../lib/ticket-overrides";
@@ -253,6 +255,7 @@ export const intentKind = pgEnum("intent_kind", [
   "rebuild_repo_image",
   "repo_push",
   "retry_stop",
+  "slack_test",
 ]);
 
 /**
@@ -263,6 +266,7 @@ export const intentKind = pgEnum("intent_kind", [
  * human's GitHub review records request_changes too. Their detail is JSON; see lib/inbox.ts.
  * The Repositories page records onboard_repo and rebuild_repo_image with the repo as detail; a push
  * to a default branch records repo_push with the repo and the changed files (lib/webhooks.ts).
+ * Settings records slack_test with the owner as detail; a runner with a Slack token posts the test message.
  */
 export const intents = pgTable(
   "intents",
@@ -319,6 +323,46 @@ export const settings = pgTable("settings", {
   /** The owner's email. */
   updated_by: text("updated_by").notNull(),
 });
+
+/** Where Slack notifications go and which events send one; the one row has id "factory". See lib/notifications.ts. */
+export const notificationSettings = pgTable("notification_settings", {
+  id: text("id").primaryKey(),
+  /** Read with parseNotificationConfig, so a row saved by an older panel still parses. */
+  config: jsonb("config").$type<NotificationConfig>().notNull(),
+  updated_at: ts("updated_at").notNull(),
+  /** The owner's email. */
+  updated_by: text("updated_by").notNull(),
+});
+
+/**
+ * One Slack message per notification event (lib/slack.ts), keyed by the event's identity, so a
+ * re-tick, a restart or a second runner never posts it twice. The runner inserts the row in
+ * `posting` before it posts, then records where the message went; an `open` message is updated
+ * while its event changes and once more, to `resolved`, when its event goes away.
+ */
+export const slackMessages = pgTable(
+  "slack_messages",
+  {
+    id: text("id").primaryKey(),
+    job_id: text("job_id").$type<JobId>().notNull(),
+    kind: text("kind").$type<NotifyKind>().notNull(),
+    state: text("state").$type<SlackMessageState>().notNull(),
+    channel: text("channel"),
+    ts: text("ts"),
+    /** A hash of the message last sent, so an unchanged event is not updated again. */
+    fingerprint: text("fingerprint"),
+    /** What the resolved message says happened; null while open. */
+    resolution: text("resolution"),
+    created_at: ts("created_at").notNull(),
+    updated_at: ts("updated_at").notNull(),
+    resolved_at: ts("resolved_at"),
+  },
+  (t) => [
+    index("slack_messages_state_idx").on(t.state),
+    index("slack_messages_job_idx").on(t.job_id),
+    check("slack_messages_state_check", sql`${t.state} in ('posting', 'open', 'resolved')`),
+  ],
+);
 
 export const onboardingState = pgEnum("onboarding_state", ONBOARDING_STATES);
 
@@ -399,3 +443,5 @@ export type SettingsRow = typeof settings.$inferSelect;
 export type RepoSettingsRow = typeof repoSettings.$inferSelect;
 export type AuditRow = typeof auditLog.$inferSelect;
 export type JobEvidenceRow = typeof jobEvidence.$inferSelect;
+export type NotificationSettingsRow = typeof notificationSettings.$inferSelect;
+export type SlackMessageRow = typeof slackMessages.$inferSelect;

@@ -33,6 +33,7 @@ const { watchMerges } = await import("./post-merge");
 const { syncOverrideLabels } = await import("./overrides");
 const { advanceOnboarding, onboardRepo, repoPushed, requestRebuild } = await import("./onboarding");
 const { repoPushDetailSchema } = await import("../lib/webhooks");
+const { notifySlack, sendSlackTest, slackFromEnv } = await import("./slack");
 type IntentRow = typeof intents.$inferSelect;
 
 const machine = await thisMachine();
@@ -94,6 +95,8 @@ async function handle(intent: IntentRow) {
       return { push: await repoPushed(repoPushDetailSchema.parse(JSON.parse(intent.detail ?? "null"))) };
     case "retry_stop":
       return { retry: await retryStop(intent.job_id!), synced: await ops.writeBack() };
+    case "slack_test":
+      return sendSlackTest(JSON.parse(intent.detail ?? "null"));
     default: {
       const unhandled: never = intent.kind;
       throw new Error(`no handler for intent ${String(unhandled)}`);
@@ -224,6 +227,7 @@ if (process.argv.includes("--once")) {
   await beat({ inventory: false });
   await serial("registry", ops.registerCheckouts);
   await serial("reconcile", startupReconcile);
+  if (slackFromEnv()) await serial("slack", () => notifySlack());
   takeIntents(await openIntents());
   await queue.idle();
   await beat();
@@ -300,6 +304,8 @@ setInterval(() => {
   });
   // Its own step, so a snapshot that takes minutes never pushes the tick past its timeout.
   void serial("onboarding", () => advanceOnboarding());
+  // After the tick's merge decisions and stop checks, so the inbox it reads is this tick's; its own step, so a slow Slack delays nothing.
+  if (slackFromEnv()) void serial("slack", () => notifySlack());
   // Intents the subscription may not have delivered.
   void openIntents().then(takeIntents);
 }, ops.config.factory.tickSeconds * 1000);

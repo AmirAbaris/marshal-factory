@@ -24,6 +24,8 @@ export const INTENT_ROUTES = {
   rebuild_repo_image: "any",
   repo_push: "any",
   retry_stop: "owner",
+  // A runner without a Slack token fails its try, and the retry may go to one that has it.
+  slack_test: "any",
 } as const satisfies Record<IntentKind, "any" | "owner" | "broadcast">;
 
 /**
@@ -48,6 +50,8 @@ export const INTENT_ATTEMPTS = {
   repo_push: 20,
   // The owner sees the error on the inbox item and can retry again.
   retry_stop: 3,
+  // The owner watches Settings for the outcome and can send another.
+  slack_test: 3,
 } as const satisfies Record<IntentKind, number>;
 
 /** An intent's result as the runner logs it: a pairing link only ever goes to the intent row. */
