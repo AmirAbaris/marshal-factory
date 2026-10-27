@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, eq, inArray, isNotNull, isNull, or, sql, type SQL } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, isNull, lt, or, sql, type SQL } from "drizzle-orm";
 import { db } from "../db/client";
 import { auditLog, codexSlotLeases, jobs, repoSettings, type JobRow } from "../db/schema";
 import type { RepoName } from "../lib/github/app";
@@ -70,12 +70,40 @@ async function each<T extends { key: string }>(rows: readonly T[], step: (row: T
   return errors.length > 0 ? { done, errors } : done;
 }
 
-const uniqueViolation = (error: unknown): boolean =>
+export const uniqueViolation = (error: unknown): boolean =>
   (error as { code?: string })?.code === "23505" || (error instanceof Error && error.cause !== undefined && uniqueViolation(error.cause));
 
 /** Slots a job or an onboarding run holds; see codex_slot_leases in db/schema.ts. */
 export async function leasedSlots() {
   return new Set((await db.select({ slot: codexSlotLeases.slot }).from(codexSlotLeases)).map((r) => r.slot));
+}
+
+/** A lease's holder writes it with the lease; one this old that no holder records is an orphan. */
+export const ORPHAN_LEASE_MS = 10 * 60_000;
+
+/**
+ * Releases leases no job's codex_slot and no onboarding run's slot records, such as one a runner
+ * that leased before recording its run left behind when it died in between.
+ */
+export async function releaseOrphanLeases(now = Date.now()) {
+  const l = codexSlotLeases;
+  const released = await db
+    .delete(l)
+    .where(
+      and(
+        lt(l.leased_at, new Date(now - ORPHAN_LEASE_MS)),
+        or(
+          and(eq(l.holder_kind, "job"), sql`not exists (select 1 from ${jobs} where ${jobs.id} = ${l.holder_id} and ${jobs.codex_slot} = ${l.slot})`),
+          and(
+            eq(l.holder_kind, "onboarding"),
+            sql`not exists (select 1 from ${repoSettings} where ${repoSettings.repo} = ${l.holder_id} and ${repoSettings.onboarding_detail}->'run'->>'slot' = ${l.slot})`,
+          ),
+        ),
+      ),
+    )
+    .returning({ slot: l.slot, kind: l.holder_kind, holder: l.holder_id });
+  for (const lease of released) log("sandbox:orphan-lease-released", lease);
+  return released.map((lease) => lease.slot);
 }
 
 /**
@@ -469,6 +497,7 @@ export async function tickSandboxes(now = Date.now()) {
     tornDown: await isolated(teardownFinished),
     hibernated: await isolated(() => hibernateIdle(now)),
     tokens: await isolated(() => refreshTokens(now)),
+    leases: await isolated(() => releaseOrphanLeases(now)),
     ...(reaped && { reaped }),
   };
 }

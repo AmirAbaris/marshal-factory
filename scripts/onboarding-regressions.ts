@@ -26,6 +26,7 @@ const { threads } = await import("../runner/threads");
 const { sandboxRuntime } = await import("../runner/sandbox");
 const { launchInSandboxes, sandboxStart } = await import("../runner/launch");
 const runner = await import("../runner/onboarding");
+const { ORPHAN_LEASE_MS, releaseOrphanLeases } = await import("../runner/lifecycle");
 
 modal.api = fakeModal;
 
@@ -324,11 +325,21 @@ try {
   const leases = async () => (await db.select().from(codexSlotLeases).where(inArray(codexSlotLeases.slot, [slotA, slotB]))).map((l) => [l.slot, l.holder_kind, l.holder_id]);
   await insert(AGENT, "analyzing");
   let raced: string | undefined = "not tried";
-  modal.api = { ...fakeModal, create: async (spec) => ((raced = await leaseSlot(eq(jobs.key, raceKey), [slotA])), fakeModal.create(spec)) };
+  let recordedWhileCreating: unknown;
+  modal.api = {
+    ...fakeModal,
+    create: async (spec) => {
+      raced = await leaseSlot(eq(jobs.key, raceKey), [slotA]);
+      const run = (await detail(AGENT)).run;
+      recordedWhileCreating = [run?.kind, run?.slot, run?.sandboxId, await leases()];
+      return fakeModal.create(spec);
+    },
+  };
   const agentStart = await runner.onboardRepo(AGENT);
   modal.api = fakeModal;
   assert.deepEqual(agentStart, { repo: AGENT, agent: "thread-onb" });
   assert.equal(raced, undefined, "a job cannot lease the slot an onboarding run took while its sandbox is created");
+  assert.deepEqual(recordedWhileCreating, ["agent", slotA, undefined, [[slotA, "onboarding", AGENT]]], "the lease and the run holding it are written together, before the sandbox");
   assert.deepEqual(await leases(), [[slotA, "onboarding", AGENT]], "the run holds the slot's lease");
   await assert.rejects(db.update(jobs).set({ codex_slot: slotA }).where(eq(jobs.key, raceKey)), (e: { cause?: { code?: string } }) => e.cause?.code === "23505", "nor can a job be written onto it");
   d = await detail(AGENT);
@@ -366,6 +377,30 @@ try {
   assert.deepEqual(await leases(), [[slotA, "job", jobId("linear", jobIds[3]!)]]);
   await db.update(jobs).set({ codex_slot: null }).where(eq(jobs.key, raceKey));
   assert.deepEqual(await leases(), [], "clearing the job's slot releases it");
+
+  // A runner that dies between taking the slot and creating the sandbox: the next tick hands the slot back.
+  const DIED = `${NS}/died`;
+  await insert(DIED, "analyzing", { run: { kind: "agent", machine: TEST_MACHINE_ID, startedAt: new Date().toISOString(), slot: slotA } });
+  assert.deepEqual(await leases(), [[slotA, "onboarding", DIED]]);
+  await runner.advanceOnboarding();
+  d = await detail(DIED);
+  assert.deepEqual([(await row(DIED)).onboarding_state, d.run, await leases()], ["failed", undefined, []], "the abandoned run is cleared and its lease released");
+  assert.match(d.failure!.reason, /stopped before its sandbox was created/);
+
+  // Leases no job or onboarding run records, such as one an older runner left between leasing and recording, are reaped.
+  const longAgo = new Date(Date.now() - ORPHAN_LEASE_MS - 60_000);
+  await db.insert(codexSlotLeases).values([
+    { slot: slotA, holder_kind: "onboarding", holder_id: DIED, leased_at: longAgo },
+    { slot: slotB, holder_kind: "job", holder_id: jobId("linear", jobIds[3]!), leased_at: longAgo },
+  ]);
+  assert.deepEqual((await releaseOrphanLeases()).sort(), [slotA, slotB].sort());
+  assert.deepEqual(await leases(), [], "orphan leases are released");
+  await db.insert(codexSlotLeases).values({ slot: slotA, holder_kind: "onboarding", holder_id: DIED });
+  assert.deepEqual(await releaseOrphanLeases(), [], "a fresh lease is left to the runner taking it");
+  await db.delete(codexSlotLeases).where(eq(codexSlotLeases.slot, slotA));
+  await db.update(jobs).set({ codex_slot: slotA }).where(eq(jobs.key, raceKey));
+  assert.deepEqual(await releaseOrphanLeases(Date.now() + 2 * ORPHAN_LEASE_MS), [], "a lease its job still records stays");
+  await db.update(jobs).set({ codex_slot: null }).where(eq(jobs.key, raceKey));
 
   // Secrets: the value goes to the store and nowhere else; the names are recorded and the build starts.
   console.log = (...args: unknown[]) => void logged.push(args.map(String).join(" "));
@@ -492,5 +527,6 @@ try {
   await db.delete(jobs).where(inArray(jobs.id, jobIds.map((id) => jobId("linear", id))));
   await db.delete(intents).where(like(intents.detail, `${NS}/%`));
   await db.delete(repoSettings).where(like(repoSettings.repo, `${NS}/%`));
+  await db.delete(codexSlotLeases).where(inArray(codexSlotLeases.slot, [slotA, slotB]));
   process.exit(process.exitCode ?? 0);
 }

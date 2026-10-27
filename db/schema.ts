@@ -192,8 +192,8 @@ export const jobs = pgTable(
  * Who holds each Codex login slot: a job or an onboarding agent run. The slot is the primary key,
  * so one holder at a time across both. Triggers from migration 0032 keep it in step with
  * jobs.codex_slot and a repo's onboarding_detail run slot: setting either to a slot someone else
- * holds fails with a unique violation, and clearing it releases the slot. Onboarding inserts its
- * row itself before it creates the sandbox; see runner/onboarding.ts.
+ * holds fails with a unique violation, and clearing it releases the slot. Onboarding records its
+ * agent run with the slot before it creates the sandbox; see runner/onboarding.ts.
  */
 export const codexSlotLeases = pgTable(
   "codex_slot_leases",
