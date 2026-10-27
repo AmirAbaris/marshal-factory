@@ -17,13 +17,23 @@ const { eventSchema, stageReportSchema } = await import("../lib/events");
 const { ingest } = await import("../lib/ingest");
 const { hosts } = await import("../lib/host");
 const { github, bugbotFindingsOf, checkStateOf, pullsClient } = await import("../lib/github/pulls");
+const { parseAssessment } = await import("../lib/assessment");
 const { decideMerge, DEFAULT_POLICY, globToRegExp, majorBumps, matchesAny, noCiReason } = await import("../lib/merge-decision");
 const { readRepoSettings, resolvePolicy, writeRepoAutonomy } = await import("../lib/settings");
 const { decideMerges, RECHECK_MS } = await import("../runner/merge-decision");
 const { serve } = await import("./serve");
 
-const ok = (note = "fine") => ({ ok: true, note });
 const assessment = (over: Partial<MergeAssessment> = {}): MergeAssessment => ({
+  recommendation: "merge",
+  interpretation: "Sort the list by name.",
+  assumptions: ["Case-insensitive, like the search box."],
+  confidence: { confident: true },
+  ...over,
+});
+const unsure = (reason: string) => assessment({ recommendation: "handover", confidence: { confident: false, reason } });
+const ok = (note = "fine") => ({ ok: true, note });
+/** The six-check shape agents reported before confidence replaced it. */
+const legacy = (over: Record<string, unknown> = {}) => ({
   recommendation: "merge",
   interpretation: "Sort the list by name.",
   assumptions: ["Case-insensitive, like the search box."],
@@ -33,20 +43,35 @@ const assessment = (over: Partial<MergeAssessment> = {}): MergeAssessment => ({
 
 // --- report_stage schema
 const prReport = { stage: "pr", summary: "Opened", prUrl: "https://github.com/o/r/pull/1" };
-assert.ok(stageReportSchema.safeParse({ ...prReport, assessment: assessment() }).success, "pr takes an assessment");
-assert.ok(stageReportSchema.safeParse(prReport).success, "the assessment is optional");
+const accept = (input: unknown, why: string) => assert.ok(stageReportSchema.safeParse(input).success, why);
 const reject = (input: unknown, why: string) => assert.ok(!stageReportSchema.safeParse(input).success, why);
+accept({ ...prReport, assessment: assessment() }, "pr takes an assessment");
+accept(prReport, "the assessment is optional");
+accept({ ...prReport, assessment: unsure("I guessed the empty state from the issue's screenshot.") }, "a handover that says why");
+accept({ ...prReport, assessment: assessment({ notes: "Adds the requested exports to index.ts." }) }, "free-text notes");
 reject({ stage: "verifying", summary: "x", assessment: assessment() }, "only pr takes an assessment");
-reject({ ...prReport, assessment: assessment({ checks: { ...assessment().checks, proven: { ok: false, note: "no test" } } }) }, "merge needs all six checks ok");
 reject({ ...prReport, assessment: { ...assessment(), recommendation: "ship" } }, "an unknown recommendation");
-reject({ ...prReport, assessment: { ...assessment(), checks: { ...assessment().checks, noSurprises: undefined } } }, "a missing check");
+reject({ ...prReport, assessment: assessment({ recommendation: "handover", confidence: { confident: false } }) }, "not confident needs a reason");
+reject({ ...prReport, assessment: assessment({ recommendation: "handover" }) }, "a handover while confident");
+reject({ ...prReport, assessment: assessment({ confidence: { confident: false, reason: "Unsure" } }) }, "a merge while not confident");
+reject({ ...prReport, assessment: { ...assessment(), confidence: undefined } }, "confidence is required");
 reject({ ...prReport, assessment: assessment({ interpretation: "x".repeat(2001) }) }, "an interpretation over the size limit");
 reject({ ...prReport, assessment: assessment({ assumptions: Array.from({ length: 13 }, () => "a") }) }, "too many assumptions");
-reject({ ...prReport, assessment: assessment({ checks: { ...assessment().checks, contained: { ok: true, note: "" } } }) }, "an empty note");
-assert.ok(
-  stageReportSchema.safeParse({ ...prReport, assessment: assessment({ recommendation: "handover", checks: { ...assessment().checks, noTasteCalls: { ok: false, note: "Copy" } }, reviewFocus: "The copy" }) }).success,
-  "handover with a failed check and a review focus",
+// Agents started before the change report six checks; those still validate, with no "all six ok" rule.
+accept({ ...prReport, assessment: legacy() }, "the six-check shape");
+accept({ ...prReport, assessment: legacy({ checks: { ...legacy().checks, contained: { ok: false, note: "It expands the public API." } } }) }, "a six-check merge with a failed check");
+accept({ ...prReport, assessment: legacy({ recommendation: "handover", checks: { ...legacy().checks, noTasteCalls: { ok: false, note: "Copy" } }, reviewFocus: "The copy" }) }, "a six-check handover");
+reject({ ...prReport, assessment: legacy({ checks: { ...legacy().checks, noSurprises: undefined } }) }, "a six-check report missing a check");
+reject({ ...prReport, assessment: legacy({ checks: { ...legacy().checks, contained: { ok: true, note: "" } } }) }, "a six-check report with an empty note");
+assert.deepEqual(parseAssessment(legacy({ reviewFocus: "The sort" })), { ...assessment(), notes: "The sort" }, "a six-check merge reads as confident");
+assert.deepEqual(
+  parseAssessment(legacy({ recommendation: "handover", checks: { ...legacy().checks, proven: { ok: false, note: "No test." } }, reviewFocus: "The sort" })),
+  { ...unsure("Proven: No test."), notes: "The sort" },
+  "a six-check handover reads as not confident, its failed checks the reason",
 );
+assert.deepEqual(parseAssessment(legacy({ recommendation: "handover", reviewFocus: "The sort" })), unsure("The sort"), "with every check ok, its review focus is the reason");
+assert.deepEqual(parseAssessment(assessment()), assessment(), "the current shape reads as is");
+assert.equal(parseAssessment({ recommendation: "merge" }), null, "anything else is no assessment");
 
 // --- globs and manifests
 assert.ok(globToRegExp("**/migrations/**").test("db/migrations/001.sql") && globToRegExp("**/migrations/**").test("migrations/1.sql"), "** spans zero or more dirs");
@@ -92,9 +117,27 @@ assert.deepEqual(decideMerge(input()), { outcome: "merge", reasons: [] }, "trial
 assert.deepEqual(decideMerge(input({ policy: { ...DEFAULT_POLICY, autonomy: "auto" } })), { outcome: "merge", reasons: [] }, "auto merges with no caveat");
 assert.deepEqual(decideMerge(input({ policy: DEFAULT_POLICY, pr: null, attempt: 3 })), { outcome: "handover", reasons: [] }, "off evaluates nothing");
 assert.throws(() => decideMerge(input({ pr: null })), /needs the PR's facts/);
-handsOver({ assessment: null }, /didn't report a merge assessment/, "a run with no assessment");
-handsOver({ assessment: assessment({ recommendation: "handover", checks: { ...assessment().checks, noTasteCalls: { ok: false, note: "The empty-state copy is a product call." } } }) }, /^No taste or product calls: The empty-state copy/, "the agent hands over, naming the check");
-handsOver({ assessment: assessment({ recommendation: "handover" }) }, /recommends handing over/, "a handover with every check ok");
+assert.deepEqual(decideMerge(input({ assessment: null })), { outcome: "handover", reasons: ["The agent didn't report an assessment."] }, "a run with no assessment");
+assert.deepEqual(
+  decideMerge(input({ assessment: unsure("I assumed the list sorts by display name.") })),
+  { outcome: "handover", reasons: ["The agent isn't confident: I assumed the list sorts by display name."] },
+  "the agent hands over only when it isn't confident, and says why",
+);
+assert.deepEqual(
+  decideMerge(input({ assessment: assessment({ interpretation: "Export the helpers the issue lists.", notes: "Adds three exports to the package's index." }) })),
+  { outcome: "merge", reasons: [] },
+  "a confident additive change the issue asked for merges",
+);
+assert.deepEqual(
+  decideMerge(input({ assessment: parseAssessment(legacy({ checks: { ...legacy().checks, contained: { ok: false, note: "It expands the public API." } } })) })),
+  { outcome: "merge", reasons: [] },
+  "an old merge recommendation with a failed check no longer hands over",
+);
+assert.deepEqual(
+  decideMerge(input({ assessment: parseAssessment(legacy({ recommendation: "handover", checks: { ...legacy().checks, proven: { ok: false, note: "No test covers it." } } })) })).reasons,
+  ["The agent isn't confident: Proven: No test covers it."],
+  "an old handover names its failed check",
+);
 handsOver({ labels: ["factory", "Review"] }, /"review" label/, "the review label forces a handover");
 handsOver({ attempt: 2 }, /attempt 2/, "a retry");
 handsOver({ pr: facts({ checks: "failure" }) }, /check failed/, "a failed check");
@@ -316,10 +359,16 @@ try {
   assert.deepEqual((stored!.payload as { assessment: unknown }).assessment, assessment(), "and so does the event");
   await ingest(db, [stage(2, { stage: "implementing", summary: "conflict" })]);
   assert.deepEqual((await row(INGEST)).merge_assessment, assessment(), "another stage leaves it");
-  const second = assessment({ recommendation: "handover", reviewFocus: "The sort order" });
+  const second = { ...unsure("The sort order is a guess."), notes: "Look at the sort order." };
   await ingest(db, [stage(3, { ...prReport, prUrl: prUrl(0), assessment: second })]);
   assert.deepEqual((await row(INGEST)).merge_assessment, second, "the latest pr report wins");
-  await ingest(db, [stage(4, { stage: "implementing", summary: "again" }), stage(5, { ...prReport, prUrl: prUrl(0) })]);
+  const old = legacy({ recommendation: "handover", checks: { ...legacy().checks, proven: { ok: false, note: "No test." } } });
+  await ingest(db, [stage(6, { ...prReport, prUrl: prUrl(0), assessment: old })]);
+  assert.deepEqual((await row(INGEST)).merge_assessment, unsure("Proven: No test."), "a six-check report is stored in the current shape");
+  const [storedOld] = await db.select().from(events).where(eq(events.event_id, `${session}-6`));
+  assert.deepEqual((storedOld!.payload as { assessment: unknown }).assessment, old, "while its event keeps what the agent sent");
+  await ingest(db, [stage(7, { ...prReport, prUrl: prUrl(0), assessment: second })]);
+  await ingest(db, [stage(8, { stage: "implementing", summary: "again" }), stage(9, { ...prReport, prUrl: prUrl(0) })]);
   assert.equal((await row(INGEST)).merge_assessment, null, "a pr report without one clears it");
 
   // The runner pass, against stubbed GitHub and Linear.

@@ -14,7 +14,7 @@ import {
   uniqueIndex,
 } from "drizzle-orm/pg-core";
 import { STAGES } from "../lib/events";
-import type { MergeAssessment } from "../lib/assessment";
+import type { AssessmentInput } from "../lib/assessment";
 import type { CheckSource, EvidenceCheck, EvidenceSummary, Producer } from "../lib/evidence";
 import { DEFAULT_EXECUTION, type Execution } from "../lib/execution";
 import type { Autonomy, MergeDecision } from "../lib/merge-decision";
@@ -169,8 +169,8 @@ export const jobs = pgTable(
     sandbox_snapshot: text("sandbox_snapshot"),
     /** The runner-side CODEX_HOME whose ChatGPT login the sandbox holds; one job per slot. */
     codex_slot: text("codex_slot"),
-    /** The agent's assessment from its latest pr report on this attempt; see lib/assessment.ts. */
-    merge_assessment: jsonb("merge_assessment").$type<MergeAssessment>(),
+    /** The agent's assessment from its latest pr report on this attempt; rows from before the six checks were dropped keep that shape, so read it with parseAssessment. */
+    merge_assessment: jsonb("merge_assessment").$type<AssessmentInput>(),
     /** The runner's latest merge decision while the job sits in pr; see lib/merge-decision.ts. */
     merge_decision: jsonb("merge_decision").$type<MergeDecision>(),
     /** The latest evidence for the current attempt, without output; job_evidence keeps every commit's. See lib/evidence.ts. */

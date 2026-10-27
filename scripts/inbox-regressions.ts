@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
 import { eq, inArray, like } from "drizzle-orm";
 import type { JobRow } from "../db/schema";
-import type { MergeAssessment } from "../lib/assessment";
+import type { AssessmentInput } from "../lib/assessment";
 import type { Harness } from "../lib/harness";
 import type { MergeDecision } from "../lib/merge-decision";
 import type { FileDraft } from "../lib/sources/types";
@@ -228,7 +228,8 @@ SOURCES.linear.note = async () => {};
 const stamp = Date.now() % 1_000_000;
 const REPO = `regress/inbox-${stamp}`;
 const keys: string[] = [];
-const assessment: MergeAssessment = {
+// A row stored before the six checks were dropped still reads.
+const assessment: AssessmentInput = {
   recommendation: "handover",
   interpretation: "Rename the list.",
   assumptions: ["Nobody imports the old name."],

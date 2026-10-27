@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { assessmentSchema } from "./assessment";
+import { assessmentInputSchema } from "./assessment";
 import { evidenceShape } from "./evidence";
 
 export const usageSchema = z.object({
@@ -40,7 +40,7 @@ export const stageReportShape = {
     .max(2000)
     .optional()
     .describe("Required for stage waiting: the concrete question the human must answer."),
-  assessment: assessmentSchema.optional().describe("Stage pr only: your merge assessment, as the factory playbook describes."),
+  assessment: assessmentInputSchema.optional().describe("Stage pr only: your merge assessment, as the factory playbook describes."),
 };
 export const stageReportSchema = z
   .object(stageReportShape)

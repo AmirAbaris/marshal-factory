@@ -50,7 +50,8 @@ server.registerTool(
     title: "Report factory stage",
     description:
       "Report that this factory run entered a stage. Call it at every stage transition. " +
-      "Stage pr needs prUrl and should carry your merge assessment; stage waiting needs a concrete question; " +
+      "Stage pr needs prUrl and should carry your merge assessment: recommend merge when you are confident you built what the issue asked for and that it works, " +
+      "and handover only when you are not, with confidence.reason saying why; stage waiting needs a concrete question; " +
       "stage failed puts the reason in summary.",
     inputSchema: stageReportShape,
   },

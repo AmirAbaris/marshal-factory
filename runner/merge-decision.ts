@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { and, eq, isNotNull, inArray } from "drizzle-orm";
 import { db } from "../db/client";
 import { auditLog, jobEvidence, jobs, type AuditRow, type RepoSettingsRow } from "../db/schema";
+import { parseAssessment } from "../lib/assessment";
 import { headEvidence, type EvidenceRow, type HeadEvidence } from "../lib/evidence";
 import { parseDetail } from "../lib/onboarding";
 import { CHECKS, type CheckName, type Recipe } from "../lib/recipe";
@@ -98,7 +99,7 @@ async function evaluate(job: Job, policy: RepoPolicy, previous: MergeDecision | 
   ]);
   const decision = decideMerge({
     policy,
-    assessment: job.merge_assessment,
+    assessment: parseAssessment(job.merge_assessment),
     attempt: job.attempt,
     labels,
     pr,

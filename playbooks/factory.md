@@ -47,27 +47,14 @@ When the factory tells this thread that its PR conflicts with main, the board ha
 
 ## Merge assessment
 
-Every run ends one of three ways: the factory merges it, it hands it over to the owner for review, or you asked before building (`waiting`). Uncertainty about what to build means ask before building. Risk about whether to ship means build, then hand over.
+Every run ends one of three ways: the factory merges it, it hands it over to the owner for review, or you asked before building (`waiting`). If the issue is open enough that different readings give different features, report `waiting` before building.
 
-Write your interpretation of the issue and every assumption you filled a gap with. Issues are often underspecified; that is fine. An assumption is confident only when all four hold:
+1. Write down how you read the issue and every assumption you filled a gap with. Issues are often underspecified; that is fine. Put the assumptions in the PR body under a heading `Assumptions I made`, one bullet each; the factory copies them to the Linear comment.
+2. Run `factory-verify` on the pushed head, as in Standing rules.
+3. Recommend `merge` when you are confident you built what the issue asked for and that it works. Additive changes the issue asked for, such as new exports or new endpoints, are fine.
+4. Recommend `handover` only when you are not confident: you are unsure what the issue meant, unsure about an assumption you had to make, or you could not show the change works. Say why in one or two sentences.
 
-- **One reasonable reading.** Two sensible developers would build roughly the same thing.
-- **Follows the codebase.** An existing pattern fills the gap: a component, the error handling, the naming.
-- **Cheap to change.** If it is wrong, a small follow-up fixes it. Nothing to migrate, nothing users notice disappearing.
-- **Not a taste or business call.** Pricing, legal text, brand voice, prominent UI copy, removing a feature, anything users would notice as a product decision.
-
-If the issue is open enough that different readings give different features, report `waiting` before building. If you built it but one or two assumptions are shaky, recommend `handover` and name them.
-
-Recommend `merge` only when all six checks hold; otherwise recommend `handover`:
-
-1. **Confident interpretation.** Every assumption passes the four tests.
-2. **Proven.** You saw the problem before and the fix after on the real surface, added a test that fails without the change, and `factory-verify` passed every check on the pushed head. Name that commit and its result in the note, as in `factory-verify at 3f2a9c1: 4/4 checks passed`.
-3. **Contained.** It touches only what the issue is about. No shared contract or public API changed.
-4. **Easy to undo.** A plain revert undoes it fully. No data migration, no external side effects such as emails, webhooks or payments.
-5. **No taste or product calls.** Small calls inside a confident assumption are fine, such as which existing component to use.
-6. **No surprises.** No flaky tests, unrelated breakage, or spec that contradicts the code.
-
-Put the assumptions in the PR body under a heading `Assumptions I made`, one bullet each; the factory copies them to the Linear comment. When you report `pr`, pass `assessment`: `recommendation`, `interpretation`, `assumptions`, and for each of `interpretation`, `proven`, `contained`, `reversible`, `noTasteCalls` and `noSurprises` an `ok` and a one-line `note`. For a handover, add `reviewFocus`: what the owner should look at first. Be honest: the factory checks CI, Bugbot, size and protected paths itself, holds the head to the evidence `factory-verify` reported for it, and a `merge` it cannot back up costs trust.
+When you report `pr`, pass `assessment`: `recommendation`, `interpretation`, `assumptions`, and `confidence` with `confident` and, when you are not confident, the `reason`. Add `notes` for anything else the owner should know. Be honest: the factory checks CI, Bugbot, size and protected paths itself, holds the head to the evidence `factory-verify` reported for it, and a `merge` it cannot back up costs trust.
 
 ## Changes to the bundled playbooks
 

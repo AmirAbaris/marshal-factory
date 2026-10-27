@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { ASSESSMENT_CHECKS, CHECK_LABELS, type MergeAssessment } from "./assessment";
+import type { MergeAssessment } from "./assessment";
 import { PRODUCER_LABELS, shortSha } from "./evidence";
 import type { MergeDecision } from "./merge-decision";
 
@@ -13,12 +13,16 @@ export const fingerprint = (body: string) => createHash("sha256").update(body).d
 const bullets = (items: readonly string[]) => items.map((i) => `- ${i}`).join("\n");
 const failedList = (failed: readonly string[]) => (failed.length > 0 ? failed.join(", ") : "a check failed");
 
+const confidenceLine = ({ confidence }: MergeAssessment) =>
+  confidence.confident ? "Confident it built what the issue asked for and that it works." : `Not confident: ${confidence.reason ?? "no reason given."}`;
+
 function assessmentBlock(assessment: MergeAssessment | null) {
   if (!assessment) return [];
   return [
     `**How I read the issue**\n\n${assessment.interpretation}`,
     assessment.assumptions.length > 0 ? `**Assumptions I made**\n\n${bullets(assessment.assumptions)}` : "",
-    `**Checks**\n\n${bullets(ASSESSMENT_CHECKS.map((c) => `${assessment.checks[c].ok ? "✅" : "❌"} ${CHECK_LABELS[c]}: ${assessment.checks[c].note}`))}`,
+    `**Confidence**\n\n${confidenceLine(assessment)}`,
+    assessment.notes ? `**Notes**\n\n${assessment.notes}` : "",
   ];
 }
 
@@ -61,7 +65,7 @@ export function prCommentBody(decision: MergeDecision, assessment: MergeAssessme
         return [
           "Ready for your review",
           bullets(decision.reasons),
-          assessment?.reviewFocus ? `**What to look at first**\n\n${assessment.reviewFocus}` : "",
+          assessment?.notes ? `**Notes**\n\n${assessment.notes}` : "",
         ];
       default: {
         const never: never = decision.outcome;

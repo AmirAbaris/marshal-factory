@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { and, eq, inArray, isNotNull, sql } from "drizzle-orm";
 import { db } from "../db/client";
 import { auditLog, jobs, type AuditRow } from "../db/schema";
+import { parseAssessment } from "../lib/assessment";
 import type { RepoName } from "../lib/github/app";
 import { github, type MergeCandidate } from "../lib/github/pulls";
 import { DECISION_MARKER, fingerprint, prCommentBody, sourceCommentBody } from "../lib/merge-comments";
@@ -74,7 +75,7 @@ export async function storeDecision(job: Job, previous: MergeDecision | null, ne
  * text, so a replay finds the one already posted.
  */
 export async function syncComments(job: Job, decision: MergeDecision): Promise<MergeDecision> {
-  const prBody = prCommentBody(decision, job.merge_assessment);
+  const prBody = prCommentBody(decision, parseAssessment(job.merge_assessment));
   const sourceBody = sourceCommentBody(decision, job.pr_url!);
   const comments = { ...decision.comments };
   if (prBody && fingerprint(prBody) !== comments.pr) {
@@ -93,10 +94,10 @@ export async function syncComments(job: Job, decision: MergeDecision): Promise<M
   return { ...decision, comments };
 }
 
-const commitMessage = (job: Job) => [(job.stage_summary ?? job.merge_assessment?.interpretation ?? "").slice(0, 1000), "Merged by the factory"].filter(Boolean).join("\n\n");
+const commitMessage = (job: Job) => [(job.stage_summary ?? parseAssessment(job.merge_assessment)?.interpretation ?? "").slice(0, 1000), "Merged by the factory"].filter(Boolean).join("\n\n");
 
 function mergeSnapshot(decision: MergeDecision, sha: string, method: MergeMethod, via: MergeVia, job: Job) {
-  const a = job.merge_assessment;
+  const a = parseAssessment(job.merge_assessment);
   return [
     `Merged by the factory as ${sha.slice(0, 7)} (${method}) via ${via}`,
     ...decision.reasons,

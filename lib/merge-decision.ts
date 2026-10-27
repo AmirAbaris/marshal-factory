@@ -1,10 +1,10 @@
 import { z } from "zod";
-import { ASSESSMENT_CHECKS, CHECK_LABELS, type MergeAssessment } from "./assessment";
+import type { MergeAssessment } from "./assessment";
 import { headEvidenceSchema, notVerifiedWhy, shortSha, type HeadEvidence } from "./evidence";
 import { globToRegExp, matchesAny } from "./globs";
 
-// Whether a factory PR would merge on its own. The agent recommends (lib/assessment.ts); the
-// runner enforces hard limits that no recommendation overrides. Pure, so the runner pass and the
+// Whether a factory PR would merge on its own. The agent recommends merge unless it isn't confident
+// (lib/assessment.ts); the runner enforces factual hard limits that no recommendation overrides. Pure, so the runner pass and the
 // regressions share it.
 
 export const AUTONOMY_LEVELS = ["off", "trial", "auto"] as const;
@@ -222,10 +222,9 @@ function hardLimits(input: DecisionInput, pr: PrFacts) {
 }
 
 function agentReasons({ assessment }: DecisionInput) {
-  if (!assessment) return ["The agent didn't report a merge assessment."];
+  if (!assessment) return ["The agent didn't report an assessment."];
   if (assessment.recommendation === "merge") return [];
-  const failed = ASSESSMENT_CHECKS.filter((name) => !assessment.checks[name].ok).map((name) => `${CHECK_LABELS[name]}: ${assessment.checks[name].note}`);
-  return failed.length > 0 ? failed : ["The agent recommends handing over."];
+  return [`The agent isn't confident: ${assessment.confidence.reason ?? "it recommends handing over."}`];
 }
 
 /** The verified-at-head limit: what the agent or the runner ran at exactly the PR's head. */
