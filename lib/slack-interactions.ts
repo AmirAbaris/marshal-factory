@@ -1,4 +1,3 @@
-import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { z } from "zod";
 import { intents, jobs, slackMessages, type IntentKind, type JobRow, type SlackMessageRow } from "@/db/schema";
@@ -21,29 +20,20 @@ import {
 import { mergeDecisionSchema } from "@/lib/merge-decision";
 import { ITEM_BLOCK_PREFIX, notifyEvents, PENDING_LABELS, redact, renderMessage, slackAction, SLACK_ACTION_IDS, type MessageFacts, type NotifyEvent } from "@/lib/slack";
 import type { SlackClient } from "@/lib/slack-api";
+import { NEW_JOB_CALLBACK_ID, newJobSubmitted, sendToFactory, shortcutSchema } from "@/lib/slack-new-job";
+import { ephemeral, invalidSignature, NO_TOKEN, NOT_OWNER, parseJson, safeMessage, signedBody, uuidFrom } from "@/lib/slack-request";
 import { branchCosts } from "@/lib/spend";
 
 // Acting from Slack: the interactivity route (app/api/slack/interactions) hands every request here.
 // A click on an open message's button, or a modal's submission, runs the same inbox action the
 // panel runs (lib/inbox-actions.ts) as the owner, so Slack is one more front door to the same
 // intents and the runner does the rest. Only the Slack user SLACK_OWNER_USER_ID names may act.
+// The "Send to factory" shortcut and the New job modal it opens are lib/slack-new-job.ts's.
 // Slack wants an answer within 3 seconds, so the route acks and the work runs after it.
 
-/** Slack signs each request; one older than this is a replay. */
-export const MAX_SKEW_SECONDS = 5 * 60;
+export { MAX_SKEW_SECONDS, NOT_OWNER, verifySignature } from "@/lib/slack-request";
 
-export const NOT_OWNER = "Only the factory owner can act from Slack.";
 export const ALREADY_RESOLVED = "This is already resolved; nothing was done.";
-const NO_TOKEN = "The panel has no SLACK_BOT_TOKEN, so it can't act from Slack.";
-
-/** Checks `X-Slack-Signature`: v0, HMAC-SHA256 of `v0:<timestamp>:<raw body>` with the signing secret. */
-export function verifySignature(secret: string, timestamp: string | null, signature: string | null, body: string, nowMs: number) {
-  if (!secret || !timestamp || !signature || !/^\d+$/.test(timestamp)) return false;
-  if (Math.abs(nowMs / 1000 - Number(timestamp)) > MAX_SKEW_SECONDS) return false;
-  const expected = Buffer.from(`v0=${createHmac("sha256", secret).update(`v0:${timestamp}:${body}`).digest("hex")}`);
-  const given = Buffer.from(signature);
-  return expected.length === given.length && timingSafeEqual(expected, given);
-}
 
 /** The owner as the inbox actions check it: the first address in FACTORY_OWNER_EMAILS, which a Slack click by SLACK_OWNER_USER_ID stands for. */
 export function ownerFromAllowlist(allowlist = process.env.FACTORY_OWNER_EMAILS): SessionUser | null {
@@ -56,11 +46,7 @@ export function ownerFromAllowlist(allowlist = process.env.FACTORY_OWNER_EMAILS)
  * Slack retry gets the same one, so it records one intent, files one issue or posts one answer; a
  * UUID, as the inbox actions want. `after` is the request id of the attempt the runner refused.
  */
-export function slackRequestId(eventId: string, action: InboxAction, after = "") {
-  const h = createHash("sha256").update(`slack:${eventId}:${action}${after && `:${after}`}`).digest("hex");
-  const variant = ((parseInt(h[16]!, 16) & 0x3) | 0x8).toString(16);
-  return `${h.slice(0, 8)}-${h.slice(8, 12)}-8${h.slice(13, 16)}-${variant}${h.slice(17, 20)}-${h.slice(20, 32)}`;
-}
+export const slackRequestId = (eventId: string, action: InboxAction, after = "") => uuidFrom(`slack:${eventId}:${action}${after && `:${after}`}`);
 
 /** The intent each runner-handled action records, keyed panel:<kind>:<request id>. */
 const INTENT_KINDS = {
@@ -192,7 +178,7 @@ export type InteractionDeps = {
   signingSecret: string | undefined;
   /** The Slack member id of the only user who may act. */
   ownerSlackId: string | undefined;
-  slack: Pick<SlackClient, "update" | "openView" | "updateView"> | null;
+  slack: Pick<SlackClient, "update" | "openView" | "updateView" | "postMessage" | "openDm" | "permalink"> | null;
   /** Posts to a click's response_url. */
   respond: (url: string, body: object) => Promise<void>;
   /** The inbox actions' deps, acting as the owner. */
@@ -223,10 +209,6 @@ async function messageFacts(deps: InteractionDeps, job: JobRow): Promise<Message
   const costs = await branchCosts(deps.inbox.db, [branch]);
   return { panelUrl: deps.panelUrl, spend: costs[branch] ?? null, secrets: deps.secrets };
 }
-
-/** What may be shown of an unexpected error: its message, redacted, never a stack. */
-const safeMessage = (deps: InteractionDeps, error: unknown) =>
-  `Something went wrong: ${redact(error instanceof Error ? error.message : String(error), deps.secrets).slice(0, 300)}`;
 
 function runAction(inbox: InboxDeps, action: InboxAction, job: JobRow, requestId: string, text: string): Promise<InboxOutcome> {
   switch (action) {
@@ -276,7 +258,7 @@ async function act(deps: InteractionDeps, item: Item, action: InboxAction, text:
     try {
       await deps.slack?.update(item.row.channel, item.row.ts, renderMessage(item.event, facts, null, pending));
     } catch (error) {
-      console.error(`slack: update ${item.row.id} failed: ${safeMessage(deps, error)}`);
+      console.error(`slack: update ${item.row.id} failed: ${safeMessage(deps.secrets, error)}`);
     }
   };
   await show(PENDING_LABELS[action]);
@@ -285,7 +267,7 @@ async function act(deps: InteractionDeps, item: Item, action: InboxAction, text:
     outcome = await runAction(deps.inbox, action, item.job, await nextRequestId(deps, item.event.id, action), text);
     if (outcome.ok && outcome.intentId) outcome = await follow(deps, outcome.intentId);
   } catch (error) {
-    outcome = { ok: false, message: safeMessage(deps, error) };
+    outcome = { ok: false, message: safeMessage(deps.secrets, error) };
   }
   if (!outcome.ok) {
     await show(null);
@@ -314,30 +296,23 @@ const viewSubmissionSchema = z.object({
 });
 
 const ack = () => new Response(null, { status: 200 });
-/** A note only the clicker sees; the reason can quote what an agent or a source wrote, so it is redacted too. */
-const ephemeral = (deps: InteractionDeps, text: string) => ({ response_type: "ephemeral", replace_original: false, text: redact(text, deps.secrets) });
-const parseJson = (text: string): unknown => {
-  try {
-    return JSON.parse(text);
-  } catch {
-    return null;
-  }
-};
 
 /** Every request Slack sends to the interactivity URL. The signature is checked before anything is read. */
 export async function handleInteraction(request: Request, deps: InteractionDeps): Promise<Response> {
-  const body = await request.text();
-  const now = deps.now?.() ?? Date.now();
-  if (!verifySignature(deps.signingSecret ?? "", request.headers.get("x-slack-request-timestamp"), request.headers.get("x-slack-signature"), body, now)) {
-    return new Response("invalid signature", { status: 401 });
-  }
+  const body = await signedBody(request, deps.signingSecret, deps.now?.() ?? Date.now());
+  if (body === null) return invalidSignature();
   const payload = parseJson(new URLSearchParams(body).get("payload") ?? "");
   const isOwner = (user: { id: string }) => !!deps.ownerSlackId && user.id === deps.ownerSlackId;
 
   const click = blockActionsSchema.safeParse(payload);
   if (click.success) return clicked(deps, click.data, isOwner(click.data.user));
   const submission = viewSubmissionSchema.safeParse(payload);
-  if (submission.success) return submitted(deps, submission.data, isOwner(submission.data.user));
+  if (submission.success) {
+    const owner = isOwner(submission.data.user);
+    return submission.data.view.callback_id === NEW_JOB_CALLBACK_ID ? newJobSubmitted(deps, payload, owner) : submitted(deps, submission.data, owner);
+  }
+  const shortcut = shortcutSchema.safeParse(payload);
+  if (shortcut.success) return sendToFactory(deps, shortcut.data, isOwner(shortcut.data.user));
   // Clicks on link buttons, closed modals and anything else Slack sends need only the ack.
   return ack();
 }
@@ -346,7 +321,7 @@ async function clicked(deps: InteractionDeps, payload: z.infer<typeof blockActio
   const [button] = payload.actions;
   const action = button ? slackAction(button.action_id) : null;
   if (!button || !action) return ack();
-  const reply = (text: string) => deps.respond(payload.response_url, ephemeral(deps, text));
+  const reply = (text: string) => deps.respond(payload.response_url, ephemeral(deps.secrets, text));
   const slack = owner ? deps.slack : null;
   // The trigger id expires 3 seconds after the click, so a modal opens before the ack and before any
   // read; the item is filled in afterwards.
@@ -371,7 +346,7 @@ async function clicked(deps: InteractionDeps, payload: z.infer<typeof blockActio
           const next = item ? renderModal(action, item, await messageFacts(deps, item.job), payload.response_url) : noteModal(action, ALREADY_RESOLVED);
           await slack.updateView(view.id, next, view.hash);
         } catch (error) {
-          await slack.updateView(view.id, noteModal(action, safeMessage(deps, error))).catch(() => undefined);
+          await slack.updateView(view.id, noteModal(action, safeMessage(deps.secrets, error))).catch(() => undefined);
           throw error;
         }
         return;
@@ -380,7 +355,7 @@ async function clicked(deps: InteractionDeps, payload: z.infer<typeof blockActio
       if (!item) return await reply(ALREADY_RESOLVED);
       await act(deps, item, action, "", reply);
     } catch (error) {
-      await reply(safeMessage(deps, error)).catch(() => undefined);
+      await reply(safeMessage(deps.secrets, error)).catch(() => undefined);
     }
   });
   return ack();
@@ -397,12 +372,12 @@ async function submitted(deps: InteractionDeps, payload: z.infer<typeof viewSubm
   const item = await openItem(deps, meta.data.event);
   if (!item) return refuse(ALREADY_RESOLVED);
   const text = payload.view.state.values[TEXT_BLOCK]?.[TEXT_ACTION]?.value ?? "";
-  const reply = (message: string) => deps.respond(meta.data.responseUrl, ephemeral(deps, message));
+  const reply = (message: string) => deps.respond(meta.data.responseUrl, ephemeral(deps.secrets, message));
   deps.after(async () => {
     try {
       await act(deps, item, action, text, reply);
     } catch (error) {
-      await reply(safeMessage(deps, error)).catch(() => undefined);
+      await reply(safeMessage(deps.secrets, error)).catch(() => undefined);
     }
   });
   return ack();
