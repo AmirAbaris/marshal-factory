@@ -253,6 +253,13 @@
       "when": 1793139229656,
       "tag": "0035_slack_notifications",
       "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1793190332752,
+      "tag": "0036_job_archive",
+      "breakpoints": true
     }
   ]
 }

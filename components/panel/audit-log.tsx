@@ -12,6 +12,8 @@ const ACTION: Record<AuditRow["action"], { label: string; tone: string }> = {
   override_fallback: { label: "Ticket override not applied", tone: "text-warning" },
   follow_up_filed: { label: "Follow-up filed", tone: "text-foreground" },
   review_dropped: { label: "Review not forwarded", tone: "text-warning" },
+  job_archived: { label: "Archived", tone: "text-foreground" },
+  job_unarchived: { label: "Unarchived", tone: "text-foreground" },
 };
 
 const RESULT: Record<NonNullable<AuditRow["result"]>, string> = {
