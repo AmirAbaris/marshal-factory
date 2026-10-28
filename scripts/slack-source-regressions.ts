@@ -26,6 +26,7 @@ type Call = { method: string; params: Record<string, string> };
 const calls: Call[] = [];
 const responses: { path: string; body: { text?: string; response_type?: string } }[] = [];
 let threadFails = false;
+let permalinkDelayMs = 0;
 const server = await serve(0, async (request) => {
   const path = new URL(request.url).pathname;
   if (path.startsWith("/response/")) {
@@ -38,6 +39,7 @@ const server = await serve(0, async (request) => {
   if (request.headers.get("authorization") !== `Bearer ${TOKEN}`) return Response.json({ ok: false, error: "invalid_auth" });
   switch (method) {
     case "chat.getPermalink":
+      await new Promise((resolve) => setTimeout(resolve, permalinkDelayMs));
       return Response.json({ ok: true, permalink: `https://acme.slack.com/archives/${params.channel}/p${params.message_ts!.replace(".", "")}` });
     case "chat.postMessage":
       if (threadFails && params.thread_ts) return Response.json({ ok: false, error: "not_in_channel" });
@@ -218,6 +220,12 @@ try {
   const oneLineView = lastView(oneLine.trigger);
   assert.equal(block(oneLineView, NEW_JOB_BLOCKS.title)!.element!.initial_value, "Bump the node version");
   assert.equal(block(oneLineView, NEW_JOB_BLOCKS.description)!.element!.initial_value, undefined, "a one-line text is the title only");
+  const raw = command("Wrap it in a <div>\nOnly when a < b && c > d.");
+  await raw.sent;
+  await drain();
+  const rawView = lastView(raw.trigger);
+  assert.equal(block(rawView, NEW_JOB_BLOCKS.title)!.element!.initial_value, "Wrap it in a <div>", "the command's text is not read as Slack markup");
+  assert.equal(block(rawView, NEW_JOB_BLOCKS.description)!.element!.initial_value, "Wrap it in a <div>\nOnly when a < b && c > d.");
 
   // --- the shortcut: a stranger is refused, the owner gets the message and a link back to it
   const opened = opens();
@@ -237,6 +245,18 @@ try {
   const description = block(sharedView, NEW_JOB_BLOCKS.description)!.element!.initial_value!;
   assert.match(description, /^Cart total is wrong & the cart page \(https:\/\/shop\.test\/cart\) shows NaN\nSteps: add two items\./);
   assert.match(description, /From Slack: https:\/\/acme\.slack\.com\/archives\/C0GENERAL\/p1700000000000200$/, "with the permalink");
+
+  // --- a slow permalink doesn't hold the modal past its trigger; it opens without the link
+  permalinkDelayMs = 2_500;
+  const slow = shortcut({ ts: "1700000000.000400", text: "Slow permalink" });
+  const slowStarted = Date.now();
+  await slow.sent;
+  await drain();
+  const slowMs = Date.now() - slowStarted;
+  permalinkDelayMs = 0;
+  assert.ok(slowMs < 2_000, `the modal opened after ${slowMs} ms`);
+  const slowView = lastView(slow.trigger);
+  assert.equal(block(slowView, NEW_JOB_BLOCKS.description)!.element!.initial_value, "Slow permalink", "no permalink line");
 
   // --- an invalid form is refused inline; nothing is filed
   const tooShort = await submit("V0SHORT", sharedView, { title: "ab" });

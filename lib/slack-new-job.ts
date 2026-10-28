@@ -26,6 +26,8 @@ export const SETTINGS_DEFAULT = "settings-default";
 const SLACK_INPUT_MAX = 3000;
 const OPTION_TEXT_MAX = 75;
 const TITLE_MAX = 80;
+/** The trigger id is good for 3 seconds; the modal opens without the link rather than miss it. */
+const PERMALINK_TIMEOUT_MS = 1_000;
 
 export const USAGE = [
   "`/factory` opens the New job form.",
@@ -39,18 +41,18 @@ export const newJobRequestId = (viewId: string) => uuidFrom(`slack:new_job:${vie
 const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0, max - 1)}…` : text);
 const escape = (text: string) => text.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
 
+const decodeEntities = (text: string) => text.replaceAll("&lt;", "<").replaceAll("&gt;", ">").replaceAll("&amp;", "&");
+
 /** Slack's message markup as plain text: links, mentions and channels by their labels, entities decoded. */
 export function fromSlack(text: string) {
-  return text
-    .replace(/<([^<>]+)>/g, (_, inner: string) => {
+  return decodeEntities(
+    text.replace(/<([^<>]+)>/g, (_, inner: string) => {
       const [target = "", label] = inner.split("|", 2);
       if (target.startsWith("@") || target.startsWith("#")) return `${target[0]}${label ?? target.slice(1)}`;
       if (target.startsWith("!")) return label ?? `@${target.slice(1)}`;
       return label && label !== target ? `${label} (${target})` : target;
-    })
-    .replaceAll("&lt;", "<")
-    .replaceAll("&gt;", ">")
-    .replaceAll("&amp;", "&");
+    }),
+  );
 }
 
 /** A short title from text: its first non-empty line. */
@@ -58,8 +60,9 @@ export const titleFrom = (text: string) => clip((text.split("\n").find((line) =>
 
 export type Prefill = { title: string; description: string };
 
+/** The manifest turns off should_escape for /factory, so its text has no link markup to read. */
 export function commandPrefill(text: string): Prefill {
-  const plain = fromSlack(text).trim();
+  const plain = decodeEntities(text).trim();
   const title = titleFrom(plain);
   return { title, description: plain === title ? "" : clip(plain, SLACK_INPUT_MAX) };
 }
@@ -180,7 +183,7 @@ export function sendToFactory(deps: InteractionDeps, payload: z.infer<typeof sho
       const slack = deps.slack;
       if (!slack) return await reply(NO_TOKEN);
       const { channel, message } = payload;
-      const [link, options] = await Promise.all([slack.permalink(channel.id, message.ts).catch(() => null), modalOptions(deps)]);
+      const [link, options] = await Promise.all([slack.permalink(channel.id, message.ts, PERMALINK_TIMEOUT_MS).catch(() => null), modalOptions(deps)]);
       const meta: Meta = { responseUrl: payload.response_url, channel: channel.id, threadTs: message.thread_ts ?? message.ts };
       await slack.openView(payload.trigger_id, renderNewJobModal(shortcutPrefill(message.text, link), options, meta));
     } catch (error) {

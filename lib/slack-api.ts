@@ -43,7 +43,7 @@ export function slackClient({ token, baseUrl = SLACK_API_URL, minGapMs = 1_000, 
   let lastCallAt = 0;
   let pausedUntil = 0;
 
-  async function send(method: string, params: Record<string, string>): Promise<Record<string, unknown>> {
+  async function send(method: string, params: Record<string, string>, timeoutMs: number): Promise<Record<string, unknown>> {
     for (let attempt = 0; ; attempt++) {
       if (now() < pausedUntil) throw new SlackRateLimited(pausedUntil);
       const gap = lastCallAt + minGapMs - now();
@@ -53,7 +53,7 @@ export function slackClient({ token, baseUrl = SLACK_API_URL, minGapMs = 1_000, 
         method: "POST",
         headers: { authorization: `Bearer ${token}`, "content-type": "application/x-www-form-urlencoded" },
         body: new URLSearchParams(params),
-        signal: AbortSignal.timeout(15_000),
+        signal: AbortSignal.timeout(timeoutMs),
       });
       if (response.status === 429) {
         const seconds = Number(response.headers.get("retry-after"));
@@ -72,8 +72,8 @@ export function slackClient({ token, baseUrl = SLACK_API_URL, minGapMs = 1_000, 
     }
   }
 
-  function call(method: string, params: Record<string, string>) {
-    const result = chain.then(() => send(method, params));
+  function call(method: string, params: Record<string, string>, timeoutMs = 15_000) {
+    const result = chain.then(() => send(method, params, timeoutMs));
     chain = result.catch(() => undefined);
     return result;
   }
@@ -103,8 +103,8 @@ export function slackClient({ token, baseUrl = SLACK_API_URL, minGapMs = 1_000, 
       await call("views.open", { trigger_id: triggerId, view: JSON.stringify(view) });
     },
     /** A link to a message; it needs no scope beyond the token. */
-    async permalink(channel: string, ts: string) {
-      const body = await call("chat.getPermalink", { channel, message_ts: ts });
+    async permalink(channel: string, ts: string, timeoutMs?: number) {
+      const body = await call("chat.getPermalink", { channel, message_ts: ts }, timeoutMs);
       return str(body.permalink, "permalink");
     },
     pausedUntil: () => pausedUntil,
