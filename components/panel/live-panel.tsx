@@ -15,6 +15,7 @@ import { reportedHarnesses } from "@/lib/machine";
 import { cn } from "@/lib/utils";
 import { groupBy, spendOf } from "./format";
 import { Inbox } from "./inbox";
+import { useFullView } from "./full-view";
 import { JobList } from "./job-list";
 import { JOB_VIEW_COOKIE, jobsHref, type JobView } from "./job-view";
 import { NewJobButton } from "./new-job-button";
@@ -48,6 +49,8 @@ const LIST_KEYS: readonly KeyHint[] = [
   { keys: ["↵"], label: "open" },
   { keys: ["Esc"], label: "close" },
 ];
+
+const FULL_VIEW_KEYS: readonly KeyHint[] = [{ keys: ["Esc"], label: "side panel" }];
 
 function viewMeta(view: PanelView) {
   switch (view) {
@@ -171,6 +174,7 @@ export function LivePanel({
     : undefined;
 
   const inboxCount = useMemo(() => inboxItems(jobRows).length, [jobRows]);
+  const fullView = useFullView();
   const [jobView, switchJobView] = useJobView(currentJobView);
 
   // The filter applies to the loaded feeds; the inbox count stays global.
@@ -181,6 +185,11 @@ export function LivePanel({
   const shownJobs = useMemo(() => (repo ? jobRows.filter((j) => j.repo === repo) : jobRows), [jobRows, repo]);
   const shownCards = useMemo(() => (repo ? cards.filter((c) => c.repo === repo) : cards), [cards, repo]);
   const shownInbox = useMemo(() => (repo ? inboxItems(shownJobs).length : inboxCount), [repo, shownJobs, inboxCount]);
+  const inboxOpen = useMemo(
+    () => view === "inbox" && inboxKey !== undefined && inboxItems(shownJobs).some((i) => i.job.key === inboxKey),
+    [view, inboxKey, shownJobs],
+  );
+  const runFull = fullView.full && selectedRun !== undefined;
   const repoSelect = options.length > 0 && <RepoSelect options={options} value={repo} onChange={pickRepo} />;
 
   const meta = viewMeta(view);
@@ -188,7 +197,7 @@ export function LivePanel({
   const content = (() => {
     switch (view) {
       case "inbox":
-        return <Inbox jobs={shownJobs} cards={cards} selected={inboxKey} repoLabels={repoLabels} />;
+        return <Inbox jobs={shownJobs} cards={cards} selected={inboxKey} repoLabels={repoLabels} fullView={fullView} />;
       case "jobs":
         return jobView === "board" ? (
           <Board cards={shownCards} agentsBySession={agentsBySession} selected={detail?.sessionId} machines={machineById} repoLabels={repoLabels} />
@@ -228,8 +237,8 @@ export function LivePanel({
       />
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         <StatsStrip runs={runRows} agentsBySession={agentsBySession} startOfToday={startOfToday} />
-        <div className={cn("grid min-h-0 flex-1", selectedRun ? "grid-cols-[1fr_420px]" : "grid-cols-1")}>
-          {content}
+        <div className={cn("grid min-h-0 flex-1", selectedRun && !runFull ? "grid-cols-[1fr_420px]" : "grid-cols-1")}>
+          {!runFull && content}
           {selectedRun && detail && (
             <RunDetail
               key={detail.sessionId}
@@ -241,6 +250,7 @@ export function LivePanel({
               audit={detail.audit}
               evidence={detail.evidence}
               closeHref={closeHref(view, jobView)}
+              fullView={fullView}
               job={selectedJob}
               machine={selectedJob?.machine_id ? machineById.get(selectedJob.machine_id) : undefined}
               harnesses={harnesses}
@@ -263,7 +273,13 @@ export function LivePanel({
         status={status}
         note={[`${active} active`, sandboxNote].filter(Boolean).join(" · ")}
         summary={footerSummary(view, { jobs: shownCards.length, sessions: unstaged.length, inbox: shownInbox })}
-        keys={(view === "jobs" && jobView === "list") || view === "inbox" ? LIST_KEYS : undefined}
+        keys={
+          fullView.full && (selectedRun || inboxOpen)
+            ? FULL_VIEW_KEYS
+            : (view === "jobs" && jobView === "list") || view === "inbox"
+              ? LIST_KEYS
+              : undefined
+        }
       />
     </>
   );
