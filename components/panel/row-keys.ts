@@ -10,6 +10,8 @@ type RowKeys = {
   hrefOf: (id: string) => string | null;
   /** Where Esc goes while something is open; null when nothing is. */
   closeHref: string | null;
+  /** False while the list is hidden, so its keys don't act on rows nobody sees. */
+  enabled?: boolean;
 };
 
 /**
@@ -27,7 +29,7 @@ export function useRowKeys(listRef: RefObject<HTMLElement | null>, keys: RowKeys
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.metaKey || e.ctrlKey || e.altKey || isTyping(e.target)) return;
+      if (latest.current.enabled === false || e.metaKey || e.ctrlKey || e.altKey || isTyping(e.target)) return;
       if (e.target !== document.body && !(e.target instanceof Node && listRef.current?.contains(e.target))) return;
       const { cursor, setCursor, hrefOf, closeHref } = latest.current;
       switch (e.key) {

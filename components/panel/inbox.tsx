@@ -20,6 +20,7 @@ import { cn } from "@/lib/utils";
 import type { BoardCard } from "./cards";
 import { EvidenceSummaryList } from "./evidence";
 import { InboxActions } from "./inbox-actions";
+import { FullViewToggle, useEscapeToSidePanel, type FullView } from "./full-view";
 import { jobsHref } from "./job-view";
 import { Confidence } from "./merge-decision";
 import { useRowKeys } from "./row-keys";
@@ -282,61 +283,69 @@ function Review({ loaded, prUrl }: { loaded: Loaded; prUrl: string }) {
   );
 }
 
-function Detail({ item, card }: { item: Item; card: BoardCard | undefined }) {
+function Detail({ item, card, fullView }: { item: Item; card: BoardCard | undefined; fullView: FullView }) {
   const { job, kind } = item;
+  useEscapeToSidePanel(fullView);
   const link = sourceLink(job);
   const wantsReview = kind !== "question" && job.pr_url !== null;
   const loaded = useReview(job, wantsReview);
   const review = loaded.kind === "ready" ? loaded.review : null;
   return (
-    <aside aria-label={`${job.key} details`} className="flex min-h-0 flex-col border-l bg-card">
+    <aside aria-label={`${job.key} details`} className={cn("flex min-h-0 min-w-0 flex-col bg-card", !fullView.full && "border-l")}>
       <ScrollArea className="min-h-0 flex-1">
-        <div className="flex flex-col gap-2 px-4.5 py-4">
-          <div className="flex items-center justify-between font-mono text-xs text-faint">
-            <span>{job.key}</span>
-            <Button render={<Link href="/inbox" scroll={false} />} variant="ghost" size="icon-sm" aria-label="Close">
-              <XIcon />
-            </Button>
-          </div>
-          <h2 className="text-base font-semibold">{job.title}</h2>
-          <div className="flex flex-wrap items-center gap-2">
-            <Badge variant="outline" className="gap-1.5 rounded-md font-normal">
-              <span className={cn("size-1.5 rounded-full", KIND_DOT[kind])} />
-              {INBOX_LABELS[kind]}
-            </Badge>
-            <span className="text-muted-foreground">{job.repo}</span>
-            <span className="ml-auto flex flex-wrap gap-2">
-              {card?.latest && (
-                <Button render={<Link href={jobsHref("list", card.latest.session_id)} scroll={false} />} variant="ghost" size="sm">
-                  Run
+        <div className={cn(fullView.full && "mx-auto w-full max-w-3xl")}>
+          <div className="flex flex-col gap-2 px-4.5 py-4">
+            <div className="flex items-center justify-between font-mono text-xs text-faint">
+              <span>{job.key}</span>
+              <span className="flex items-center gap-0.5">
+                <FullViewToggle {...fullView} />
+                <Button render={<Link href="/inbox" scroll={false} />} variant="ghost" size="icon-sm" aria-label="Close">
+                  <XIcon />
                 </Button>
-              )}
-              <Button render={<a href={link.href} target="_blank" rel="noreferrer" />} variant="outline" size="sm">
-                {link.label}
-                <ExternalLinkIcon data-icon="inline-end" />
-              </Button>
-              {job.pr_url && (
-                <Button render={<a href={job.pr_url} target="_blank" rel="noreferrer" />} variant="outline" size="sm">
-                  Pull request
+              </span>
+            </div>
+            <h2 className="text-base font-semibold">{job.title}</h2>
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge variant="outline" className="gap-1.5 rounded-md font-normal">
+                <span className={cn("size-1.5 rounded-full", KIND_DOT[kind])} />
+                {INBOX_LABELS[kind]}
+              </Badge>
+              <span className="text-muted-foreground">{job.repo}</span>
+              <span className="ml-auto flex flex-wrap gap-2">
+                {card?.latest && (
+                  <Button render={<Link href={jobsHref("list", card.latest.session_id)} scroll={false} />} variant="ghost" size="sm">
+                    Run
+                  </Button>
+                )}
+                <Button render={<a href={link.href} target="_blank" rel="noreferrer" />} variant="outline" size="sm">
+                  {link.label}
                   <ExternalLinkIcon data-icon="inline-end" />
                 </Button>
-              )}
-            </span>
+                {job.pr_url && (
+                  <Button render={<a href={job.pr_url} target="_blank" rel="noreferrer" />} variant="outline" size="sm">
+                    Pull request
+                    <ExternalLinkIcon data-icon="inline-end" />
+                  </Button>
+                )}
+              </span>
+            </div>
           </div>
-        </div>
-        <Section title="Why it's here">
-          <Why item={item} />
-        </Section>
-        {kind === "handover" && job.stage === "pr" && (
-          <Section title="Evidence">
-            <EvidenceSummaryList job={job} />
+          <Section title="Why it's here">
+            <Why item={item} />
           </Section>
-        )}
-        <Assessment job={job} />
-        {wantsReview && job.pr_url && <Review loaded={loaded} prUrl={job.pr_url} />}
+          {kind === "handover" && job.stage === "pr" && (
+            <Section title="Evidence">
+              <EvidenceSummaryList job={job} />
+            </Section>
+          )}
+          <Assessment job={job} />
+          {wantsReview && job.pr_url && <Review loaded={loaded} prUrl={job.pr_url} />}
+        </div>
       </ScrollArea>
-      <div className="shrink-0 border-t px-4.5 py-3.5">
-        <InboxActions job={job} kind={kind} decision={item.decision} headSha={review?.headSha ?? null} reviewReady={!wantsReview || loaded.kind !== "loading"} />
+      <div className="shrink-0 border-t">
+        <div className={cn("px-4.5 py-3.5", fullView.full && "mx-auto w-full max-w-3xl")}>
+          <InboxActions job={job} kind={kind} decision={item.decision} headSha={review?.headSha ?? null} reviewReady={!wantsReview || loaded.kind !== "loading"} />
+        </div>
       </div>
     </aside>
   );
@@ -348,18 +357,23 @@ export function Inbox({
   cards,
   selected,
   repoLabels,
+  fullView,
 }: {
   jobs: readonly JobRow[];
   cards: readonly BoardCard[];
   selected: string | undefined;
+  /** Whether the open item fills the page instead of sitting beside the list. */
+  fullView: FullView;
   /** Each repo's short name, while more than one repo has jobs; undefined shows no repo. */
   repoLabels?: ReadonlyMap<string, string>;
 }) {
   const items = useMemo(() => inboxItems(jobs), [jobs]);
   const listRef = useRef<HTMLDivElement>(null);
   const [cursor, setCursor] = useState<string | null>(selected ?? null);
-  useRowKeys(listRef, { cursor, setCursor, hrefOf: itemHref, closeHref: selected ? "/inbox" : null });
   const open = items.find((i) => i.job.key === selected);
+  const full = fullView.full && open !== undefined;
+  // In full view the list is hidden and Esc goes back to the side panel, which the detail handles.
+  useRowKeys(listRef, { cursor, setCursor, hrefOf: itemHref, closeHref: selected ? "/inbox" : null, enabled: !full });
 
   if (items.length === 0) {
     return (
@@ -375,17 +389,19 @@ export function Inbox({
   }
 
   return (
-    <div className={cn("grid min-h-0 flex-1", open ? "grid-cols-[minmax(0,1fr)_440px] xl:grid-cols-[minmax(0,1fr)_520px]" : "grid-cols-1")}>
-      <div ref={listRef} className="@container min-h-0 min-w-0 overflow-y-auto">
-        <ul aria-label="Needs you">
-          {items.map((item) => (
-            <li key={item.job.key} className="border-b">
-              <Row item={item} open={item === open} cursor={cursor === item.job.key} onFocus={() => setCursor(item.job.key)} repoLabels={repoLabels} />
-            </li>
-          ))}
-        </ul>
-      </div>
-      {open && <Detail key={open.job.key} item={open} card={cards.find((c) => c.id === open.job.key)} />}
+    <div className={cn("grid min-h-0 flex-1", open && !full ? "grid-cols-[minmax(0,1fr)_440px] xl:grid-cols-[minmax(0,1fr)_520px]" : "grid-cols-1")}>
+      {!full && (
+        <div ref={listRef} className="@container min-h-0 min-w-0 overflow-y-auto">
+          <ul aria-label="Needs you">
+            {items.map((item) => (
+              <li key={item.job.key} className="border-b">
+                <Row item={item} open={item === open} cursor={cursor === item.job.key} onFocus={() => setCursor(item.job.key)} repoLabels={repoLabels} />
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {open && <Detail key={open.job.key} item={open} card={cards.find((c) => c.id === open.job.key)} fullView={fullView} />}
     </div>
   );
 }

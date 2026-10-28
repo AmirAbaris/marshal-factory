@@ -18,6 +18,7 @@ import { RUNS_ON_LABELS, ticketRecordSchema } from "@/lib/ticket-overrides";
 import { runsOn } from "./cards";
 import { AgentTree } from "./agent-tree";
 import { EventFeed } from "./event-feed";
+import { FullViewToggle, useEscapeToSidePanel, type FullView } from "./full-view";
 import { EvidenceSection } from "./evidence";
 import { AuditLog } from "./audit-log";
 import { formatUsd, runCost, runTitle, shortId } from "./format";
@@ -117,10 +118,13 @@ export function RunDetail({
   harnesses,
   jobSpend,
   closeHref,
+  fullView,
 }: {
   harnesses: readonly Harness[];
   /** Where the close button goes: the page the run opened on. */
   closeHref: string;
+  /** Whether the run fills the page, and the link back to the side panel or out to full view. */
+  fullView: FullView;
   audit: { feed: Feed<AuditRow>; path: string } | undefined;
   evidence: { feed: Feed<JobEvidenceRow>; path: string } | undefined;
   jobSpend: { usd: number; attempt: number } | undefined;
@@ -143,131 +147,172 @@ export function RunDetail({
   const sandboxed = job ? sandboxState(job) !== null : false;
   const where = job && runsOn(job);
   const stopThread = job && (parseStop(job.stop)?.thread ?? job.t3_thread_id);
+  useEscapeToSidePanel(fullView);
 
-  return (
-    <aside className="flex min-h-0 flex-col border-l bg-card">
-      <ScrollArea className="min-h-0 flex-1">
-        <div className="flex flex-col gap-2 px-4.5 py-4">
-          <div className="flex items-center justify-between font-mono text-xs text-faint">
-            <span>
-              {run.job_key ?? shortId(run.session_id)}
-              {run.branch ? ` · ${run.branch}` : ""}
-            </span>
+  const summary = (
+    <>
+      <div className="flex flex-col gap-2 px-4.5 py-4">
+        <div className="flex items-center justify-between font-mono text-xs text-faint">
+          <span>
+            {run.job_key ?? shortId(run.session_id)}
+            {run.branch ? ` · ${run.branch}` : ""}
+          </span>
+          <span className="flex items-center gap-0.5">
+            <FullViewToggle {...fullView} />
             <Button render={<Link href={closeHref} scroll={false} />} variant="ghost" size="icon-sm" aria-label="Close run">
               <XIcon />
             </Button>
-          </div>
-          <h2 className="text-base font-semibold">{job?.title ?? runTitle(run)}</h2>
-          <div className="flex flex-wrap items-center gap-2">
-            {stage && (
-              <Badge variant="outline" className="gap-1.5 rounded-md font-normal">
-                <span className={`size-1.5 rounded-full ${STAGE_META[stage].dot}`} />
-                {STAGE_META[stage].label}
-              </Badge>
-            )}
-            <Badge variant="outline" className="rounded-md font-normal">
-              {run.status}
-            </Badge>
-            <ModelChip model={run.model} />
-            {run.repo && <span className="text-muted-foreground">{run.repo}</span>}
-            {machineName && (
-              <span className="text-muted-foreground">{where?.kind === "modal" ? `Modal sandbox · Managed by ${machineName}` : `Local · ${machineName}`}</span>
-            )}
-            <span className="font-mono text-muted-foreground">
-              {jobSpend ? (
-                <span>
-                  {jobSpend.attempt > 1 && `attempt ${jobSpend.attempt}: `}
-                  {formatUsd(jobSpend.usd)}
-                </span>
-              ) : (
-                formatUsd(runCost(run, agentRows))
-              )}
-            </span>
-            {link && (
-              <Button render={<a href={link.href} target="_blank" rel="noreferrer" />} variant="outline" size="sm" className="ml-auto">
-                {link.label}
-                <ExternalLinkIcon data-icon="inline-end" />
-              </Button>
-            )}
-            {run.pr_url && (
-              <Button render={<a href={run.pr_url} target="_blank" rel="noreferrer" />} variant="outline" size="sm" className={job ? "" : "ml-auto"}>
-                Pull request
-                <ExternalLinkIcon data-icon="inline-end" />
-              </Button>
-            )}
-            {job?.stage === "pr" && job.pr_url && <MergeButton key={job.pr_url} jobId={job.id} jobKey={job.key} />}
-            {job && sandboxed ? (
-              <OpenSandboxT3 jobId={job.id} />
-            ) : run.t3_thread_id && (
-              <Button
-                render={<a href={t3ThreadLink(run.t3_thread_id, environmentId)} />}
-                variant="outline"
-                size="sm"
-                className={job || run.pr_url ? "" : "ml-auto"}
-              >
-                Open in T3{machineName && ` on ${machineName}`}
-                <ExternalLinkIcon data-icon="inline-end" />
-              </Button>
-            )}
-          </div>
-          {job && <TicketOverrides job={job} harnesses={harnesses} />}
+          </span>
         </div>
-        {job && <StopBanner job={job} t3Href={stopThread ? t3ThreadLink(stopThread, environmentId) : null} />}
-        {job?.nudged_at && job.nudged_stage === job.stage && (
-          <div className="mx-4.5 mb-3.5 rounded-lg border border-warning/40 bg-warning/10 px-3 py-2.5 text-xs">
-            <span className="font-semibold text-warning">Stuck</span> · the
-            watchdog nudged this run at <Time date={job.nudged_at} /> in{" "}
-            {STAGE_META[job.stage].label}. It fails if nothing moves.
+        <h2 className="text-base font-semibold">{job?.title ?? runTitle(run)}</h2>
+        <div className="flex flex-wrap items-center gap-2">
+          {stage && (
+            <Badge variant="outline" className="gap-1.5 rounded-md font-normal">
+              <span className={`size-1.5 rounded-full ${STAGE_META[stage].dot}`} />
+              {STAGE_META[stage].label}
+            </Badge>
+          )}
+          <Badge variant="outline" className="rounded-md font-normal">
+            {run.status}
+          </Badge>
+          <ModelChip model={run.model} />
+          {run.repo && <span className="text-muted-foreground">{run.repo}</span>}
+          {machineName && (
+            <span className="text-muted-foreground">{where?.kind === "modal" ? `Modal sandbox · Managed by ${machineName}` : `Local · ${machineName}`}</span>
+          )}
+          <span className="font-mono text-muted-foreground">
+            {jobSpend ? (
+              <span>
+                {jobSpend.attempt > 1 && `attempt ${jobSpend.attempt}: `}
+                {formatUsd(jobSpend.usd)}
+              </span>
+            ) : (
+              formatUsd(runCost(run, agentRows))
+            )}
+          </span>
+          {link && (
+            <Button render={<a href={link.href} target="_blank" rel="noreferrer" />} variant="outline" size="sm" className="ml-auto">
+              {link.label}
+              <ExternalLinkIcon data-icon="inline-end" />
+            </Button>
+          )}
+          {run.pr_url && (
+            <Button render={<a href={run.pr_url} target="_blank" rel="noreferrer" />} variant="outline" size="sm" className={job ? "" : "ml-auto"}>
+              Pull request
+              <ExternalLinkIcon data-icon="inline-end" />
+            </Button>
+          )}
+          {job?.stage === "pr" && job.pr_url && <MergeButton key={job.pr_url} jobId={job.id} jobKey={job.key} />}
+          {job && sandboxed ? (
+            <OpenSandboxT3 jobId={job.id} />
+          ) : run.t3_thread_id && (
+            <Button
+              render={<a href={t3ThreadLink(run.t3_thread_id, environmentId)} />}
+              variant="outline"
+              size="sm"
+              className={job || run.pr_url ? "" : "ml-auto"}
+            >
+              Open in T3{machineName && ` on ${machineName}`}
+              <ExternalLinkIcon data-icon="inline-end" />
+            </Button>
+          )}
+        </div>
+        {job && <TicketOverrides job={job} harnesses={harnesses} />}
+      </div>
+      {job && <StopBanner job={job} t3Href={stopThread ? t3ThreadLink(stopThread, environmentId) : null} />}
+      {job?.nudged_at && job.nudged_stage === job.stage && (
+        <div className="mx-4.5 mb-3.5 rounded-lg border border-warning/40 bg-warning/10 px-3 py-2.5 text-xs">
+          <span className="font-semibold text-warning">Stuck</span> · the
+          watchdog nudged this run at <Time date={job.nudged_at} /> in{" "}
+          {STAGE_META[job.stage].label}. It fails if nothing moves.
+        </div>
+      )}
+      {job?.answered_at && job.answer && job.stage !== "waiting" && (
+        <div className="mx-4.5 mb-3.5 rounded-lg border border-success/40 bg-success/10 px-3 py-2.5">
+          <div className="text-xs font-semibold text-success">
+            Answer received <Time date={job.answered_at} />
           </div>
-        )}
-        {job?.answered_at && job.answer && job.stage !== "waiting" && (
-          <div className="mx-4.5 mb-3.5 rounded-lg border border-success/40 bg-success/10 px-3 py-2.5">
-            <div className="text-xs font-semibold text-success">
-              Answer received <Time date={job.answered_at} />
+          <p className="mt-1 whitespace-pre-wrap">{job.answer}</p>
+        </div>
+      )}
+      {job?.stage === "waiting" && job.question ? (
+        <div className="mx-4.5 mb-3.5 rounded-lg border border-warning/40 bg-warning/10 px-3 py-2.5">
+          <div className="text-xs font-semibold text-warning">
+            Question for you
+          </div>
+          <p className="mt-1 whitespace-pre-wrap">{job.question}</p>
+        </div>
+      ) : null}
+      {!job && run.stage === "waiting" && run.question && (
+        <div className="mx-4.5 mb-3.5 rounded-lg border border-warning/40 bg-warning/10 px-3 py-2.5">
+          <div className="text-xs font-semibold text-warning">
+            Question for you
+          </div>
+          <p className="mt-1 whitespace-pre-wrap">{run.question}</p>
+        </div>
+      )}
+      {job && <MergeDecisionSection job={job} />}
+      {job && evidence && <EvidenceSection feed={evidence.feed} path={evidence.path} job={job} />}
+    </>
+  );
+  const timeline = (
+    <section className="flex flex-col gap-2.5 px-4.5 py-3.5">
+      <h3 className="text-sm font-medium text-muted-foreground">
+        Timeline
+      </h3>
+      <StageTimeline events={stageRows} />
+    </section>
+  );
+  const records = audit ? <JobRecords feed={audit.feed} path={audit.path} job={job} /> : job && <SandboxSection job={job} audit={[]} />;
+  const activity = (
+    <>
+      <Separator />
+      <section className="flex flex-col gap-2.5 px-4.5 py-3.5">
+        <h3 className="text-sm font-medium text-muted-foreground">
+          Agents · {agentRows.length}
+        </h3>
+        <AgentTree run={run} agents={agentRows} />
+      </section>
+      <Separator />
+      <section className="flex flex-col gap-2.5 px-4.5 py-3.5">
+        <h3 className="text-sm font-medium text-muted-foreground">
+          Live events
+        </h3>
+        <EventFeed events={eventRows} />
+      </section>
+    </>
+  );
+
+  if (fullView.full) {
+    return (
+      <aside aria-label="Run details" className="flex min-h-0 min-w-0 flex-col bg-card">
+        <div className="min-h-0 flex-1 max-lg:overflow-y-auto lg:grid lg:grid-cols-2 lg:grid-rows-1 lg:divide-x">
+          <ScrollArea className="max-lg:h-auto">
+            <div className="mx-auto w-full max-w-3xl">
+              {summary}
+              {records}
             </div>
-            <p className="mt-1 whitespace-pre-wrap">{job.answer}</p>
-          </div>
-        )}
-        {job?.stage === "waiting" && job.question ? (
-          <div className="mx-4.5 mb-3.5 rounded-lg border border-warning/40 bg-warning/10 px-3 py-2.5">
-            <div className="text-xs font-semibold text-warning">
-              Question for you
+          </ScrollArea>
+          <ScrollArea className="max-lg:h-auto">
+            <div className="mx-auto w-full max-w-3xl">
+              <Separator className="lg:hidden" />
+              {timeline}
+              {activity}
             </div>
-            <p className="mt-1 whitespace-pre-wrap">{job.question}</p>
-          </div>
-        ) : null}
-        {!job && run.stage === "waiting" && run.question && (
-          <div className="mx-4.5 mb-3.5 rounded-lg border border-warning/40 bg-warning/10 px-3 py-2.5">
-            <div className="text-xs font-semibold text-warning">
-              Question for you
-            </div>
-            <p className="mt-1 whitespace-pre-wrap">{run.question}</p>
-          </div>
-        )}
-        {job && <MergeDecisionSection job={job} />}
-        {job && evidence && <EvidenceSection feed={evidence.feed} path={evidence.path} job={job} />}
+          </ScrollArea>
+        </div>
+      </aside>
+    );
+  }
+
+  return (
+    <aside aria-label="Run details" className="flex min-h-0 flex-col border-l bg-card">
+      <ScrollArea className="min-h-0 flex-1">
+        {summary}
         <Separator />
-        <section className="flex flex-col gap-2.5 px-4.5 py-3.5">
-          <h3 className="text-sm font-medium text-muted-foreground">
-            Timeline
-          </h3>
-          <StageTimeline events={stageRows} />
-        </section>
-        {audit ? <JobRecords feed={audit.feed} path={audit.path} job={job} /> : job && <SandboxSection job={job} audit={[]} />}
-        <Separator />
-        <section className="flex flex-col gap-2.5 px-4.5 py-3.5">
-          <h3 className="text-sm font-medium text-muted-foreground">
-            Agents · {agentRows.length}
-          </h3>
-          <AgentTree run={run} agents={agentRows} />
-        </section>
-        <Separator />
-        <section className="flex flex-col gap-2.5 px-4.5 py-3.5">
-          <h3 className="text-sm font-medium text-muted-foreground">
-            Live events
-          </h3>
-          <EventFeed events={eventRows} />
-        </section>
+        {timeline}
+        {records}
+        {activity}
       </ScrollArea>
     </aside>
   );
