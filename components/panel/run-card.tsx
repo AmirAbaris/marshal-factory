@@ -60,7 +60,7 @@ const TRACKING_HINT: Record<Tracking, string | undefined> = {
 };
 
 const SANDBOX_HINT: Record<SandboxState, string> = {
-  running: "Runs in its own Modal sandbox",
+  running: "Runs in its own cloud sandbox",
   hibernated: "The sandbox is snapshotted while the job waits; it wakes when the job needs it",
 };
 

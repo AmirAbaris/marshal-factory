@@ -68,9 +68,9 @@ function placesOf(rows: readonly MachineRow[], now: number, row: RepoSettingsRow
   const modalNote = (() => {
     switch (image.kind) {
       case "warm":
-        return "Warm Modal image ready";
+        return "Warm cloud sandbox image ready";
       case "base":
-        return image.outdated ? "Modal from the base image until the warm one is rebuilt" : "Modal sandbox image ready";
+        return image.outdated ? "Cloud sandboxes start from the base image until the warm one is rebuilt" : "Cloud sandbox image ready";
       case "blocked":
         return null;
       default: {
@@ -84,7 +84,7 @@ function placesOf(rows: readonly MachineRow[], now: number, row: RepoSettingsRow
 
 function placesLine({ modal, modalNote, machines, rebuild }: Places) {
   const parts = [modal && modalNote, rebuild, machines.length > 0 && `Local checkout on ${machines.join(", ")}`].filter(Boolean);
-  return parts.length > 0 ? parts.join(" · ") : "Neither a Modal image nor a local checkout";
+  return parts.length > 0 ? parts.join(" · ") : "Neither a cloud sandbox image nor a local checkout";
 }
 
 type Entry = { row: RepoSettingsRow; stats: RepoStats | undefined; places: Places };
@@ -313,7 +313,7 @@ function Detail({ entry, harnesses, panelTakesSecrets }: { entry: Entry; harness
             </Field>
             <p className="col-span-2 text-sm text-muted-foreground">
               A ticket&apos;s Harness or Runs on label beats these, and these beat Settings. A local run needs a runner&apos;s checkout of the repo;
-              without one the job runs on Modal, or waits until it can.
+              without one the job runs in a cloud sandbox, or waits until it can.
             </p>
           </div>
           <Field>

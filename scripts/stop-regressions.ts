@@ -273,7 +273,7 @@ try {
   assert.deepEqual([m.sandbox_id, parseStop(m.stop)!.how], [null, "terminate"]);
   assert.equal((await row(K)).sandbox_id, sbStuck.sandboxId, "a sandbox that still answers keeps its row, and teardown tries again");
   await confirmStops({ only: [m.id, await idOf(K)] });
-  assert.deepEqual([(await stopOf(M)).state, (await stopOf(M)).evidence], ["confirmed", `Ended sandbox ${sbM.sandboxId}; Modal no longer runs it.`]);
+  assert.deepEqual([(await stopOf(M)).state, (await stopOf(M)).evidence], ["confirmed", `Ended cloud sandbox ${sbM.sandboxId}; it no longer runs.`]);
   assert.equal((await stopOf(K)).state, "delivered", "not confirmed while Modal still answers");
   assert.equal(interrupts.filter((i) => i.threadId === "thread-M").length, 0, "a sandbox is ended, not interrupted");
 

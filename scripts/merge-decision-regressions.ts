@@ -109,7 +109,7 @@ const input = (over: Partial<DecisionInput> = {}): DecisionInput => ({
   headSeenAt: NOW - 60_000,
   now: NOW,
   evidence: { state: "verified", sha: "h1", passed: 4, total: 4, producer: "agent" },
-  runner: { kind: "unavailable", reason: "the run isn't in a Modal sandbox, so the factory can't run them itself" },
+  runner: { kind: "unavailable", reason: "the run isn't in a cloud sandbox, so the factory can't run them itself" },
   ...over,
 });
 const handsOver = (over: Partial<DecisionInput>, pattern: RegExp, why: string) => {
@@ -169,7 +169,7 @@ handsOver({ pr: facts({ checks: "pending" }), attempt: 2 }, /attempt 2/, "a hard
 const auto = { policy: { ...DEFAULT_POLICY, autonomy: "auto" as const } };
 handsOver({ evidence: { state: "no_checks" } }, /^No checks defined for this repo\.$/, "a repo with no checks never merges on its own");
 handsOver({ evidence: { state: "failed", sha: "h1", failed: ["test", "build"], passed: 2, total: 4 } }, /^Checks failed at h1: test, build\.$/, "a failed check at the head");
-handsOver({ evidence: { state: "missing" } }, /^Not verified at h1: no checks were reported for it; the run isn't in a Modal sandbox/, "no evidence and nobody to verify");
+handsOver({ evidence: { state: "missing" } }, /^Not verified at h1: no checks were reported for it; the run isn't in a cloud sandbox/, "no evidence and nobody to verify");
 handsOver({ evidence: { state: "stale", sha: "h0" } }, /^Not verified at h1: the latest checks ran at h0;/, "evidence for an older commit");
 handsOver({ evidence: { state: "dirty", sha: "h1" } }, /uncommitted changes/, "a dirty tree proves nothing");
 handsOver({ evidence: { state: "incomplete", sha: "h1", missing: ["build"] } }, /didn't include build/, "a required check that didn't run");

@@ -202,7 +202,7 @@ function Secrets({ row, panelTakesSecrets }: { row: RepoSettingsRow; panelTakesS
     <div className="flex flex-col gap-3">
       <h3 className="text-sm font-medium">Secrets</h3>
       <p className="text-sm text-muted-foreground">
-        Values go straight to the Modal secret every sandbox of this repo gets. The factory keeps only their names.
+        Values go straight to the secret every cloud sandbox of this repo gets. The factory keeps only their names.
       </p>
       {env.map((e) => (
         <Field key={e.name}>
@@ -232,7 +232,7 @@ function Secrets({ row, panelTakesSecrets }: { row: RepoSettingsRow; panelTakesS
           {e.purpose && <FieldDescription>{e.purpose}</FieldDescription>}
         </Field>
       ))}
-      {!panelTakesSecrets && <p className="text-sm text-muted-foreground">This panel has no Modal token, so run each command on the runner Mac; it asks for the value without showing it.</p>}
+      {!panelTakesSecrets && <p className="text-sm text-muted-foreground">This panel has no cloud sandbox token, so run each command on the runner Mac; it asks for the value without showing it.</p>}
       {panelTakesSecrets && (
         <div>
           <Button size="sm" onClick={save} disabled={pending || Object.values(values).every((v) => v.trim() === "")}>
@@ -277,7 +277,7 @@ export function OnboardingSection({ row, panelTakesSecrets }: { row: RepoSetting
         {state ? <OnboardingBadge state={state} /> : <Badge variant="outline" size="sm">Not onboarded</Badge>}
       </div>
       <p className={cn("text-sm", state === "failed" || state === "needs_input" ? "text-warning" : "text-muted-foreground")}>
-        {state ? stateLine(state, detail) : "Registered before onboarding. Its Modal jobs start from the base image and set themselves up."}
+        {state ? stateLine(state, detail) : "Registered before onboarding. Its cloud sandbox jobs start from the base image and set themselves up."}
       </p>
       {detail.failure?.log && <pre className="max-h-48 overflow-auto rounded-md bg-muted p-2 font-mono text-xs whitespace-pre-wrap">{detail.failure.log}</pre>}
       {detail.summary && <p className="text-sm">{detail.summary}</p>}

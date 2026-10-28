@@ -63,23 +63,23 @@ export function planLaunch(
   const noLocal = !can.local ? "this runner's T3 is not running" : !can.checkout ? "this runner has no checkout of the repo" : null;
   let execution = asked.execution ?? settings.execution;
   if (asked.execution === "modal" && can.modal) {
-    if (noLocal) return { kind: "wait", reason: `Modal cannot launch on this runner (${can.modal}) and ${noLocal}` };
+    if (noLocal) return { kind: "wait", reason: `Cloud sandboxes cannot launch on this runner (${can.modal}) and ${noLocal}` };
     execution = "local";
-    notes.push(`Modal cannot launch on this runner (${can.modal}), so it runs locally.`);
+    notes.push(`Cloud sandboxes cannot launch on this runner (${can.modal}), so it runs locally.`);
   }
   if (asked.execution === "local" && noLocal) {
-    if (can.modal) return { kind: "wait", reason: `${noLocal} and Modal cannot launch here (${can.modal})` };
+    if (can.modal) return { kind: "wait", reason: `${noLocal} and cloud sandboxes cannot launch here (${can.modal})` };
     execution = "modal";
-    notes.push(`${noLocal[0]!.toUpperCase()}${noLocal.slice(1)}, so it runs in a Modal sandbox.`);
+    notes.push(`${noLocal[0]!.toUpperCase()}${noLocal.slice(1)}, so it runs in a cloud sandbox.`);
   }
   // A job only Settings or its repo send to local still needs the checkout; a down T3 fails its start as before.
   if (!asked.execution && execution === "local" && !can.checkout) {
-    if (can.modal) return { kind: "wait", reason: `this runner has no checkout of the repo and Modal cannot launch here (${can.modal})` };
+    if (can.modal) return { kind: "wait", reason: `this runner has no checkout of the repo and cloud sandboxes cannot launch here (${can.modal})` };
     execution = "modal";
   }
   if (execution === "modal" && (asked.provider || asked.execution)) {
     const { fallback } = sandboxHarness(harness, can.driverOf(harness.provider), can.claude, can.codexModel);
-    if (fallback) notes.push(`In a Modal sandbox, ${fallback}.`);
+    if (fallback) notes.push(`In a cloud sandbox, ${fallback}.`);
   }
 
   const applied = {
@@ -121,7 +121,7 @@ export function capabilities(): Omit<Capabilities, "checkout"> {
   const limits = config.factory.sandbox;
   const modal =
     imageProblem(sandboxRuntime.image(), limits) ??
-    (!sandboxRuntime.modalToken() ? "there is no Modal token" : usableSlots(limits).length === 0 ? "no Codex login slot is usable" : null);
+    (!sandboxRuntime.modalToken() ? "there is no cloud sandbox token" : usableSlots(limits).length === 0 ? "no Codex login slot is usable" : null);
   return {
     local: overrideRuntime.localT3(),
     modal,

@@ -570,7 +570,7 @@ try {
   for (const fact of ["Pin the import order.", "- Failed checks on main: ci", `- Merged pull request: ${prUrl(16)}`, "- Why the revert failed: git revert failed", "- Revert pull request: https://github.com/o/r/pull/90"]) {
     assert.ok(draft.description.includes(fact), `the issue carries "${fact}"`);
   }
-  assert.deepEqual(draft.labels, [{ group: "Harness", name: "Claude Code" }, { group: "Runs on", name: "Modal" }], "with the original job's overrides");
+  assert.deepEqual(draft.labels, [{ group: "Harness", name: "Claude Code" }, { group: "Runs on", name: "Cloud" }], "with the original job's overrides");
   assert.equal(inboxKind(await row(REVERTED)), null, "the failed revert leaves the inbox");
   const followAudit = await db.select().from(auditLog).where(eq(auditLog.job_id, revertedId));
   assert.deepEqual(followAudit.map((a) => [a.action, a.actor, a.target, a.head_sha, a.result]), [["follow_up_filed", OWNER, "https://linear.app/x/issue/FAC-1", "m", "ok"]], "the audit log links the new issue");

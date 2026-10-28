@@ -51,7 +51,7 @@ export async function requestPairing(deps: PairingDeps, jobId: JobId): Promise<P
   const [job] = await deps.db.select().from(jobs).where(eq(jobs.id, jobId));
   if (!job) return { ok: false, message: `No job ${jobId}.` };
   if (!job.sandbox_id && job.sandbox_snapshot) return { ok: false, message: HIBERNATED_MESSAGE };
-  if (!job.sandbox_id) return { ok: false, message: "This job does not run in a Modal sandbox." };
+  if (!job.sandbox_id) return { ok: false, message: "This job does not run in a cloud sandbox." };
   const id = `panel:open_t3:${randomUUID()}`;
   await deps.db.insert(intents).values({ id, kind: "open_t3", job_id: job.id, created_at: (deps.now ?? (() => new Date()))() });
   return { ok: true, intentId: id };

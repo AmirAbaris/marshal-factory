@@ -9,7 +9,9 @@ import type { Harness } from "./harness";
 export const OVERRIDE_GROUPS = { harness: "Harness", runsOn: "Runs on", repository: "Repository" } as const;
 export const HARNESS_GROUP = OVERRIDE_GROUPS.harness;
 export const RUNS_ON_GROUP = OVERRIDE_GROUPS.runsOn;
-export const RUNS_ON_LABELS: Record<Execution, string> = { local: "Local", modal: "Modal" };
+export const RUNS_ON_LABELS: Record<Execution, string> = { local: "Local", modal: "Cloud" };
+/** Older Runs on label names tickets may still carry. */
+const RUNS_ON_ALIASES: Record<Execution, readonly string[]> = { local: [], modal: ["Modal"] };
 
 /** What a ticket asks for, field by field, by the names it shows; more than one value in a field is a conflict. */
 export type SourceOverrides = { [F in keyof typeof OVERRIDE_GROUPS]: string[] };
@@ -42,7 +44,7 @@ export function ticketOverrides(asked: SourceOverrides, harnesses: readonly Harn
     problems.push(`The issue has more than one ${RUNS_ON_GROUP} label (${quoted(runsOnLabels)}), so it runs where Settings say.`);
   } else if (runsOnLabels.length === 1) {
     const name = runsOnLabels[0]!;
-    const execution = EXECUTIONS.find((e) => same(RUNS_ON_LABELS[e], name));
+    const execution = EXECUTIONS.find((e) => [RUNS_ON_LABELS[e], ...RUNS_ON_ALIASES[e]].some((label) => same(label, name)));
     if (execution) result.execution = execution;
     else problems.push(`The ${RUNS_ON_GROUP} label "${name}" is neither ${Object.values(RUNS_ON_LABELS).join(" nor ")}, so it runs where Settings say.`);
   }

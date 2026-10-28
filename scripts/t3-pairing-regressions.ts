@@ -90,7 +90,7 @@ try {
   const GONE = await insert("GONE", { sandbox_id: "sb-never-existed" });
   assert.match((await openT3(GONE) as { refused: string }).refused, /sandbox is gone/);
   const LOCAL = await insert("LOCAL", {});
-  assert.match((await openT3(LOCAL) as { refused: string }).refused, /does not run in a Modal sandbox/);
+  assert.match((await openT3(LOCAL) as { refused: string }).refused, /does not run in a cloud sandbox/);
 
   // Output the CLI did not mean as JSON is never quoted back, since it may hold the token.
   pairingReply = { stdout: `Pairing token: ${TOKEN}` };

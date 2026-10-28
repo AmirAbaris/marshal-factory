@@ -143,12 +143,12 @@ export async function saveRepoSecrets(deps: SecretsDeps, input: unknown): Promis
   const known = new Set((recipe?.env ?? []).map((e) => e.name));
   const unknown = names.filter((n) => !known.has(n));
   if (unknown.length > 0) return invalid(`The recipe names no env var ${unknown.join(", ")}.`);
-  if (!deps.modalConfigured()) return invalid(`This panel has no Modal token. On the runner Mac, run ${secretCommand(repo, names[0]!)} for each secret.`);
+  if (!deps.modalConfigured()) return invalid(`This panel has no cloud sandbox token. On the runner Mac, run ${secretCommand(repo, names[0]!)} for each secret.`);
   const secret = modalSecretName(repo);
   try {
     await deps.upsert(secret, values);
   } catch (error) {
-    return { ok: false, status: 502, message: `Modal did not save ${secret}: ${scrubbed(error, Object.values(values)).message}` };
+    return { ok: false, status: 502, message: `The cloud sandbox secret store did not save ${secret}: ${scrubbed(error, Object.values(values)).message}` };
   }
   try {
     await deps.recordNames(repo, names);

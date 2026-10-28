@@ -179,7 +179,7 @@ export function RunDetail({
           <ModelChip model={run.model} />
           {run.repo && <span className="text-muted-foreground">{run.repo}</span>}
           {machineName && (
-            <span className="text-muted-foreground">{where?.kind === "modal" ? `Modal sandbox · Managed by ${machineName}` : `Local · ${machineName}`}</span>
+            <span className="text-muted-foreground">{where?.kind === "modal" ? `Cloud sandbox · Managed by ${machineName}` : `Local · ${machineName}`}</span>
           )}
           <span className="font-mono text-muted-foreground">
             {jobSpend ? (

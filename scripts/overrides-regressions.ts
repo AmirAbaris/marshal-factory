@@ -39,9 +39,9 @@ const asked = (labels: ReturnType<typeof L>[]) =>
 // ticketOverrides: groups and children by name, case-insensitive; labels outside the groups are not overrides.
 const table: { name: string; labels: ReturnType<typeof L>[]; want: ReturnType<typeof ticketOverrides> }[] = [
   { name: "no labels", labels: [], want: { problems: [] } },
-  { name: "labels outside the groups", labels: [L("factory"), L("bug"), L("Codex"), L("Modal")], want: { problems: [] } },
+  { name: "labels outside the groups", labels: [L("factory"), L("bug"), L("Codex"), L("Cloud")], want: { problems: [] } },
   { name: "a harness", labels: [L("factory"), L("Codex", "Harness")], want: { provider: "codex", problems: [] } },
-  { name: "case does not matter", labels: [L("cLAUDE code", "harness"), L("modal", "RUNS ON")], want: { provider: "claudeAgent", execution: "modal", problems: [] } },
+  { name: "case does not matter", labels: [L("cLAUDE code", "harness"), L("cLOUD", "RUNS ON")], want: { provider: "claudeAgent", execution: "modal", problems: [] } },
   { name: "both groups", labels: [L("Cursor", "Harness"), L("Local", "Runs on")], want: { provider: "cursor", execution: "local", problems: [] } },
   { name: "a child of another group", labels: [L("Codex", "Team")], want: { problems: [] } },
   {
@@ -56,16 +56,17 @@ const table: { name: string; labels: ReturnType<typeof L>[]; want: ReturnType<ty
   },
   {
     name: "two children of one group",
-    labels: [L("Codex", "Harness"), L("Cursor", "Harness"), L("Modal", "Runs on")],
+    labels: [L("Codex", "Harness"), L("Cursor", "Harness"), L("Cloud", "Runs on")],
     want: { execution: "modal", problems: ['The issue has more than one Harness label ("Codex", "Cursor"), so it runs on the Settings harness.'] },
   },
   {
     name: "an unknown place",
-    labels: [L("Cloud", "Runs on")],
-    want: { problems: ['The Runs on label "Cloud" is neither Local nor Modal, so it runs where Settings say.'] },
+    labels: [L("Sky", "Runs on")],
+    want: { problems: ['The Runs on label "Sky" is neither Local nor Cloud, so it runs where Settings say.'] },
   },
 ];
 for (const c of table) assert.deepEqual(ticketOverrides(asked(c.labels), harnesses), c.want, c.name);
+assert.deepEqual(ticketOverrides(asked([L("Modal", "Runs on")]), harnesses), { execution: "modal", problems: [] }, "a ticket still labeled with the old Modal name runs in the cloud");
 assert.deepEqual(ticketOverrides(asked([L("Codex", "Harness")]), null).problems.length, 1, "with no reported harnesses a Harness label cannot apply");
 
 assert.deepEqual(
@@ -81,7 +82,7 @@ assert.deepEqual(
 
 assert.deepEqual(desiredLabelGroups([...harnesses, harness("codex2", "codex", "codex", [])]), [
   { group: "Harness", children: ["Claude Code", "Codex", "Cursor", "Codex Lab"] },
-  { group: "Runs on", children: ["Local", "Modal"] },
+  { group: "Runs on", children: ["Local", "Cloud"] },
 ], "one child per enabled harness name, disabled ones left out");
 
 // planLaunch: overrides field by field over Settings, the model, and each fallback.
@@ -112,7 +113,7 @@ assert.deepEqual(
   "a harness with no current model falls back to Settings",
 );
 assert.deepEqual(
-  plan([L("Gemini", "Harness"), L("Modal", "Runs on")]),
+  plan([L("Gemini", "Harness"), L("Cloud", "Runs on")]),
   {
     kind: "launch",
     execution: "modal",
@@ -122,18 +123,18 @@ assert.deepEqual(
   "an unknown harness falls back while the other field still applies",
 );
 assert.deepEqual(
-  plan([L("Modal", "Runs on")], { modal: "no sandbox image is built" }),
+  plan([L("Cloud", "Runs on")], { modal: "no sandbox image is built" }),
   {
     kind: "launch",
     execution: "local",
     harness: { provider: "claudeAgent", model: "claude-sonnet-5-5" },
-    ticket: { notes: ["Modal cannot launch on this runner (no sandbox image is built), so it runs locally."] },
+    ticket: { notes: ["Cloud sandboxes cannot launch on this runner (no sandbox image is built), so it runs locally."] },
   },
   "Modal that cannot launch falls back to local when this runner's T3 is up",
 );
 assert.deepEqual(
-  plan([L("Modal", "Runs on")], { modal: "there is no Modal token", local: false }),
-  { kind: "wait", reason: "Modal cannot launch on this runner (there is no Modal token) and this runner's T3 is not running" },
+  plan([L("Cloud", "Runs on")], { modal: "there is no cloud sandbox token", local: false }),
+  { kind: "wait", reason: "Cloud sandboxes cannot launch on this runner (there is no cloud sandbox token) and this runner's T3 is not running" },
   "and waits queued when it is not",
 );
 assert.deepEqual(
@@ -142,7 +143,7 @@ assert.deepEqual(
     kind: "launch",
     execution: "modal",
     harness: { provider: "claudeAgent", model: "claude-sonnet-5-5" },
-    ticket: { notes: ["This runner's T3 is not running, so it runs in a Modal sandbox."] },
+    ticket: { notes: ["This runner's T3 is not running, so it runs in a cloud sandbox."] },
   },
   "Local without a T3 runs on Modal when Modal can launch",
 );
@@ -153,7 +154,7 @@ assert.deepEqual(
   "Local over Modal Settings",
 );
 assert.deepEqual(
-  plan([L("Cursor", "Harness"), L("Modal", "Runs on")]),
+  plan([L("Cursor", "Harness"), L("Cloud", "Runs on")]),
   {
     kind: "launch",
     execution: "modal",
@@ -161,13 +162,13 @@ assert.deepEqual(
     ticket: {
       provider: "cursor",
       execution: "modal",
-      notes: ["In a Modal sandbox, cursor / composer-2 cannot run in a sandbox (sandboxes have no cursor harness); launching on codex / gpt-6-astra."],
+      notes: ["In a cloud sandbox, cursor / composer-2 cannot run in a sandbox (sandboxes have no cursor harness); launching on codex / gpt-6-astra."],
     },
   },
   "a harness the sandbox lacks is noted, since the sandbox maps it to Codex",
 );
 assert.equal(plan([L("factory")], { modal: "no image", local: false }, { ...settings, execution: "modal" }).kind, "launch", "Settings alone never fall back: the sandbox path waits as before");
-assert.equal(plan([L("Modal", "Runs on")], { modal: null }).kind, "launch", "busy slots are not a reason to fall back; the sandbox path keeps it queued");
+assert.equal(plan([L("Cloud", "Runs on")], { modal: null }).kind, "launch", "busy slots are not a reason to fall back; the sandbox path keeps it queued");
 
 const split = splitByExecution([
   { key: "a", execution: "local" as const },
@@ -183,7 +184,7 @@ assert.equal(whereLine(runsOn(machine({ execution: "local", machine_id: "m1" }))
 assert.equal(whereLine(runsOn(machine({ machine_id: "m1" }))!, null), "Local · m1", "a launch recorded before execution was kept, without a sandbox, ran locally");
 assert.deepEqual(runsOn(machine({ execution: "modal", machine_id: "m1", sandbox_id: "sb" })), { kind: "modal", sandbox: "running" });
 assert.deepEqual(runsOn(machine({ machine_id: "m1", sandbox_snapshot: "im" })), { kind: "modal", sandbox: "hibernated" });
-assert.equal(whereLine({ kind: "modal", sandbox: null }, "Mac mini"), "Modal sandbox");
+assert.equal(whereLine({ kind: "modal", sandbox: null }, "Mac mini"), "Cloud sandbox");
 const stamp = Date.now();
 const cardJob = { ...linearJob(`card-${stamp}`, `CARD-${stamp}`), stage: "implementing" as const, provider: "codex", model: "gpt-6-astra", execution: "modal" as const, machine_id: "m1", sandbox_id: "sb" };
 const [card] = boardCards([cardJob as never], [], harnesses);
@@ -205,7 +206,7 @@ const fileDeps = { user: async () => owner, file: async (d: unknown) => (filed.p
 await createJob(fileDeps, { title: "Title", description: "", requestId });
 assert.equal((filed[0] as { labels?: unknown }).labels, undefined, "Settings default files no override label");
 await createJob(fileDeps, { title: "Title", description: "", requestId, provider: "codex", execution: "modal" });
-assert.deepEqual((filed[1] as { labels: unknown }).labels, [{ group: "Harness", name: "Codex" }, { group: "Runs on", name: "Modal" }]);
+assert.deepEqual((filed[1] as { labels: unknown }).labels, [{ group: "Harness", name: "Codex" }, { group: "Runs on", name: "Cloud" }]);
 const disabled = await createJob(fileDeps, { title: "Title", description: "", requestId, provider: "antigravity" });
 assert.equal(!disabled.ok && disabled.status, 400, "a disabled harness is refused");
 assert.equal((await createJob(fileDeps, { title: "Title", description: "", requestId, execution: "cloud" })).ok, false);
@@ -234,9 +235,9 @@ const fetchFake = (async (_url: string, init: RequestInit) => {
   throw new Error(`unexpected query ${query.slice(0, 60)}`);
 }) as unknown as typeof fetch;
 const file = linearFiler("key", "FAC", "factory", { fetch: fetchFake, sleep: async () => {} });
-await file({ requestId, title: "t", description: "d", labels: [{ group: "Harness", name: "Codex" }, { group: "Runs on", name: "Modal" }] });
+await file({ requestId, title: "t", description: "d", labels: [{ group: "Harness", name: "Codex" }, { group: "Runs on", name: "Cloud" }] });
 const idOf = (name: string) => labels.find((l) => l.name === name)!.id;
-assert.deepEqual(issues[0]!.labelIds, ["label-factory", idOf("Codex"), idOf("Modal")], "the issue carries the factory label and both overrides");
+assert.deepEqual(issues[0]!.labelIds, ["label-factory", idOf("Codex"), idOf("Cloud")], "the issue carries the factory label and both overrides");
 assert.equal(labels.find((l) => l.name === "Codex")!.parent!.id, idOf("Harness"), "Codex sits in the Harness group");
 assert.ok(labels.find((l) => l.name === "Harness")!.isGroup);
 const made = creates.length;
@@ -309,7 +310,7 @@ overrideRuntime.note = (job, key, body) => noting.note(job as never, key, body);
 await db.insert(jobs).values(linearJob(id, `OVR-${stamp}`, { url: "https://linear.app/x/issue/OVR" }));
 try {
   const row = async () => parseJob((await db.select().from(jobs).where(eq(jobs.id, jid)))[0]!);
-  const ticket = { notes: ["Modal cannot launch on this runner (no sandbox image is built), so it runs locally."] };
+  const ticket = { notes: ["Cloud sandboxes cannot launch on this runner (no sandbox image is built), so it runs locally."] };
   await announceFallbacks(await row(), ticket);
   await announceFallbacks(await row(), ticket);
   await announceFallbacks(await row(), { notes: ["something else"] });

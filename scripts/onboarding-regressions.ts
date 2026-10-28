@@ -494,7 +494,7 @@ try {
   sandboxRuntime.image = () => null;
   await actions.writeRepoRequest(db, "onboard_repo", BROKEN, new Date());
   await runner.onboardRepo(BROKEN);
-  assert.match((await detail(BROKEN)).failure!.reason, /^Modal cannot start the onboarding sandbox: no sandbox image is built/);
+  assert.match((await detail(BROKEN)).failure!.reason, /^The onboarding cloud sandbox cannot start: no sandbox image is built/);
   sandboxRuntime.image = () => baseImage;
 
   // Launch: a ready repo starts from its warm image, refreshed instead of cloned; outdated falls back; not onboarded waits.
