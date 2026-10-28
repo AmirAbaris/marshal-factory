@@ -18,7 +18,11 @@ export const SLACK_TARGETS = ["owner", "channel", "off"] as const;
 export type SlackTarget = (typeof SLACK_TARGETS)[number];
 export const TARGET_LABELS: Record<SlackTarget, string> = { owner: "Direct message to you", channel: "A channel", off: "Off" };
 
-const timeSchema = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, "Use a time like 22:00.");
+/** Some browsers' time inputs send seconds too; they are dropped. */
+const timeSchema = z
+  .string()
+  .regex(/^([01]\d|2[0-3]):[0-5]\d(:[0-5]\d)?$/, "Use a time like 22:00.")
+  .transform((time) => time.slice(0, 5));
 
 export const validTimeZone = (zone: string) => {
   try {
@@ -93,8 +97,6 @@ export async function readNotifications(database: Pick<Db, "select">): Promise<N
 export type NotificationDeps = {
   db: Db;
   user: () => Promise<SessionUser | null | undefined>;
-  /** Asks Slack about a channel when the panel has a token; null when it can't ask, else why the channel won't do. */
-  checkChannel: (channelId: string) => Promise<{ ok: true } | { ok: false; message: string } | null>;
   /** Whether an online runner reports a Slack token. */
   slackConfigured: () => Promise<boolean>;
   now?: () => Date;
@@ -110,19 +112,13 @@ export async function saveNotifications(deps: NotificationDeps, input: unknown):
   const parsed = notificationConfigSchema.safeParse(input);
   if (!parsed.success) return { ok: false, message: parsed.error.issues[0]?.message ?? "The notification settings are not valid." };
   const config = parsed.data;
-  let message: string | undefined;
-  if (config.target === "channel") {
-    const check = await deps.checkChannel(config.channelId!);
-    if (check && !check.ok) return check;
-    if (!check) message = "Saved. The panel has no Slack token to check the channel; send a test message to be sure.";
-  }
   const at = (deps.now ?? (() => new Date()))();
   const values = { config, updated_at: at, updated_by: user.email };
   await deps.db
     .insert(notificationSettings)
     .values({ id: NOTIFICATIONS_ID, ...values })
     .onConflictDoUpdate({ target: notificationSettings.id, set: values });
-  return { ok: true, ...(message && { message }) };
+  return { ok: true };
 }
 
 export const slackTestDetailSchema = z.object({ actor: z.string() });
@@ -150,10 +146,10 @@ export async function slackTestOutcome(deps: Pick<NotificationDeps, "db" | "user
   if (!isOwner(await deps.user())) return { status: "failed", message: OWNER_ONLY };
   const [intent] = await deps.db.select().from(intents).where(and(eq(intents.id, intentId), eq(intents.kind, "slack_test")));
   if (!intent) return { status: "failed", message: "No such request." };
-  const result = testResultSchema.safeParse(intent.result ? JSON.parse(intent.result) : {}).data;
-  // A failed try stays open for the retry; say why at once rather than waiting out every try.
-  if (result?.error) return { status: "failed", message: `The runner could not send it: ${result.error}` };
+  // A failed try stays open for the retry, so its error is final only once the intent is closed.
   if (!intent.handled_at) return { status: "pending" };
+  const result = testResultSchema.safeParse(intent.result ? JSON.parse(intent.result) : {}).data;
+  if (result?.error) return { status: "failed", message: `The runner could not send it: ${result.error}` };
   if (!result?.sent) return { status: "failed", message: "The runner's answer could not be read." };
   return { status: "done", message: result.sent.to === "owner" ? "Sent to your Slack DMs." : `Sent to channel ${result.sent.channel}.` };
 }

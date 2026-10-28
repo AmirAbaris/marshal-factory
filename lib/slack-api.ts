@@ -107,11 +107,6 @@ export function slackClient({ token, baseUrl = SLACK_API_URL, minGapMs = 1_000, 
       const body = await call("chat.getPermalink", { channel, message_ts: ts });
       return str(body.permalink, "permalink");
     },
-    async channelInfo(channel: string) {
-      const body = await call("conversations.info", { channel });
-      const info = body.channel as { id?: unknown; name?: unknown; is_private?: unknown; is_member?: unknown } | undefined;
-      return { id: str(info?.id, "channel id"), name: typeof info?.name === "string" ? info.name : null, isPrivate: info?.is_private === true, isMember: info?.is_member === true };
-    },
     pausedUntil: () => pausedUntil,
   };
 }
