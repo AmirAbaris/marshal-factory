@@ -4,6 +4,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { eq, inArray, like } from "drizzle-orm";
 import type { JobRow } from "../db/schema";
+import type { MergeDecision } from "../lib/merge-decision";
 
 const OWNER = "owner@example.com";
 process.env.FACTORY_OWNER_EMAILS = OWNER;
@@ -25,6 +26,19 @@ assert.equal(isArchived(fake({ stage: "failed", archived_at: T(0) })), true, "an
 assert.equal(isArchived(fake({ archived_at: null })), false);
 assert.equal(isArchived(fake({ stage: "queued", stage_at: T(2), archived_at: T(1) })), false, "a job reclaimed after its archive shows again");
 assert.equal(isArchived(fake({ stage: "failed", stage_at: T(2), archived_at: T(1) })), false, "a failure newer than the archive shows again");
+const revertFailed: MergeDecision = {
+  outcome: "merge",
+  reasons: [],
+  autonomy: "auto",
+  evaluatedAt: T(0).toISOString(),
+  headSha: "h",
+  headSeenAt: null,
+  stageEventId: null,
+  merged: { sha: "m", method: "squash", at: T(0).toISOString(), base: "main", title: "t", commits: 1 },
+  watch: { state: "revert_failed", until: T(60).toISOString(), failed: ["ci"], revertPr: null, reason: "git revert failed" },
+};
+assert.equal(isArchived(fake({ archived_at: T(1), merge_decision: revertFailed })), false, "a revert that failed after the archive shows again");
+assert.equal(isArchived(fake({ archived_at: T(1), merge_decision: { ...revertFailed, watch: { state: "green", until: T(60).toISOString(), failed: [], revertPr: null, reason: null } } })), true, "a merge whose watch passed stays archived");
 for (const stage of ["queued", "triage", "investigating", "implementing", "verifying", "pr", "waiting"] as const) {
   assert.equal(archiveRefusal(fake({ stage })), "Only merged or failed jobs can be archived.", `a job in ${stage} is not archived`);
 }
