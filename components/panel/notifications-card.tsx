@@ -76,7 +76,7 @@ export function NotificationsCard({ saved, slack }: { saved: NotificationSetting
     target,
     channelId: target === "channel" ? channelId.trim() : current.channelId,
     events,
-    quietHours: quietOn ? { start, end, timeZone: (zone ?? browserZone).trim() } : null,
+    quietHours: quietOn ? { start: start.slice(0, 5), end: end.slice(0, 5), timeZone: (zone ?? browserZone).trim() } : null,
   };
   const unchanged = saved !== null && JSON.stringify(config) === JSON.stringify(current);
   const edit = <T,>(set: (value: T) => void) => (value: T) => {
