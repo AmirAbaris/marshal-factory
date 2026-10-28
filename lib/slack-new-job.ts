@@ -26,7 +26,7 @@ export const SETTINGS_DEFAULT = "settings-default";
 const SLACK_INPUT_MAX = 3000;
 const OPTION_TEXT_MAX = 75;
 const TITLE_MAX = 80;
-/** The trigger id is good for 3 seconds; the modal opens without the link rather than miss it. */
+/** The form fills in without the link rather than sit on its loading view. */
 const PERMALINK_TIMEOUT_MS = 1_000;
 
 export const USAGE = [
@@ -85,6 +85,27 @@ async function modalOptions(deps: InteractionDeps): Promise<ModalOptions> {
 }
 
 const plain = (text: string) => ({ type: "plain_text", text });
+
+/**
+ * The New job modal with only a note and no submit. The trigger id is good for 3 seconds, so this
+ * opens before anything is read; updateView then swaps in the form, which keeps the view's id.
+ */
+export function newJobNote(text: string) {
+  return { type: "modal", callback_id: NEW_JOB_CALLBACK_ID, title: plain("New job"), close: plain("Close"), blocks: [{ type: "section", text: plain(text) }] };
+}
+export const LOADING = "Loading…";
+
+type OpenedView = { id: string; hash?: string };
+
+/** Fills the opened view in with the form; on an error the view says so, redacted, and the error is rethrown. */
+async function fillIn(deps: InteractionDeps, slack: NonNullable<InteractionDeps["slack"]>, view: OpenedView, render: () => Promise<object>) {
+  try {
+    await slack.updateView(view.id, await render(), view.hash);
+  } catch (error) {
+    await slack.updateView(view.id, newJobNote(safeMessage(deps.secrets, error))).catch(() => undefined);
+    throw error;
+  }
+}
 
 /** The panel's New job form: title, description, repository, harness and runs on, the defaults preselected. */
 export function renderNewJobModal(prefill: Prefill, options: ModalOptions, meta: Meta) {
@@ -154,9 +175,15 @@ export async function handleCommand(request: Request, deps: InteractionDeps): Pr
   if (text.trim().toLowerCase() === "help") return say(USAGE);
   const slack = deps.slack;
   if (!slack) return say(NO_TOKEN);
+  let view: OpenedView;
+  try {
+    view = await slack.openView(trigger_id, newJobNote(LOADING));
+  } catch (error) {
+    return say(safeMessage(deps.secrets, error));
+  }
   deps.after(async () => {
     try {
-      await slack.openView(trigger_id, renderNewJobModal(commandPrefill(text), await modalOptions(deps), { responseUrl: response_url }));
+      await fillIn(deps, slack, view, async () => renderNewJobModal(commandPrefill(text), await modalOptions(deps), { responseUrl: response_url }));
     } catch (error) {
       await deps.respond(response_url, ephemeral(deps.secrets, safeMessage(deps.secrets, error))).catch(() => undefined);
     }
@@ -175,17 +202,28 @@ export const shortcutSchema = z.object({
 });
 
 /** "Send to factory" on a message: the New job modal with the message and a link back to it. */
-export function sendToFactory(deps: InteractionDeps, payload: z.infer<typeof shortcutSchema>, owner: boolean) {
+export async function sendToFactory(deps: InteractionDeps, payload: z.infer<typeof shortcutSchema>, owner: boolean) {
   const reply = (text: string) => deps.respond(payload.response_url, ephemeral(deps.secrets, text));
+  const slack = owner ? deps.slack : null;
+  let view: OpenedView | null = null;
+  let openError: unknown = null;
+  if (slack) {
+    try {
+      view = await slack.openView(payload.trigger_id, newJobNote(LOADING));
+    } catch (error) {
+      openError = error;
+    }
+  }
   deps.after(async () => {
     try {
       if (!owner) return await reply(NOT_OWNER);
-      const slack = deps.slack;
-      if (!slack) return await reply(NO_TOKEN);
+      if (!slack || !view) return await reply(openError ? safeMessage(deps.secrets, openError) : NO_TOKEN);
       const { channel, message } = payload;
-      const [link, options] = await Promise.all([slack.permalink(channel.id, message.ts, PERMALINK_TIMEOUT_MS).catch(() => null), modalOptions(deps)]);
-      const meta: Meta = { responseUrl: payload.response_url, channel: channel.id, threadTs: message.thread_ts ?? message.ts };
-      await slack.openView(payload.trigger_id, renderNewJobModal(shortcutPrefill(message.text, link), options, meta));
+      await fillIn(deps, slack, view, async () => {
+        const [link, options] = await Promise.all([slack.permalink(channel.id, message.ts, PERMALINK_TIMEOUT_MS).catch(() => null), modalOptions(deps)]);
+        const meta: Meta = { responseUrl: payload.response_url, channel: channel.id, threadTs: message.thread_ts ?? message.ts };
+        return renderNewJobModal(shortcutPrefill(message.text, link), options, meta);
+      });
     } catch (error) {
       await reply(safeMessage(deps.secrets, error)).catch(() => undefined);
     }

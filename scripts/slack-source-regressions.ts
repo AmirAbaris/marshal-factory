@@ -16,7 +16,7 @@ const OWNER_SLACK = "U0OWNER";
 const { db } = await import("../db/client");
 const { postResponse, slackClient } = await import("../lib/slack-api");
 const { handleInteraction, MAX_SKEW_SECONDS, NOT_OWNER, ownerFromAllowlist } = await import("../lib/slack-interactions");
-const { handleCommand, NEW_JOB_BLOCKS, NEW_JOB_CALLBACK_ID, newJobRequestId, SETTINGS_DEFAULT, USAGE } = await import("../lib/slack-new-job");
+const { handleCommand, LOADING, NEW_JOB_BLOCKS, NEW_JOB_CALLBACK_ID, newJobRequestId, SETTINGS_DEFAULT, USAGE } = await import("../lib/slack-new-job");
 const { HARNESS_GROUP, RUNS_ON_GROUP } = await import("../lib/ticket-overrides");
 const { REPOSITORY_GROUP } = await import("../lib/repositories");
 const { serve } = await import("./serve");
@@ -24,6 +24,8 @@ const { serve } = await import("./serve");
 // --- the fake Slack: Web API calls under /api/, response_url posts under /response/
 type Call = { method: string; params: Record<string, string> };
 const calls: Call[] = [];
+/** Slack calls and the reads of repositories and harnesses, in the order they happened. */
+const timeline: string[] = [];
 const responses: { path: string; body: { text?: string; response_type?: string } }[] = [];
 let threadFails = false;
 let permalinkDelayMs = 0;
@@ -36,8 +38,13 @@ const server = await serve(0, async (request) => {
   const method = path.replace(/^\/api\//, "");
   const params = Object.fromEntries(new URLSearchParams(await request.text()));
   calls.push({ method, params });
+  timeline.push(method);
   if (request.headers.get("authorization") !== `Bearer ${TOKEN}`) return Response.json({ ok: false, error: "invalid_auth" });
   switch (method) {
+    case "views.open":
+      return Response.json({ ok: true, view: { id: `V${calls.length}`, hash: `hash-${calls.length}` } });
+    case "views.update":
+      return Response.json({ ok: true, view: { id: params.view_id, hash: `hash-${calls.length}` } });
     case "chat.getPermalink":
       await new Promise((resolve) => setTimeout(resolve, permalinkDelayMs));
       return Response.json({ ok: true, permalink: `https://acme.slack.com/archives/${params.channel}/p${params.message_ts!.replace(".", "")}` });
@@ -86,8 +93,8 @@ const deps = {
         issues.set(draft.requestId, issue);
         return { key: issue.key, url: `https://linear.app/x/issue/${issue.key}` };
       },
-      harnesses: async () => harnesses,
-      registry: async () => registry,
+      harnesses: async () => (timeline.push("harnesses"), harnesses),
+      registry: async () => (timeline.push("registry"), registry),
     },
   },
   panelUrl: "https://panel.test",
@@ -130,10 +137,23 @@ const shortcut = (message: { ts: string; text: string; thread_ts?: string }, use
 type Option = { value: string; text: { text: string } };
 type Block = { type: string; block_id?: string; optional?: boolean; element?: { initial_value?: string; options?: Option[]; initial_option?: Option } };
 type View = { callback_id: string; private_metadata: string; blocks: Block[] };
+/** The form the request's loading view was filled in with. */
 const lastView = (trigger: string) => {
-  const call = calls.filter((c) => c.method === "views.open").at(-1);
-  assert.equal(call?.params.trigger_id, trigger, "the request's trigger opens the modal");
-  return JSON.parse(call!.params.view!) as View;
+  const open = calls.findLast((c) => c.method === "views.open");
+  assert.equal(open?.params.trigger_id, trigger, "the request's trigger opens the modal");
+  const id = `V${calls.indexOf(open!) + 1}`;
+  const update = calls.findLast((c) => c.method === "views.update" && c.params.view_id === id);
+  assert.ok(update, "the opened view is filled in");
+  assert.equal(update.params.hash, `hash-${calls.indexOf(open!) + 1}`, "with the hash views.open returned");
+  return JSON.parse(update.params.view!) as View;
+};
+/** What a request did before its ack: the loading view, and nothing read before it. */
+const openedFirst = (from: number) => {
+  assert.equal(timeline[from], "views.open", `the loading view opens first, not after ${timeline.slice(from).join(", ")}`);
+  const loading = JSON.parse(calls.findLast((c) => c.method === "views.open")!.params.view!) as { submit?: unknown; callback_id: string };
+  assert.match(JSON.stringify(loading), new RegExp(LOADING));
+  assert.equal(loading.submit, undefined, "with nothing to submit");
+  assert.equal(loading.callback_id, NEW_JOB_CALLBACK_ID);
 };
 const block = (view: View, id: string) => view.blocks.find((b) => b.block_id === id);
 const repliesTo = (url: string) => responses.filter((r) => url.endsWith(r.path)).map((r) => r.body.text ?? "");
@@ -187,11 +207,14 @@ try {
   assert.equal(opens(), 0);
 
   // --- /factory opens the empty modal, the panel's defaults preselected
+  const emptyFrom = timeline.length;
   const empty = command("");
   const emptyAck = await empty.sent;
   assert.equal(emptyAck.status, 200);
   assert.equal(await emptyAck.text(), "", "acked with nothing to show");
+  openedFirst(emptyFrom);
   await drain();
+  assert.ok(timeline.indexOf("registry", emptyFrom) > emptyFrom && timeline.indexOf("views.update", emptyFrom) > timeline.indexOf("registry", emptyFrom), "repositories read after the open, the form after them");
   const blankView = lastView(empty.trigger);
   assert.equal(blankView.callback_id, NEW_JOB_CALLBACK_ID);
   assert.equal(block(blankView, NEW_JOB_BLOCKS.title)!.element!.initial_value, undefined);
@@ -235,9 +258,12 @@ try {
   assert.deepEqual(repliesTo(strangerShortcut.response_url), [NOT_OWNER]);
   assert.equal(opens(), opened, "no modal for a stranger's shortcut");
 
+  const sharedFrom = timeline.length;
   const shared = shortcut({ ts: "1700000000.000200", thread_ts: "1700000000.000100", text: "Cart total is wrong &amp; <https://shop.test/cart|the cart page> shows NaN\nSteps: add two items." });
   await shared.sent;
+  openedFirst(sharedFrom);
   await drain();
+  assert.ok(timeline.indexOf("chat.getPermalink", sharedFrom) > sharedFrom, "the permalink is asked for after the open");
   const permalinkCall = calls.filter((c) => c.method === "chat.getPermalink").at(-1)!;
   assert.deepEqual([permalinkCall.params.channel, permalinkCall.params.message_ts], ["C0GENERAL", "1700000000.000200"]);
   const sharedView = lastView(shared.trigger);
@@ -246,15 +272,19 @@ try {
   assert.match(description, /^Cart total is wrong & the cart page \(https:\/\/shop\.test\/cart\) shows NaN\nSteps: add two items\./);
   assert.match(description, /From Slack: https:\/\/acme\.slack\.com\/archives\/C0GENERAL\/p1700000000000200$/, "with the permalink");
 
-  // --- a slow permalink doesn't hold the modal past its trigger; it opens without the link
+  // --- a slow permalink doesn't hold the modal past its trigger: it opens at once, and fills in without the link
   permalinkDelayMs = 2_500;
+  const slowFrom = timeline.length;
   const slow = shortcut({ ts: "1700000000.000400", text: "Slow permalink" });
   const slowStarted = Date.now();
   await slow.sent;
+  const ackMs = Date.now() - slowStarted;
+  openedFirst(slowFrom);
+  assert.ok(ackMs < 500, `the modal opened and the shortcut was acked after ${ackMs} ms`);
   await drain();
   const slowMs = Date.now() - slowStarted;
   permalinkDelayMs = 0;
-  assert.ok(slowMs < 2_000, `the modal opened after ${slowMs} ms`);
+  assert.ok(slowMs < 2_000, `the form filled in after ${slowMs} ms`);
   const slowView = lastView(slow.trigger);
   assert.equal(block(slowView, NEW_JOB_BLOCKS.description)!.element!.initial_value, "Slow permalink", "no permalink line");
 
