@@ -181,6 +181,9 @@ export const jobs = pgTable(
     dismissed_at: ts("dismissed_at"),
     /** Review feedback already handed to the thread, from the panel or GitHub; the replay guard for request_changes. */
     delivered_feedback_ids: jsonb("delivered_feedback_ids").$type<string[]>().notNull().default([]),
+    /** When the owner archived the finished job off the panel; a stage newer than this shows it again. See lib/archive.ts. */
+    archived_at: ts("archived_at"),
+    archived_by: text("archived_by"),
     claimed_at: ts("claimed_at").notNull(),
     updated_at: ts("updated_at").notNull(),
   },
@@ -408,7 +411,7 @@ export const repoSettings = pgTable(
   ],
 );
 
-export const auditAction = pgEnum("audit_action", ["merge_requested", "merge_succeeded", "merge_failed", "sandbox_login_failed", "merge_decided", "override_fallback", "follow_up_filed", "review_dropped"]);
+export const auditAction = pgEnum("audit_action", ["merge_requested", "merge_succeeded", "merge_failed", "sandbox_login_failed", "merge_decided", "override_fallback", "follow_up_filed", "review_dropped", "job_archived", "job_unarchived"]);
 export const auditResult = pgEnum("audit_result", ["ok", "head_moved", "not_mergeable", "refused", "error"]);
 
 /** Who asked the factory to change something outside it, and what happened. */

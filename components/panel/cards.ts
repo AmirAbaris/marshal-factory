@@ -1,4 +1,5 @@
 import type { JobRow, MachineRow, RunRow } from "@/db/schema";
+import { splitArchived } from "@/lib/archive";
 import type { Stage } from "@/lib/events";
 import { sandboxState, type SandboxState } from "@/lib/execution";
 import { evidenceLine, parseSummary, type EvidenceLine } from "@/lib/evidence";
@@ -7,13 +8,15 @@ import { harnessLabel, isTracked, type Harness, type Tracking } from "@/lib/harn
 import { parseInventory, UNKNOWN } from "@/lib/machine";
 import { costKnown } from "@/lib/pricing";
 import { mergeDecisionSchema, type MergeDecision } from "@/lib/merge-decision";
-import { sourceLink } from "@/lib/sources/shapes";
+import { sourceLink, type JobId } from "@/lib/sources/shapes";
 import { parseStop, stopView, type StopView } from "@/lib/stop";
 import { groupBy } from "./format";
 
 /** One board card: a claimed job, or a staged run whose job the factory never claimed. */
 export type BoardCard = {
   id: string;
+  /** The claimed job's id; null for a run the factory never claimed. */
+  jobId: JobId | null;
   jobKey: string | null;
   title: string;
   /** The GitHub repo the job runs in; for a run the factory never claimed, whatever the run reported. */
@@ -136,6 +139,7 @@ export function boardCards(jobs: readonly JobRow[], runs: readonly RunRow[], har
     const attemptRuns = jobRuns.filter((r) => r.branch === attemptBranch(job.key, job.attempt));
     return {
       id: job.key,
+      jobId: job.id,
       jobKey: job.key,
       title: job.title,
       repo: job.repo,
@@ -171,6 +175,7 @@ export function boardCards(jobs: readonly JobRow[], runs: readonly RunRow[], har
       const latest = sorted[0]! as RunRow & { stage: Stage };
       return {
         id,
+        jobId: null,
         jobKey: latest.job_key,
         title: latest.title ?? latest.job_key ?? "Factory run",
         repo: latest.repo,
@@ -196,4 +201,15 @@ export function boardCards(jobs: readonly JobRow[], runs: readonly RunRow[], har
     },
   );
   return [...fromJobs, ...fromRuns];
+}
+
+/**
+ * The cards the board, the list and the inbox show, and the archived ones. Cards come from every
+ * job, so an archived job's runs never show up as runs the factory didn't claim.
+ */
+export function panelCards(jobs: readonly JobRow[], runs: readonly RunRow[], harnesses: readonly Harness[] = []) {
+  const archivedIds = new Set(splitArchived(jobs).archived.map((j) => j.id));
+  const inArchive = (c: BoardCard) => c.jobId !== null && archivedIds.has(c.jobId);
+  const all = boardCards(jobs, runs, harnesses);
+  return { live: all.filter((c) => !inArchive(c)), archived: all.filter(inArchive) };
 }
