@@ -8,7 +8,7 @@ import type { RepoName } from "../lib/github/app";
 import { fileOnDefaultBranch } from "../lib/github/installation";
 import { github } from "../lib/github/pulls";
 import { HostGoneError, type JobHost } from "../lib/host";
-import { deleteSnapshot, modal, modalHost, rememberSandbox, terminateSandbox } from "../lib/modal-host";
+import { createSandbox, deleteSnapshot, modal, modalHost, rememberSandbox, terminateSandbox } from "../lib/modal-host";
 import {
   afterRecipe,
   bugbotVerdict,
@@ -142,9 +142,9 @@ const sandboxNameFor = (repo: string, kind: OnboardingRun["kind"], at: number) =
 export const ONBOARDING_TAGS = (machine: string) => ({ purpose: "onboarding", factory: config.factory.label, machine });
 
 /** A sandbox for one onboarding step, tagged so the onboarding reap can find it; never one the job reap touches. */
-async function createSandbox(repo: string, kind: OnboardingRun["kind"], imageId: string, namedSecrets: string[]) {
+async function onboardingSandbox(repo: string, kind: OnboardingRun["kind"], imageId: string, namedSecrets: string[]) {
   const machine = await thisMachine();
-  const sandbox = await modal.api.create({
+  const sandbox = await createSandbox({
     name: sandboxNameFor(repo, kind, Date.now()),
     tags: { ...ONBOARDING_TAGS(machine.id), repo },
     imageId,
@@ -193,6 +193,12 @@ async function claimSlot(repo: string, machine: string): Promise<OnboardingRun |
 const sameLeasing = (a: OnboardingRun | undefined, b: OnboardingRun) =>
   a !== undefined && a.sandboxId === undefined && a.kind === b.kind && a.machine === b.machine && a.startedAt === b.startedAt && a.slot === b.slot;
 
+/**
+ * An agent run this runner recorded but has no start going for: it restarted while creating the
+ * sandbox. The onboard_repo intent that started it was never recorded, so its retry starts over.
+ */
+const leftBehind = (repo: string, run: OnboardingRun, machine: string) => !hasSandbox(run) && run.machine === machine && !starting.has(repo);
+
 const clearLeasing = (repo: string, run: OnboardingRun, state?: OnboardingState, reason?: string) =>
   update(repo, (_r, d) => (sameLeasing(d.run, run) ? { ...(state && { state }), detail: { ...d, run: undefined, ...(reason && { failure: failure(reason) }) } } : null));
 
@@ -227,7 +233,9 @@ export async function onboardRepo(repo: string) {
   const [row] = await db.select().from(repoSettings).where(eq(repoSettings.repo, repo));
   if (!row) return { repo, skipped: "not registered" };
   const detail = parseDetail(row.onboarding_detail);
-  if (detail.run) return { repo, skipped: `${detail.run.kind === "agent" ? "an agent" : "a build"} run is in flight` };
+  if (detail.run && !(leftBehind(repo, detail.run, (await thisMachine()).id) && (await clearLeasing(repo, detail.run)))) {
+    return { repo, skipped: `${detail.run.kind === "agent" ? "an agent" : "a build"} run is in flight` };
+  }
   if (row.onboarding_state !== "analyzing") await update(repo, (_r, d) => ({ state: "analyzing", detail: { ...d, failure: undefined } }));
   const committed = await onboardingRuntime.committedRecipe(repo);
   const parsed = committed === null ? null : parseRecipe(committed);
@@ -259,7 +267,7 @@ async function startAgent(repo: string, committedError: string | undefined) {
 /** The leasing run's sandbox, recorded on its run; undefined when the run was cleared meanwhile. */
 async function agentSandbox(repo: string, leasing: OnboardingRun, image: SandboxImage) {
   const [row] = await db.select().from(repoSettings).where(eq(repoSettings.repo, repo));
-  const created = await createSandbox(repo, "agent", image.imageId, secretsFor(repo, parseDetail(row?.onboarding_detail)));
+  const created = await onboardingSandbox(repo, "agent", image.imageId, secretsFor(repo, parseDetail(row?.onboarding_detail)));
   const run: StartedRun = { ...leasing, sandboxId: created.sandboxId, tokenAt: onboardingRuntime.now().toISOString() };
   if (!(await update(repo, (_r, d) => (sameLeasing(d.run, leasing) ? { detail: { ...d, run } } : null)))) {
     await terminateSandbox(created.sandboxId);
@@ -387,7 +395,7 @@ async function startBuild(row: RepoSettingsRow, image: SandboxImage) {
   const hash = recipeHash(recipe);
   // A committed recipe's checks run once per recipe; an agent's recipe was checked by the agent.
   const checks = detail.recipeSource === "committed" && detail.image?.recipeHash !== hash;
-  const created = await createSandbox(row.repo, "build", image.imageId, secretsFor(row.repo, detail));
+  const created = await onboardingSandbox(row.repo, "build", image.imageId, secretsFor(row.repo, detail));
   const now = onboardingRuntime.now().toISOString();
   const run: StartedRun = { kind: "build", machine: created.machine, sandboxId: created.sandboxId, startedAt: now, tokenAt: now, checks };
   if (!(await claimRun(row.repo, run))) {
@@ -599,9 +607,14 @@ export async function advanceOnboarding({ only }: { only?: readonly string[] } =
   for (const row of rows) {
     const run = parseDetail(row.onboarding_detail).run;
     if (run && !hasSandbox(run)) {
-      const abandoned = run.machine === machine.id ? !starting.has(row.repo) : overdue(run, LEASING_GIVE_UP_MS);
-      if (abandoned && (await clearLeasing(row.repo, run, "failed", "The onboarding run stopped before its sandbox was created; retry it."))) {
-        log("onboarding:leasing-abandoned", { repo: row.repo, slot: run.slot, machine: run.machine });
+      // This runner's own run waits for its intent's retry; another runner's is given up on.
+      const mine = run.machine === machine.id;
+      if (mine ? !leftBehind(row.repo, run, machine.id) : !overdue(run, LEASING_GIVE_UP_MS)) continue;
+      const cleared = mine
+        ? await clearLeasing(row.repo, run)
+        : await clearLeasing(row.repo, run, "failed", "The onboarding run stopped before its sandbox was created; retry it.");
+      if (cleared) {
+        log("onboarding:leasing-abandoned", { repo: row.repo, slot: run.slot, machine: run.machine, retried: mine });
         results.push({ repo: row.repo, released: run.slot });
       }
       continue;

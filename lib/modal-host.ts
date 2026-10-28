@@ -92,8 +92,27 @@ export const realModal: ModalApi = {
   deleteImage: async (imageId) => modalClient().images.delete(imageId),
 };
 
-/** The Modal client the runner uses; regressions replace `api`. */
-export const modal: { api: ModalApi } = { api: realModal };
+/** The Modal client the runner uses; regressions replace `api` and may shorten `createTimeoutMs`. */
+export const modal: { api: ModalApi; createTimeoutMs: number } = { api: realModal, createTimeoutMs: 120_000 };
+
+/**
+ * Creates a sandbox, giving up after `modal.createTimeoutMs`: Modal's calls carry no deadline and its
+ * create waits up to 21 minutes for scheduling, so a lost reply or a slept machine would hold the
+ * runner's queue. A sandbox the abandoned create still returns is ended, since nothing records it.
+ */
+export async function createSandbox(spec: SandboxSpec) {
+  const creating = modal.api.create(spec);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<"timeout">((resolve) => (timer = setTimeout(() => resolve("timeout"), modal.createTimeoutMs)));
+  try {
+    const sandbox = await Promise.race([creating, deadline]);
+    if (sandbox !== "timeout") return sandbox;
+  } finally {
+    clearTimeout(timer);
+  }
+  void creating.then((sandbox) => sandbox.terminate()).catch(() => {});
+  throw new Error(`Modal did not create sandbox ${spec.name} within ${modal.createTimeoutMs / 1000} s`);
+}
 
 /** Modal names allow [A-Za-z0-9-._] and at most 63 characters. */
 export const sandboxName = (key: string, attempt: number) => `job-${key}-a${attempt}`.replace(/[^A-Za-z0-9._-]/g, "-").slice(0, 63);
