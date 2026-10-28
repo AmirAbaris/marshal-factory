@@ -34,6 +34,7 @@ const { syncOverrideLabels } = await import("./overrides");
 const { advanceOnboarding, onboardRepo, repoPushed, requestRebuild } = await import("./onboarding");
 const { repoPushDetailSchema } = await import("../lib/webhooks");
 const { notifySlack, sendSlackTest, slackFromEnv } = await import("./slack");
+const { keepSubscribed } = await import("./realtime");
 type IntentRow = typeof intents.$inferSelect;
 
 const machine = await thisMachine();
@@ -243,12 +244,16 @@ await serial("reconcile", startupReconcile);
 void beat();
 takeIntents(await openIntents());
 
-const realtime = createRealtime({
-  url: process.env.NEON_REALTIME_URL!,
-  secret: process.env.NEON_REALTIME_SECRET!,
-  db: new URL(process.env.DATABASE_URL!).pathname.slice(1),
-  adapter: drizzleAdapter(),
-});
+const connectRealtime = () =>
+  createRealtime({
+    url: process.env.NEON_REALTIME_URL!,
+    secret: process.env.NEON_REALTIME_SECRET!,
+    db: new URL(process.env.DATABASE_URL!).pathname.slice(1),
+    adapter: drizzleAdapter(),
+    logLevel: "warn",
+    logger: (entry) => log("realtime:diagnostic", { diagnostic: entry.event, ...("error" in entry && { error: String(entry.error) }) }),
+  });
+type Realtime = ReturnType<typeof connectRealtime>;
 
 /**
  * Realtime does not promise every change, so a snapshot is read as the current state: open
@@ -256,8 +261,7 @@ const realtime = createRealtime({
  * write-back. An intent snapshot only says something changed; the intents are read again with
  * their job's owner, which routing needs.
  */
-let resubscribing = false;
-async function subscribe() {
+async function subscribe(realtime: Realtime) {
   const intentsLive = await realtime.subscribe(
     db.select(getTableColumns(intents)).from(intents).where(isNull(intents.handled_at)).orderBy(asc(intents.created_at)),
   );
@@ -274,23 +278,15 @@ async function subscribe() {
     // A thread's own session start can bind it (ingest), outside bindThread; deliver its stop now.
     if (rows.some(stopDeliverable)) void serial("deliverStops", () => ops.deliverStops());
   });
-  for (const subscription of [intentsLive, jobsLive]) {
-    subscription.onStateChange((state) => {
-      log("realtime", { status: state.status, error: state.error?.message });
-      // An error is final for a subscription; start over once, with fresh ones for both.
-      if (state.status === "error" && !resubscribing) {
-        resubscribing = true;
-        intentsLive.unsubscribe();
-        jobsLive.unsubscribe();
-        setTimeout(() => {
-          resubscribing = false;
-          void subscribe().catch((e: unknown) => log("realtime:error", { error: String(e) }));
-        }, 5_000);
-      }
-    });
-  }
+  return [intentsLive, jobsLive];
 }
-await subscribe();
+const realtime = keepSubscribed({
+  connect: connectRealtime,
+  subscribe,
+  log: (detail) => log("realtime", detail),
+  schedule: (run, ms) => void setTimeout(run, ms),
+});
+await realtime.start();
 
 const hourlyCleanup = everyAtMost(3_600_000, () => ops.cleanup());
 const labelSync = ops.config.factory.syncLinearLabels ? everyAtMost(86_400_000, () => syncOverrideLabels()) : undefined;
