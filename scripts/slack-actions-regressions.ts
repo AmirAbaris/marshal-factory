@@ -22,12 +22,14 @@ const { approveDetailSchema, feedbackDetailSchema } = await import("../lib/inbox
 const inbox = await import("../lib/inbox-actions");
 const { notifyEvents, renderMessage, SLACK_ACTION_IDS, SLACK_LINK_ACTION_IDS } = await import("../lib/slack");
 const { postResponse, slackClient } = await import("../lib/slack-api");
-const { ALREADY_RESOLVED, handleInteraction, MAX_SKEW_SECONDS, NOT_OWNER, ownerFromAllowlist, slackRequestId, TEXT_BLOCK } = await import("../lib/slack-interactions");
+const { ALREADY_RESOLVED, handleInteraction, LOADING, MAX_SKEW_SECONDS, NOT_OWNER, ownerFromAllowlist, slackRequestId, TEXT_BLOCK } = await import("../lib/slack-interactions");
 const { serve } = await import("./serve");
 
 // --- the fake Slack: Web API calls under /api/, response_url posts under /response/
 type Call = { method: string; params: Record<string, string> };
 const calls: Call[] = [];
+/** Slack calls and the handler's database reads, in the order they happened. */
+const timeline: string[] = [];
 const responses: { path: string; body: { text?: string; response_type?: string; replace_original?: boolean } }[] = [];
 const server = await serve(0, async (request) => {
   const path = new URL(request.url).pathname;
@@ -38,8 +40,17 @@ const server = await serve(0, async (request) => {
   const method = path.replace(/^\/api\//, "");
   const params = Object.fromEntries(new URLSearchParams(await request.text()));
   calls.push({ method, params });
+  timeline.push(method);
   if (request.headers.get("authorization") !== `Bearer ${TOKEN}`) return Response.json({ ok: false, error: "invalid_auth" });
+  if (method === "views.open") return Response.json({ ok: true, view: { id: `V${calls.length}`, hash: `hash-${calls.length}` } });
+  if (method === "views.update") return Response.json({ ok: true, view: { id: params.view_id, hash: `hash-${calls.length}` } });
   return Response.json({ ok: true, channel: params.channel, ts: params.ts });
+});
+const trackedDb = new Proxy(db, {
+  get(target, key, receiver) {
+    if (key === "select") timeline.push("db");
+    return Reflect.get(target, key, receiver);
+  },
 });
 const base = `http://localhost:${server.port}`;
 
@@ -60,7 +71,7 @@ const deps = {
   slack: slackClient({ token: TOKEN, baseUrl: `${base}/api/`, minGapMs: 0 }),
   respond: postResponse,
   inbox: {
-    db,
+    db: trackedDb,
     user: owner,
     reply: async (job: Job, requestId: string, body: string) => {
       if (replyFails) throw new Error(replyFails);
@@ -101,6 +112,9 @@ const click = (eventId: string, actionId: string, user = OWNER_SLACK) => {
 };
 const submit = (view: { callback_id: string; private_metadata: string }, text: string, user = OWNER_SLACK) =>
   send({ type: "view_submission", user: { id: user }, view: { ...view, state: { values: { [TEXT_BLOCK]: { text: { type: "plain_text_input", value: text } } } } } });
+/** The modal as the last views.update left it. */
+const modalView = () =>
+  JSON.parse(calls.filter((c) => c.method === "views.update").at(-1)!.params.view!) as { callback_id: string; private_metadata: string; submit?: unknown; blocks: { type: string; optional?: boolean }[] };
 const repliesTo = (url: string) => responses.filter((r) => url.endsWith(r.path)).map((r) => r.body.text);
 
 const decision = (over: Partial<MergeDecision> = {}): MergeDecision => ({
@@ -177,6 +191,11 @@ try {
   assert.equal(responses.at(-1)!.body.response_type, "ephemeral");
   assert.equal((await intentsFor(hand.id)).length, 0, "nothing recorded for a stranger");
   assert.equal(updatesOf(hand.ts).length, 0);
+  const strangerModal = click(hand.eventId, SLACK_ACTION_IDS.request_changes, "U0STRANGER");
+  await strangerModal.sent;
+  await drain();
+  assert.deepEqual(repliesTo(strangerModal.response_url), [NOT_OWNER]);
+  assert.equal(calls.filter((c) => c.method === "views.open").length, 0, "no modal for a stranger");
 
   // --- link buttons are acked and ignored
   const mark = calls.length;
@@ -248,12 +267,21 @@ try {
 
   // --- request changes: a modal, then the panel's request_changes intent
   const changes = await item("C", { stage: "pr", pr_url: "https://github.com/o/r/pull/3", merge_decision: decision() });
+  const before = timeline.length;
   const opened = click(changes.eventId, SLACK_ACTION_IDS.request_changes);
   await opened.sent;
-  await drain();
+  assert.equal(timeline[before], "views.open", "the modal opens before the ack, before anything is read");
   const viewCall = calls.filter((c) => c.method === "views.open").at(-1)!;
   assert.equal(viewCall.params.trigger_id, `trigger-${urls}`, "the click's trigger opens the modal");
-  const view = JSON.parse(viewCall.params.view!) as { callback_id: string; private_metadata: string; blocks: { type: string; optional?: boolean }[] };
+  const loading = JSON.parse(viewCall.params.view!) as { submit?: unknown; title: { text: string } };
+  assert.match(JSON.stringify(loading), new RegExp(LOADING), "a loading view");
+  assert.equal(loading.submit, undefined, "with nothing to submit");
+  assert.equal(loading.title.text, "Request changes");
+  await drain();
+  const updateCall = calls.filter((c) => c.method === "views.update").at(-1)!;
+  assert.equal(updateCall.params.view_id, `V${calls.indexOf(viewCall) + 1}`, "the opened view is filled in");
+  assert.equal(updateCall.params.hash, `hash-${calls.indexOf(viewCall) + 1}`, "with the hash views.open returned");
+  const view = modalView();
   assert.equal(view.callback_id, SLACK_ACTION_IDS.request_changes);
   assert.equal(view.blocks.find((b) => b.type === "input")!.optional, false, "feedback is required");
   assert.equal((await intentsFor(changes.id)).length, 0, "opening the modal records nothing");
@@ -277,7 +305,7 @@ try {
   const ask = click(question.eventId, SLACK_ACTION_IDS.answer);
   await ask.sent;
   await drain();
-  const answerView = JSON.parse(calls.filter((c) => c.method === "views.open").at(-1)!.params.view!) as { callback_id: string; private_metadata: string };
+  const answerView = modalView();
   assert.equal(answerView.callback_id, SLACK_ACTION_IDS.answer);
   assert.match(JSON.stringify(answerView), /Postgres or SQLite\?/, "the modal shows the question");
   await submit(answerView, "Postgres.");
@@ -293,7 +321,7 @@ try {
   await leakyClick.sent;
   await drain();
   replyFails = `Linear refused ${TOKEN}`;
-  await submit(JSON.parse(calls.filter((c) => c.method === "views.open").at(-1)!.params.view!), "This one.");
+  await submit(modalView(), "This one.");
   await drain();
   replyFails = null;
   const [leakReply] = repliesTo(leakyClick.response_url);
@@ -320,7 +348,10 @@ try {
   const stale = click(hand.eventId, SLACK_ACTION_IDS.request_changes);
   await stale.sent;
   await drain();
-  assert.deepEqual(repliesTo(stale.response_url), [ALREADY_RESOLVED], "a resolved message's button");
+  const resolvedView = modalView();
+  assert.match(JSON.stringify(resolvedView), new RegExp(ALREADY_RESOLVED), "a resolved message's modal button says so in the modal");
+  assert.equal(resolvedView.submit, undefined, "with nothing to submit");
+  assert.deepEqual(repliesTo(stale.response_url), []);
   const staleSubmit = await submit({ callback_id: SLACK_ACTION_IDS.request_changes, private_metadata: JSON.stringify({ event: hand.eventId, responseUrl: `${base}/response/stale` }) }, "Too late.");
   assert.match(JSON.stringify(await staleSubmit.json()), /already resolved/, "a modal left open on a resolved item");
   await drain();
