@@ -30,8 +30,7 @@ const spring = { type: "spring", stiffness: 500, damping: 40 } as const;
 const openHref = (card: BoardCard, archived: boolean) => (card.latest ? jobsHref("list", card.latest.session_id, archived) : null);
 
 /** A finished, claimed job whose stop, if any, is confirmed; archiveRefusal has the server's rule. */
-const pickable = (card: BoardCard) =>
-  card.jobId !== null && isFinished(card.stage) && (!card.stop || card.stop.view.kind === "confirmed") && card.mergeDecision?.watch?.state !== "revert_failed";
+const pickable = (card: BoardCard) => card.jobId !== null && isFinished(card.stage) && (!card.stop || card.stop.view.kind === "confirmed");
 
 function Row({
   card,
