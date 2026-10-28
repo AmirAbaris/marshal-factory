@@ -115,7 +115,11 @@ export async function createSandbox(spec: SandboxSpec) {
 }
 
 /** Modal names allow [A-Za-z0-9-._] and at most 63 characters. */
-export const sandboxName = (key: string, attempt: number) => `job-${key}-a${attempt}`.replace(/[^A-Za-z0-9._-]/g, "-").slice(0, 63);
+/** Unique per create: a create that timed out still holds its name until Modal answers it, so a retry must not reuse it. */
+export const sandboxName = (key: string, attempt: number, at = Date.now()) => {
+  const suffix = `-${at.toString(36)}`;
+  return `${`job-${key}-a${attempt}`.replace(/[^A-Za-z0-9._-]/g, "-").slice(0, 63 - suffix.length)}${suffix}`;
+};
 
 /** gRPC's NOT_FOUND, which an exec into a sandbox that shut down, or never existed, gets raw from the SDK. */
 const GRPC_NOT_FOUND = 5;

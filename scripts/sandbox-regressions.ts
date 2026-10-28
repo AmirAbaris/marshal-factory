@@ -87,8 +87,10 @@ assert.equal(await threads.state("thread-1", modalHost(finished.sandboxId)), "go
 assert.equal(hosts.forJob({ key: "K", sandbox_id: null }), localHost, "a job without a sandbox runs here");
 await hosts.forJob({ key: "K", sandbox_id: box.sandboxId }).run("echo", ["routed"]);
 assert.deepEqual(box.execs.at(-1)!.argv, ["echo", "routed"], "a job with a sandbox runs there");
-assert.equal(sandboxName("FAC-12", 3), "job-FAC-12-a3");
+assert.equal(sandboxName("FAC-12", 3, 1_000_000), `job-FAC-12-a3-${(1_000_000).toString(36)}`);
+assert.notEqual(sandboxName("FAC-12", 3, 1), sandboxName("FAC-12", 3, 2), "a retry after a timed-out create gets a name of its own");
 assert.equal(sandboxName("weird key/ü".repeat(10), 1).length, 63);
+assert.match(sandboxName("weird key/ü".repeat(10), 1), /-[0-9a-z]+$/, "the suffix survives the length limit");
 assert.match(sandboxName("weird key/ü", 1), /^[A-Za-z0-9._-]+$/);
 
 // The launch path.
@@ -193,7 +195,7 @@ try {
   assert.ok(events.some((e) => e.event === "sandbox:harness-fallback" && e.detail.key === keys[0]), "the fallback is logged");
   assert.deepEqual(seenAtFirstExec[0], { sandbox_id: sbA.sandboxId, codex_slot: slotA }, "the sandbox and the slot are on the job before anything runs in it");
   assert.deepEqual(sbA.spec!.tags, { job: keys[0], attempt: "1", label: config.factory.label, machine: TEST_MACHINE_ID });
-  assert.equal(sbA.spec!.name, `job-${keys[0]}-a1`);
+  assert.match(sbA.spec!.name, new RegExp(`^job-${keys[0]}-a1-[0-9a-z]+$`));
   assert.equal(sbA.spec!.imageId, "im-test");
   assert.deepEqual(sbA.spec!.secrets, {}, "no Claude token, no secret");
   const forbidden = /ANTHROPIC_API_KEY|ANTHROPIC_AUTH_TOKEN|OPENAI_API_KEY/;
