@@ -83,17 +83,25 @@ const TEXT_ACTION = "text";
 /** Slack's limit for a plain text input. */
 const SLACK_INPUT_MAX = 3000;
 
+const MODAL_TITLES: Record<ModalAction, string> = {
+  answer: "Answer",
+  request_changes: "Request changes",
+  follow_up: "File a follow-up",
+  close: "Close the job",
+};
+
 type ModalCopy = { title: string; label: string; hint: string; submit: string; optional: boolean; max: number };
 
 function modalCopy(action: ModalAction, job: JobRow): ModalCopy {
+  const title = MODAL_TITLES[action];
   switch (action) {
     case "answer":
-      return { title: "Answer", label: "Your answer", hint: "Posted on the issue as your reply; the agent resumes with it.", submit: "Send answer", optional: false, max: MAX_FEEDBACK_CHARS };
+      return { title, label: "Your answer", hint: "Posted on the issue as your reply; the agent resumes with it.", submit: "Send answer", optional: false, max: MAX_FEEDBACK_CHARS };
     case "request_changes":
-      return { title: "Request changes", label: "What should change", hint: "Sent to the agent, which updates the same branch and PR.", submit: "Request changes", optional: false, max: MAX_FEEDBACK_CHARS };
+      return { title, label: "What should change", hint: "Sent to the agent, which updates the same branch and PR.", submit: "Request changes", optional: false, max: MAX_FEEDBACK_CHARS };
     case "follow_up":
       return {
-        title: "File a follow-up",
+        title,
         label: "What the fix should do",
         hint: "Filed as a new issue with the failed checks, the merged PR and why the revert failed; the factory picks it up as a new job.",
         submit: "File a follow-up",
@@ -102,7 +110,7 @@ function modalCopy(action: ModalAction, job: JobRow): ModalCopy {
       };
     case "close":
       return {
-        title: "Close the job",
+        title,
         label: "Reason (optional)",
         hint:
           job.stage === "failed"
@@ -120,6 +128,18 @@ function modalCopy(action: ModalAction, job: JobRow): ModalCopy {
 }
 
 const metadataSchema = z.object({ event: z.string(), responseUrl: z.string() });
+
+/** A modal with only a note and no submit: what the click opens at once, and what it becomes if there is nothing to fill in. */
+export function noteModal(action: ModalAction, text: string) {
+  return {
+    type: "modal",
+    callback_id: SLACK_ACTION_IDS[action],
+    title: { type: "plain_text", text: MODAL_TITLES[action] },
+    close: { type: "plain_text", text: "Close" },
+    blocks: [{ type: "section", text: { type: "plain_text", text } }],
+  };
+}
+export const LOADING = "Loading…";
 
 export function renderModal(action: ModalAction, item: Item, facts: MessageFacts, responseUrl: string) {
   const { job, event } = item;
@@ -158,7 +178,7 @@ export type InteractionDeps = {
   signingSecret: string | undefined;
   /** The Slack member id of the only user who may act. */
   ownerSlackId: string | undefined;
-  slack: Pick<SlackClient, "update" | "openView" | "postMessage" | "openDm" | "permalink"> | null;
+  slack: Pick<SlackClient, "update" | "openView" | "updateView" | "postMessage" | "openDm" | "permalink"> | null;
   /** Posts to a click's response_url. */
   respond: (url: string, body: object) => Promise<void>;
   /** The inbox actions' deps, acting as the owner. */
@@ -297,18 +317,42 @@ export async function handleInteraction(request: Request, deps: InteractionDeps)
   return ack();
 }
 
-function clicked(deps: InteractionDeps, payload: z.infer<typeof blockActionsSchema>, owner: boolean) {
+async function clicked(deps: InteractionDeps, payload: z.infer<typeof blockActionsSchema>, owner: boolean) {
   const [button] = payload.actions;
   const action = button ? slackAction(button.action_id) : null;
   if (!button || !action) return ack();
   const reply = (text: string) => deps.respond(payload.response_url, ephemeral(deps.secrets, text));
+  const slack = owner ? deps.slack : null;
+  // The trigger id expires 3 seconds after the click, so a modal opens before the ack and before any
+  // read; the item is filled in afterwards.
+  let view: { id: string; hash?: string } | null = null;
+  let openError: unknown = null;
+  if (slack && isModal(action)) {
+    try {
+      view = await slack.openView(payload.trigger_id, noteModal(action, LOADING));
+    } catch (error) {
+      openError = error;
+    }
+  }
   deps.after(async () => {
     try {
       if (!owner) return await reply(NOT_OWNER);
-      if (!deps.slack) return await reply(NO_TOKEN);
-      const item = button.block_id.startsWith(ITEM_BLOCK_PREFIX) ? await openItem(deps, button.block_id.slice(ITEM_BLOCK_PREFIX.length)) : null;
+      if (!slack) return await reply(NO_TOKEN);
+      if (openError) throw openError;
+      const read = () => (button.block_id.startsWith(ITEM_BLOCK_PREFIX) ? openItem(deps, button.block_id.slice(ITEM_BLOCK_PREFIX.length)) : null);
+      if (view && isModal(action)) {
+        try {
+          const item = await read();
+          const next = item ? renderModal(action, item, await messageFacts(deps, item.job), payload.response_url) : noteModal(action, ALREADY_RESOLVED);
+          await slack.updateView(view.id, next, view.hash);
+        } catch (error) {
+          await slack.updateView(view.id, noteModal(action, safeMessage(deps.secrets, error))).catch(() => undefined);
+          throw error;
+        }
+        return;
+      }
+      const item = await read();
       if (!item) return await reply(ALREADY_RESOLVED);
-      if (isModal(action)) return await deps.slack.openView(payload.trigger_id, renderModal(action, item, await messageFacts(deps, item.job), payload.response_url));
       await act(deps, item, action, "", reply);
     } catch (error) {
       await reply(safeMessage(deps.secrets, error)).catch(() => undefined);

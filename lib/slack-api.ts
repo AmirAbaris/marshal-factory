@@ -98,9 +98,15 @@ export function slackClient({ token, baseUrl = SLACK_API_URL, minGapMs = 1_000, 
       const body = await call("conversations.open", { users: user });
       return str((body.channel as { id?: unknown } | undefined)?.id, "channel id");
     },
-    /** Opens a modal; the trigger id from a click is good for 3 seconds. */
+    /** Opens a modal; the trigger id from a click is good for 3 seconds. Returns the view's id and hash for updateView. */
     async openView(triggerId: string, view: object) {
-      await call("views.open", { trigger_id: triggerId, view: JSON.stringify(view) });
+      const body = await call("views.open", { trigger_id: triggerId, view: JSON.stringify(view) });
+      const opened = body.view as { id?: unknown; hash?: unknown } | undefined;
+      return { id: str(opened?.id, "view id"), hash: typeof opened?.hash === "string" ? opened.hash : undefined };
+    },
+    /** Replaces an open modal; with the hash, Slack refuses the update if the view changed since. */
+    async updateView(viewId: string, view: object, hash?: string) {
+      await call("views.update", { view_id: viewId, view: JSON.stringify(view), ...(hash && { hash }) });
     },
     /** A link to a message; it needs no scope beyond the token. */
     async permalink(channel: string, ts: string, timeoutMs?: number) {
