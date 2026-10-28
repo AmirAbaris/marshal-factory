@@ -104,11 +104,11 @@ assert.deepEqual(
     kind: "launch",
     execution: "modal",
     harness: { provider: "claudeAgent", model: "claude-opus-5-5" },
-    ticket: { notes: ["This runner has no checkout of the repo, so it runs in a Modal sandbox."] },
+    ticket: { notes: ["This runner has no checkout of the repo, so it runs in a cloud sandbox."] },
   },
   "a Local label without a checkout runs on Modal and says so",
 );
-assert.equal(launch([L("Modal", "Runs on")], undefined, { checkout: false, modal: "no Modal token" }).kind, "wait", "Modal that cannot launch never falls back to a repo without a checkout");
+assert.equal(launch([L("Cloud", "Runs on")], undefined, { checkout: false, modal: "no cloud sandbox token" }).kind, "wait", "Modal that cannot launch never falls back to a repo without a checkout");
 
 // Filter: an explicit ?repo wins over the cookie; anything else shows every repo.
 assert.equal(repoFilter(B, A), B, "the param wins");

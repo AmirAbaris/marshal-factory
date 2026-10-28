@@ -70,7 +70,7 @@ export function runsOn(job: Pick<JobRow, "execution" | "machine_id" | "sandbox_i
 export function whereLine(where: RunsOn, machineName: string | null) {
   switch (where.kind) {
     case "modal":
-      return "Modal sandbox";
+      return "Cloud sandbox";
     case "local":
       return `Local · ${machineName ?? where.machineId}`;
     default: {

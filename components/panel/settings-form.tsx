@@ -50,7 +50,7 @@ function UntrackedWarning({ name, tracking }: { name: string; tracking: Exclude<
   );
 }
 
-const EXECUTION_LABELS: Record<Execution, string> = { local: "This Mac", modal: "Modal" };
+const EXECUTION_LABELS: Record<Execution, string> = { local: "This Mac", modal: "Cloud" };
 
 type Check = { tone: "ok" | "warn" | "missing"; label: ReactNode; howTo?: ReactNode };
 
@@ -78,10 +78,10 @@ function sandboxChecks(readiness: SandboxReadiness): Check[] {
   const unusable = readiness.codexSlotsUnusable ?? 0;
   return [
     readiness.modal
-      ? { tone: "ok", label: "Modal token present" }
+      ? { tone: "ok", label: "Cloud sandbox token present" }
       : {
           tone: "missing",
-          label: "No Modal token on the runner",
+          label: "No cloud sandbox token on the runner",
           howTo: (
             <>
               Run <Cmd>uv tool install modal</Cmd> and then <Cmd>modal token new</Cmd> on the runner Mac.
@@ -139,7 +139,7 @@ function SandboxReadinessList({ readiness }: { readiness: SandboxReadiness | nul
     return (
       <div role="note" className="flex gap-2.5 rounded-lg border border-warning/40 bg-warning/10 p-3 text-sm">
         <TriangleAlertIcon className="mt-0.5 size-4 shrink-0 text-warning" />
-        <p>No online runner reports its Modal setup yet. Jobs stay queued until one is ready.</p>
+        <p>No online runner reports its cloud sandbox setup yet. Jobs stay queued until one is ready.</p>
       </div>
     );
   }
@@ -148,7 +148,7 @@ function SandboxReadinessList({ readiness }: { readiness: SandboxReadiness | nul
   return (
     <div className="flex flex-col gap-3 rounded-lg border p-3 text-sm">
       <p className={blocked ? "text-warning" : "text-muted-foreground"}>
-        {blocked ? "Modal is not ready yet. Jobs stay queued until it is." : "Modal is ready on the runner."}
+        {blocked ? "Cloud sandboxes are not ready yet. Jobs stay queued until they are." : "Cloud sandboxes are ready on the runner."}
       </p>
       <ul className="flex flex-col gap-2.5">
         {checks.map((check, i) => (
@@ -338,7 +338,7 @@ export function SettingsForm({ machines, saved, notifications }: { machines: Fee
                       ))}
                     </SelectPopup>
                   </Select>
-                  <FieldDescription>Modal runs each job in its own sandbox; this Mac runs it in the runner&apos;s T3.</FieldDescription>
+                  <FieldDescription>Cloud runs each job in its own cloud sandbox; this Mac runs it in the runner&apos;s T3.</FieldDescription>
                 </Field>
                 {execution === "modal" && <SandboxReadinessList readiness={readiness} />}
               </div>

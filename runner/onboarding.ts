@@ -132,7 +132,7 @@ const baseOf = (image: SandboxImage): BaseImage => ({ versions: builtVersions(im
 /** The base image when this runner can start onboarding sandboxes from it, else why not. */
 function launchable(): { image: SandboxImage } | { problem: string } {
   const image = sandboxRuntime.image();
-  const problem = imageProblem(image, config.factory.sandbox) ?? (!sandboxRuntime.modalToken() ? "there is no Modal token on this runner" : undefined);
+  const problem = imageProblem(image, config.factory.sandbox) ?? (!sandboxRuntime.modalToken() ? "there is no cloud sandbox token on this runner" : undefined);
   return problem || !image ? { problem: problem ?? "no sandbox image is built" } : { image };
 }
 
@@ -240,7 +240,7 @@ export async function onboardRepo(repo: string) {
 
 async function startAgent(repo: string, committedError: string | undefined) {
   const base = launchable();
-  if ("problem" in base) return fail(repo, `Modal cannot start the onboarding sandbox: ${base.problem}.`);
+  if ("problem" in base) return fail(repo, `The onboarding cloud sandbox cannot start: ${base.problem}.`);
   starting.add(repo);
   try {
     const leasing = await claimSlot(repo, (await thisMachine()).id);

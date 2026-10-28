@@ -225,7 +225,7 @@ export async function teardownSandbox(row: SandboxRow) {
   if (row.sandbox_id && stop) await verifyGone(row.sandbox_id);
   if (row.sandbox_snapshot) await deleteSnapshot(row.sandbox_snapshot);
   const threadEnded = stopOwed(row) && bindingOf(row.t3_thread_id) === "bound";
-  const ended = row.sandbox_id ? `Ended sandbox ${row.sandbox_id}; Modal no longer runs it.` : "The sandbox was already hibernated; its snapshot is deleted.";
+  const ended = row.sandbox_id ? `Ended cloud sandbox ${row.sandbox_id}; it no longer runs.` : "The sandbox was already hibernated; its snapshot is deleted.";
   await db
     .update(jobs)
     .set({
@@ -422,7 +422,7 @@ export async function openT3(jobId: JobId): Promise<PairingResult> {
   const [job] = await db.select().from(jobs).where(eq(jobs.id, jobId));
   if (!job) return { refused: `No job ${jobId}.` };
   if (isHibernated(job)) return { refused: HIBERNATED_MESSAGE };
-  if (!job.sandbox_id) return { refused: "This job does not run in a Modal sandbox." };
+  if (!job.sandbox_id) return { refused: "This job does not run in a cloud sandbox." };
   try {
     const tunnel = await tunnelUrl(job.sandbox_id, T3_PORT);
     switch (tunnel.kind) {

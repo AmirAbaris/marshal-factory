@@ -379,7 +379,7 @@ try {
     // Runs that finish fast free their slot within the pass; the rest start on a later one.
     if (d.verification) assert.deepEqual([d.verification.state, d.verification.sha], ["running", heads.get(k)]);
   }
-  assert.match((await decisionOf(LOCAL)).reasons.join(" "), /Not verified at fffffff: no checks were reported for it; the run isn't in a Modal sandbox/, "a local job can't be verified by the runner");
+  assert.match((await decisionOf(LOCAL)).reasons.join(" "), /Not verified at fffffff: no checks were reported for it; the run isn't in a cloud sandbox/, "a local job can't be verified by the runner");
   assert.match((await decisionOf(TRIAL)).reasons.join(" "), /only when the repo merges on its own/, "trial never runs the checks itself");
   assert.equal((await decisionOf(TRIAL)).verification, undefined);
 

@@ -95,7 +95,7 @@ export function OpenSandboxT3({ jobId, className }: { jobId: JobId; className?: 
           <DialogDescription>
             {view.kind === "ready"
               ? "Paste this link into T3 → Add environment. It works once and expires in 15 minutes."
-              : "The job runs in a Modal sandbox, so T3 on your Mac connects to it with a one-time pairing link."}
+              : "The job runs in a cloud sandbox, so T3 on your Mac connects to it with a one-time pairing link."}
           </DialogDescription>
         </DialogHeader>
         <DialogPanel>
