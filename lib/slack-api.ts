@@ -101,11 +101,6 @@ export function slackClient({ token, baseUrl = SLACK_API_URL, minGapMs = 1_000, 
     async openView(triggerId: string, view: object) {
       await call("views.open", { trigger_id: triggerId, view: JSON.stringify(view) });
     },
-    async channelInfo(channel: string) {
-      const body = await call("conversations.info", { channel });
-      const info = body.channel as { id?: unknown; name?: unknown; is_private?: unknown; is_member?: unknown } | undefined;
-      return { id: str(info?.id, "channel id"), name: typeof info?.name === "string" ? info.name : null, isPrivate: info?.is_private === true, isMember: info?.is_member === true };
-    },
     pausedUntil: () => pausedUntil,
   };
 }

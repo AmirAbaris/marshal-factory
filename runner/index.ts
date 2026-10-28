@@ -120,7 +120,7 @@ function takeIntents(rows: readonly OpenIntent[]) {
     if (intent.handled_at || inProgress.has(intent.id)) continue;
     // Every later snapshot repeats the open intents; a failed one waits for its retry time.
     if (intent.retry_at && intent.retry_at.getTime() > Date.now()) continue;
-    const delivery = deliveryFor(intent.kind, owner, machine.id);
+    const delivery = deliveryFor(intent.kind, owner, machine.id, slackFromEnv() !== null);
     if (delivery === "skip") continue;
     // The lease decides; this only spares a queue step while a lease is live.
     if (delivery === "lease" && intent.lease_until && intent.lease_until.getTime() > Date.now()) continue;
