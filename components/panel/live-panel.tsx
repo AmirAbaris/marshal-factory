@@ -1,13 +1,14 @@
 "use client";
 
-import { InboxIcon } from "lucide-react";
+import { ArchiveIcon, InboxIcon } from "lucide-react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { startTransition, useMemo, useOptimistic } from "react";
 import { Button } from "@/components/ui/button";
 import type { AgentRow, AuditRow, EventRow, JobEvidenceRow, JobRow, MachineRow, RepoSettingsRow, RunRow } from "@/db/schema";
 import { Board } from "./board";
-import { boardCards } from "./cards";
+import { panelCards } from "./cards";
+import { splitArchived } from "@/lib/archive";
 import { sandboxState } from "@/lib/execution";
 import { attemptBranch } from "@/lib/factory";
 import { inboxItems } from "@/lib/inbox";
@@ -85,12 +86,12 @@ function footerSummary(view: PanelView, counts: { jobs: number; sessions: number
 }
 
 /** Where closing the run detail goes: the same page, in the same layout. */
-function closeHref(view: PanelView, jobView: JobView) {
+function closeHref(view: PanelView, jobView: JobView, archived: boolean) {
   switch (view) {
     case "inbox":
       return "/inbox";
     case "jobs":
-      return jobsHref(jobView);
+      return jobsHref(jobView, undefined, archived);
     case "activity":
       return "/activity";
     default: {
@@ -121,6 +122,7 @@ export function LivePanel({
   view,
   jobView: currentJobView,
   repo: currentRepo,
+  archived,
   registry,
   jobs,
   runs,
@@ -134,6 +136,8 @@ export function LivePanel({
   jobView: JobView;
   /** The repo the jobs page and the inbox show, from ?repo or the remembered one; null shows all. */
   repo: string | null;
+  /** The jobs page shows the archive, from ?archived=1. */
+  archived: boolean;
   registry: readonly PanelRepo[];
   /** The inbox item open on the right, by job key. */
   inboxKey: string | undefined;
@@ -155,7 +159,11 @@ export function LivePanel({
   );
   const harnesses = useMemo(() => reportedHarnesses(machineRows, 0) ?? [], [machineRows]);
   const enabledHarnesses = useMemo(() => harnesses.filter((h) => h.enabled), [harnesses]);
-  const cards = useMemo(() => boardCards(jobRows, runRows, harnesses), [jobRows, runRows, harnesses]);
+  // Archived jobs leave the board, the list, the inbox and their counts.
+  const { shown: liveJobs, archived: archivedJobs } = useMemo(() => splitArchived(jobRows), [jobRows]);
+  const { live: liveCards, archived: archivedCards } = useMemo(() => panelCards(jobRows, runRows, harnesses), [jobRows, runRows, harnesses]);
+  const showArchive = view === "jobs" && archived;
+  const cards = showArchive ? archivedCards : liveCards;
   const unstaged = useMemo(() => {
     const claimed = new Set(jobRows.map((j) => j.key));
     return runRows.filter((r) => r.stage === null && !(r.job_key && claimed.has(r.job_key)));
@@ -173,16 +181,16 @@ export function LivePanel({
     ? jobRows.find((j) => j.key === selectedRun.job_key)
     : undefined;
 
-  const inboxCount = useMemo(() => inboxItems(jobRows).length, [jobRows]);
+  const inboxCount = useMemo(() => inboxItems(liveJobs).length, [liveJobs]);
   const fullView = useFullView();
   const [jobView, switchJobView] = useJobView(currentJobView);
 
   // The filter applies to the loaded feeds; the inbox count stays global.
-  const options = useMemo(() => repoOptions(registry, jobRows), [registry, jobRows]);
+  const options = useMemo(() => repoOptions(registry, showArchive ? archivedJobs : liveJobs), [registry, showArchive, archivedJobs, liveJobs]);
   const repoLabels = useRepoLabels(options);
   const [repoChoice, pickRepo] = useRepoFilter(currentRepo);
   const repo = options.some((o) => o.repo === repoChoice) ? repoChoice : null;
-  const shownJobs = useMemo(() => (repo ? jobRows.filter((j) => j.repo === repo) : jobRows), [jobRows, repo]);
+  const shownJobs = useMemo(() => (repo ? liveJobs.filter((j) => j.repo === repo) : liveJobs), [liveJobs, repo]);
   const shownCards = useMemo(() => (repo ? cards.filter((c) => c.repo === repo) : cards), [cards, repo]);
   const shownInbox = useMemo(() => (repo ? inboxItems(shownJobs).length : inboxCount), [repo, shownJobs, inboxCount]);
   const inboxOpen = useMemo(
@@ -199,7 +207,9 @@ export function LivePanel({
       case "inbox":
         return <Inbox jobs={shownJobs} cards={cards} selected={inboxKey} repoLabels={repoLabels} fullView={fullView} />;
       case "jobs":
-        return jobView === "board" ? (
+        return showArchive ? (
+          <JobList cards={shownCards} agentsBySession={agentsBySession} selected={detail?.sessionId} machines={machineById} repoLabels={repoLabels} archived />
+        ) : jobView === "board" ? (
           <Board cards={shownCards} agentsBySession={agentsBySession} selected={detail?.sessionId} machines={machineById} repoLabels={repoLabels} />
         ) : (
           <JobList cards={shownCards} agentsBySession={agentsBySession} selected={detail?.sessionId} machines={machineById} repoLabels={repoLabels} />
@@ -216,12 +226,24 @@ export function LivePanel({
   return (
     <>
       <PanelHeader
-        title={meta.title}
-        jobView={view === "jobs" ? { current: jobView, onChange: switchJobView } : undefined}
+        title={showArchive ? "Archived jobs" : meta.title}
+        jobView={view === "jobs" && !showArchive ? { current: jobView, onChange: switchJobView } : undefined}
         actions={
           meta.job ? (
             <>
               {repoSelect}
+              {(showArchive || archivedCards.length > 0) && (
+                <Button
+                  render={<Link href={jobsHref(jobView, undefined, !showArchive)} scroll={false} />}
+                  variant={showArchive ? "secondary" : "ghost"}
+                  size="sm"
+                  aria-pressed={showArchive}
+                  className={showArchive ? undefined : "text-muted-foreground"}
+                >
+                  <ArchiveIcon data-icon="inline-start" />
+                  Archived {archivedCards.length}
+                </Button>
+              )}
               {inboxCount > 0 && (
                 <Button render={<Link href="/inbox" />} variant="ghost" size="sm" className="text-muted-foreground">
                   <InboxIcon data-icon="inline-start" />
@@ -249,7 +271,7 @@ export function LivePanel({
               stagesPath={detail.stagesPath}
               audit={detail.audit}
               evidence={detail.evidence}
-              closeHref={closeHref(view, jobView)}
+              closeHref={closeHref(view, jobView, showArchive)}
               fullView={fullView}
               job={selectedJob}
               machine={selectedJob?.machine_id ? machineById.get(selectedJob.machine_id) : undefined}
@@ -272,11 +294,11 @@ export function LivePanel({
       <PanelFooter
         status={status}
         note={[`${active} active`, sandboxNote].filter(Boolean).join(" · ")}
-        summary={footerSummary(view, { jobs: shownCards.length, sessions: unstaged.length, inbox: shownInbox })}
+        summary={showArchive ? plural(shownCards.length, "archived job", "archived jobs") : footerSummary(view, { jobs: shownCards.length, sessions: unstaged.length, inbox: shownInbox })}
         keys={
           fullView.full && (selectedRun || inboxOpen)
             ? FULL_VIEW_KEYS
-            : (view === "jobs" && jobView === "list") || view === "inbox"
+            : (view === "jobs" && (jobView === "list" || showArchive)) || view === "inbox"
               ? LIST_KEYS
               : undefined
         }

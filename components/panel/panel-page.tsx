@@ -42,7 +42,7 @@ async function loadDetail(raw: string | undefined): Promise<DetailProps | undefi
 }
 
 async function Panel({ view, searchParams }: { view: PanelView; searchParams: Promise<Record<string, string | string[] | undefined>> }) {
-  const { run, job, view: rawView, repo } = await searchParams;
+  const { run, job, view: rawView, repo, archived } = await searchParams;
   const [jobs, runs, agents, machines, detail, jar] = await Promise.all([
     load(jobsQuery()),
     load(runsQuery()),
@@ -59,6 +59,7 @@ async function Panel({ view, searchParams }: { view: PanelView; searchParams: Pr
       view={view}
       jobView={jobView}
       repo={repoFilter(repo, jar.get(REPO_FILTER_COOKIE)?.value)}
+      archived={view === "jobs" && archived === "1"}
       registry={registry.map((r) => ({ repo: r.repo, display_name: r.display_name, enabled: r.enabled, is_default: r.is_default }))}
       jobs={jobs}
       runs={runs}

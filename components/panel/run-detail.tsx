@@ -17,6 +17,7 @@ import { runFeedPath } from "@/lib/run-links";
 import { RUNS_ON_LABELS, ticketRecordSchema } from "@/lib/ticket-overrides";
 import { runsOn } from "./cards";
 import { AgentTree } from "./agent-tree";
+import { ArchiveButton } from "./archive-button";
 import { EventFeed } from "./event-feed";
 import { FullViewToggle, useEscapeToSidePanel, type FullView } from "./full-view";
 import { EvidenceSection } from "./evidence";
@@ -203,6 +204,7 @@ export function RunDetail({
             </Button>
           )}
           {job?.stage === "pr" && job.pr_url && <MergeButton key={job.pr_url} jobId={job.id} jobKey={job.key} />}
+          {job && <ArchiveButton job={job} />}
           {job && sandboxed ? (
             <OpenSandboxT3 jobId={job.id} />
           ) : run.t3_thread_id && (
