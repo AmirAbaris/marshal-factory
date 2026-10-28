@@ -10,6 +10,7 @@ import { PAIRING_TTL_MINUTES, type PairingResult } from "../lib/t3-pairing";
 //   any        one machine, whichever leases it first; a claim ends in claimLaunch's compare-and-set
 //   owner      the job's machine; a job no machine holds yet goes to any machine
 //   broadcast  every machine once, each recording its own intent_receipts row
+//   slack      one machine with a Slack token; the others leave it alone
 export const INTENT_ROUTES = {
   claim: "any",
   stop: "owner",
@@ -24,7 +25,8 @@ export const INTENT_ROUTES = {
   rebuild_repo_image: "any",
   repo_push: "any",
   retry_stop: "owner",
-} as const satisfies Record<IntentKind, "any" | "owner" | "broadcast">;
+  slack_test: "slack",
+} as const satisfies Record<IntentKind, "any" | "owner" | "broadcast" | "slack">;
 
 /**
  * How often a failing intent is tried before it is closed with its error. A pairing link is asked
@@ -48,6 +50,8 @@ export const INTENT_ATTEMPTS = {
   repo_push: 20,
   // The owner sees the error on the inbox item and can retry again.
   retry_stop: 3,
+  // The owner watches Settings for the outcome and can send another.
+  slack_test: 1,
 } as const satisfies Record<IntentKind, number>;
 
 /** An intent's result as the runner logs it: a pairing link only ever goes to the intent row. */
@@ -74,7 +78,7 @@ export async function expirePairings() {
 
 export type Delivery = "lease" | "receipt" | "skip";
 
-export function deliveryFor(kind: IntentKind, owner: string | null, me: string): Delivery {
+export function deliveryFor(kind: IntentKind, owner: string | null, me: string, hasSlack = false): Delivery {
   const route = INTENT_ROUTES[kind];
   switch (route) {
     case "any":
@@ -83,6 +87,8 @@ export function deliveryFor(kind: IntentKind, owner: string | null, me: string):
       return owner === null || owner === me ? "lease" : "skip";
     case "broadcast":
       return "receipt";
+    case "slack":
+      return hasSlack ? "lease" : "skip";
     default: {
       const unhandled: never = route;
       throw new Error(`no delivery for route ${String(unhandled)}`);

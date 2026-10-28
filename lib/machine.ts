@@ -90,6 +90,10 @@ export const sandboxReadinessSchema = z.object({
 });
 export type SandboxReadiness = z.infer<typeof sandboxReadinessSchema>;
 
+/** Whether a runner can send Slack notifications (lib/slack.ts): booleans, never the token. */
+export const slackReadinessSchema = z.object({ configured: z.boolean(), owner: z.boolean() });
+export type SlackReadiness = z.infer<typeof slackReadinessSchema>;
+
 export const inventorySchema = z.object({
   runnerSha: known(z.string()),
   t3: known(
@@ -107,6 +111,8 @@ export const inventorySchema = z.object({
   harnesses: known(z.array(harnessSchema)).optional(),
   /** Optional for the same reason. */
   sandbox: known(sandboxReadinessSchema).optional(),
+  /** Whether the runner's env has SLACK_BOT_TOKEN and SLACK_OWNER_USER_ID; never their values. Optional for the same reason. */
+  slack: known(slackReadinessSchema).optional(),
 });
 export type Inventory = z.infer<typeof inventorySchema>;
 
@@ -167,6 +173,17 @@ export function reportedSandbox(machines: readonly { last_seen_at: Date; invento
   const score = (r: SandboxReadiness) =>
     Number(r.modal) + Number(r.codexSlots > 0) + Number(r.image && !imageOutdated(r)) + Number(r.claude) / 2;
   return reports.sort((a, b) => score(b) - score(a))[0] ?? null;
+}
+
+/** Slack as the online machines report it: configured when any has a token. Null when none reports it. */
+export function reportedSlack(machines: readonly { last_seen_at: Date; inventory: unknown }[], now: number): SlackReadiness | null {
+  const reports = machines.flatMap((m) => {
+    const slack = parseInventory(m.inventory)?.slack;
+    return isOnline(m.last_seen_at, now) && slack && slack !== UNKNOWN ? [slack] : [];
+  });
+  if (reports.length === 0) return null;
+  const configured = reports.filter((r) => r.configured);
+  return { configured: configured.length > 0, owner: configured.some((r) => r.owner) };
 }
 
 /**

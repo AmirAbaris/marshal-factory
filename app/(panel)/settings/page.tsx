@@ -3,6 +3,7 @@ import { Suspense } from "react";
 import { SettingsForm } from "@/components/panel/settings-form";
 import { db } from "@/db/client";
 import { load, machinesQuery } from "@/lib/live-queries";
+import { readNotifications } from "@/lib/notifications";
 import { readSettings } from "@/lib/settings";
 
 async function Panel() {
@@ -10,7 +11,8 @@ async function Panel() {
   await connection();
   // load checks the owner before anything is read.
   const machines = await load(machinesQuery());
-  return <SettingsForm machines={machines} saved={await readSettings(db)} />;
+  const [saved, notifications] = await Promise.all([readSettings(db), readNotifications(db)]);
+  return <SettingsForm machines={machines} saved={saved} notifications={notifications} />;
 }
 
 export default function SettingsPage() {

@@ -168,6 +168,52 @@ A stop ends in a verified state, not just a delivered message. Linear taking the
 - **Settling.** Confirmed or unconfirmed, the source is reopened (for a Linear stop) and the failure written back (for a Close), and the capacity is free. **Stopped · confirmed** shows the evidence. **Stop not confirmed — check the thread in T3** puts the job in the inbox (`stop_unconfirmed`) with **Retry stop** and **Dismiss**, and links the thread from the card and run detail (**Open in T3**). The factory label can't retry the job until you dismiss it.
 - **How the runner reaches T3** (`lib/t3-client.ts`). Starting, messaging, showing and listing threads use the `t3 thread` CLI. Subagent threads and interrupts use T3's MCP endpoint on the job's host (`server-runtime.json`'s origin, `/mcp`): `t3 auth session issue` mints a bearer session with only the scopes the call needs (`orchestration:read`, plus `orchestration:operate` to interrupt) and a 5 minute TTL, and `t3 auth session revoke` ends it after the call. The call runs on the host itself through a small script (the runner's bun here, node in a sandbox), with the token on stdin, never in argv or a log. T3 gives such a session an `approval-required` runtime-mode ceiling and refuses to interrupt a thread that runs above it (`runtime_mode_escalation_denied`), which includes the factory's `full-access` threads; the stop records the refusal and ends unconfirmed if the thread does not stop on its own. `task_cancel` only answers callers that are themselves T3 threads, so delegated subagent work is stopped by interrupting the subagent threads instead.
 
+## Slack notifications
+
+The runner posts a Slack message when a job lands in the [inbox](#needs-you-inbox), when the factory merges a PR on its own, and when it reverts one. It edits that same message while the item changes and once more when it is resolved (**✅ Answered**, **✅ Merged by the factory**, **↩️ Changes requested**, **🔁 Retried**, **Dismissed**, **Closed**, **✅ Stop confirmed**). The rules are in `lib/slack.ts`, the pass in `runner/slack.ts`.
+
+- **Setup.** Create the app at [api.slack.com/apps](https://api.slack.com/apps) → **Create New App** → **From a manifest**, pick the workspace and paste:
+
+  ```yaml
+  display_information:
+    name: Marshal factory
+    description: Tells you when a factory job needs you.
+  features:
+    bot_user:
+      display_name: Marshal factory
+      always_online: true
+    slash_commands:
+      - command: /factory
+        url: https://marshal-factory.vercel.app/api/slack/commands
+        description: Send a job to the factory
+        usage_hint: "[what to build]"
+        should_escape: false
+    shortcuts:
+      - name: Send to factory
+        type: message
+        callback_id: send_to_factory
+        description: File this message as a factory job
+  oauth_config:
+    scopes:
+      bot: [chat:write, chat:write.public, im:write, commands, users:read]
+  settings:
+    interactivity:
+      is_enabled: true
+      request_url: https://marshal-factory.vercel.app/api/slack/interactions
+    org_deploy_enabled: false
+    socket_mode_enabled: false
+    token_rotation_enabled: false
+  ```
+
+  Install it to the workspace. The slash command, the shortcut and the interactivity URL are for the next steps (acting from Slack, filing jobs from Slack); until those routes exist, clicking a link button still opens its page but Slack may show a small warning next to it.
+- **Environment.** Add to the runner checkout's `.env.local` and restart the runner (`bun scripts/install-runner.ts`): `SLACK_BOT_TOKEN` (**OAuth & Permissions** → Bot User OAuth Token, `xoxb-…`), `SLACK_SIGNING_SECRET` (**Basic Information** → App Credentials) and `SLACK_OWNER_USER_ID` (your member id: your Slack profile → ⋯ → **Copy member ID**). A runner without `SLACK_BOT_TOKEN` skips Slack entirely. Each runner's inventory reports whether it has the token and the member id, never their values; Settings shows **Slack connected** from that. The panel needs no Slack token: saving checks only that a channel id looks like one, and a channel Slack refuses shows as the runner's post error and in the test message's result. Ingest is unchanged.
+- **Settings → Notifications.** **Send to** your DMs (opened with `conversations.open`), a channel by id (invite the app first if it is private; public channels work without joining thanks to `chat:write.public`), or **Off**, which posts nothing new but still resolves messages already sent. One switch per event: questions, reviews and handovers, failures, reverts (failed and done), stops not confirmed, merges by the factory. Merges you approved resolve their handover message instead of posting a new one. The settings are the one row of `notification_settings`; without a row the runner DMs you about everything. **Send test message** records a `slack_test` intent; only a runner with the token takes it, posts the test where notifications go (your DMs while they are off), and the card shows the result or Slack's error.
+- **Quiet hours.** A start, an end and a time zone (an IANA name such as `Europe/Berlin`). During them only failed reverts and unconfirmed stops are sent, since main is red or an agent may still be spending. Nothing is queued: whatever still needs you when quiet hours end is posted then, and what was resolved meanwhile is never posted. Edits to messages already sent don't notify, so they go out anytime.
+- **One message per event.** Each event has an id from its job, attempt, kind and stage report (`lib/slack.ts` `eventId`), the key of its `slack_messages` row with the channel and `ts`. The runner inserts the row as `posting` before it posts, so a re-tick, a restart or a second runner never posts twice; a row a dead runner left `posting` for 5 minutes is posted again. A new question or a new failure on the same job is a new event and a new message. An event older than 24 hours when the runner first sees it stays in the panel only, so turning Slack on doesn't post the backlog.
+- **The pass.** The runner's own queue step after every tick, so a slow Slack holds up nothing: resolve messages whose event went away, edit open ones whose content changed (a hash of the message is kept), then post new ones. At most 25 Slack calls a pass, one at a time with a second between them. A 429 waits out a short `Retry-After` and pauses Slack for this runner for a long one; a refused post (a bad channel, a revoked token) ends the pass's posting, and every failure is in the step's log line, never thrown.
+- **What a message holds.** A header `<emoji> <KEY> · <title>`, the inbox's one-line reason, repo · harness · spend, and link buttons: **Open in panel** (`/inbox?job=<KEY>`), the pull request and the Linear issue. Text is clipped, and anything shaped like a token, plus the value of every env variable named like a token, secret, password, key or database URL, is replaced with `[redacted]`. No logs, no buttons that act yet; their action ids are reserved in `SLACK_ACTION_IDS`, and the actions block's id names the event.
+- **Rollout.** Migrate (migration 0035 adds `slack_messages`, `notification_settings` and the `slack_test` intent kind). Restart the runner after adding the env variables.
+
 ## Panel access and deploys
 
 - **Sign-in.** Neon Auth (`auth: true` in `neon.ts`) holds the users. `proxy.ts` sends a request without a session to `/auth/sign-in`, answers `/api/*` with 401, and shows a 403 page to any account that is not the owner. The owner is an account whose email is in `FACTORY_OWNER_EMAILS` (comma-separated, case-insensitive) and verified. An unset or empty list admits nobody. `lib/live-queries.ts` checks the owner again before it seals a query, so only the owner ever holds a Realtime credential.
@@ -181,7 +227,7 @@ A stop ends in a verified state, not just a delivered message. Linear taking the
 - **Environment.** The panel needs `DATABASE_URL`, `DATABASE_URL_UNPOOLED`, `NEON_AUTH_BASE_URL`, `NEON_AUTH_COOKIE_SECRET` (`openssl rand -base64 32`), `NEON_REALTIME_URL`, `NEXT_PUBLIC_NEON_REALTIME_URL`, `NEON_REALTIME_SECRET` and `FACTORY_OWNER_EMAILS`. `next build` fails without the cookie secret. A preview build needs none of the three Realtime variables.
 - **Realtime origins.** The allowed origins are `*`, because Vercel preview URLs change per branch. The sealed query is the credential, and only the owner can get one.
 - **Jobs.** `/` shows every job as a board (`?view=board`) or a list (`?view=list`); the header's switch changes the view in place and remembers it in the `jobs_view` cookie, which `/` without `?view` opens. The header's repository filter works the same way with `?repo` and the `jobs_repo` cookie ([Repositories](#repositories)). An open run adds `&run=<session>` and closing it keeps the view. The old `/list` redirects to `/?view=list`. In list view J and K walk the rows, Enter opens a run and Esc closes it.
-- **Settings.** `/settings` picks the harness and model every runner starts new threads on, from the enabled harnesses the machines report. **Run jobs on** picks this Mac's T3 or a Modal sandbox per job, and lists what the runner still needs for Modal. The choice is the one row of the `settings` table; the runner reads it on each launch pass and falls back to its config. A repo's defaults on **Repositories** go over it. Each job records the provider and model it launched with. Runs on Codex show stages, and their cost once the runner has read it from Codex's session logs; runs on any other harness show neither. The quiet-run watchdog applies only to Claude Code.
+- **Settings.** `/settings` picks the harness and model every runner starts new threads on, from the enabled harnesses the machines report. **Run jobs on** picks this Mac's T3 or a Modal sandbox per job, and lists what the runner still needs for Modal. The choice is the one row of the `settings` table; the runner reads it on each launch pass and falls back to its config. A repo's defaults on **Repositories** go over it. Each job records the provider and model it launched with. Runs on Codex show stages, and their cost once the runner has read it from Codex's session logs; runs on any other harness show neither. The quiet-run watchdog applies only to Claude Code. The **Notifications** card sets up [Slack notifications](#slack-notifications).
 - **Machines.** `/machines` lists every Mac whose runner reports in, with online state computed in the browser from `last_seen_at`, its resources, its T3 projects and the factory repos.
 - **Vercel.** A merge to `main` deploys production, and a push to a PR branch deploys a preview. `vercel.json` migrates before `bun run build`, so production migrates the production branch and each preview migrates its own Neon branch, and runs functions in `fra1` next to the database. `scripts/migrate-guard.ts` runs first and stops a non-production build whose `DATABASE_URL` or `DATABASE_URL_UNPOOLED` points at the production branch (`PRODUCTION_ENDPOINTS` in `lib/migrate-guard.ts`; add new production endpoints there). The project's Ignored Build Step, `[ -z "$DATABASE_URL" ]`, cancels a preview that has no database yet. A merge that changes the runner still needs `bun scripts/install-runner.ts` in the live checkout after `git pull`.
 - **Previews.** A preview build (`VERCEL_ENV=preview`) shows the data from its branch but does not subscribe to Realtime, and the footer says "Live updates off in previews". Its Neon branch has no Realtime config that the build can read. Production keeps live updates.
