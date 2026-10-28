@@ -20,7 +20,8 @@ const { inQuietHours, notificationConfigSchema, NOTIFICATIONS_ID, parseNotificat
 const { eventId, NOTIFY_WINDOW_MS, notifyEvents, redact, renderMessage, resolution, SLACK_ACTION_IDS } = await import("../lib/slack");
 const { slackClient } = await import("../lib/slack-api");
 const { notifySlack, POSTING_STALE_MS, sendSlackTest, slackFromEnv } = await import("../runner/slack");
-const { INTENT_ROUTES } = await import("../runner/intents");
+const { deliveryFor, INTENT_ATTEMPTS, INTENT_ROUTES } = await import("../runner/intents");
+const { requestedStop } = await import("../lib/stop");
 const { reportedSlack } = await import("../lib/machine");
 const { serve } = await import("./serve");
 
@@ -48,10 +49,6 @@ const server = await serve(0, async (request) => {
     switch (method) {
       case "conversations.open":
         return Response.json({ ok: true, channel: { id: `D${params.users}` } });
-      case "conversations.info":
-        return params.channel === "C0MISSING"
-          ? Response.json({ ok: false, error: "channel_not_found" })
-          : Response.json({ ok: true, channel: { id: params.channel, name: "factory", is_private: false, is_member: false } });
       case "chat.postMessage":
         return params.channel === "C0GONE00" ? Response.json({ ok: false, error: "channel_not_found" }) : Response.json({ ok: true, channel: params.channel, ts: `${nextTs++}.000100` });
       case "chat.update":
@@ -114,6 +111,12 @@ try {
   assert.equal(notificationConfigSchema.safeParse({ target: "channel" }).success, false, "a channel target needs a channel id");
   assert.equal(notificationConfigSchema.safeParse({ target: "channel", channelId: "general" }).success, false, "a channel name is not an id");
   assert.equal(notificationConfigSchema.safeParse({ quietHours: { start: "22:00", end: "07:00", timeZone: "Mars/Olympus" } }).success, false);
+  assert.deepEqual(
+    notificationConfigSchema.parse({ quietHours: { start: "22:00:00", end: "07:30:59", timeZone: "UTC" } }).quietHours,
+    { start: "22:00", end: "07:30", timeZone: "UTC" },
+    "a time input that sends seconds is accepted and trimmed",
+  );
+  assert.equal(notificationConfigSchema.safeParse({ quietHours: { start: "22:00:60", end: "07:00", timeZone: "UTC" } }).success, false);
 
   const quiet = { start: "22:00", end: "07:00", timeZone: "Europe/Berlin" };
   assert.equal(inQuietHours(quiet, new Date("2026-10-27T22:30:00Z")), true, "23:30 in Berlin is quiet");
@@ -155,7 +158,15 @@ try {
   assert.equal(resolution("failed", { ...pureJob, stage: "failed", dismissed_at: new Date(1) }), "Dismissed");
   assert.equal(resolution("handover", { ...pureJob, stage: "failed", dismissed_at: new Date(1) }), "Closed");
   assert.equal(resolution("handover", { ...pureJob, stage: "merged", merge_decision: decision({ merged: { sha: "s", method: "squash", at: "x", base: "main", title: "t", commits: 1, via: "inbox" } }) }), "✅ Merged by the factory");
-  assert.equal(INTENT_ROUTES.slack_test, "any");
+  const settledStop = { ...requestedStop({ at: new Date(0), by: OWNER, reason: "r", reopen: false }), settledAt: new Date(1).toISOString() };
+  assert.equal(resolution("stop_unconfirmed", { ...pureJob, stop: { ...settledStop, state: "unconfirmed" } }), "Resolved", "still waiting on the owner");
+  assert.equal(resolution("stop_unconfirmed", { ...pureJob, stop: { ...settledStop, state: "escalated", settledAt: null, retries: 1 } }), "🔁 Retrying stop", "a retried stop is not confirmed yet");
+  assert.equal(resolution("stop_unconfirmed", { ...pureJob, stop: { ...settledStop, state: "confirmed", retries: 1 } }), "✅ Stop confirmed");
+  assert.equal(resolution("stop_unconfirmed", { ...pureJob, stop: { ...settledStop, state: "unconfirmed" }, dismissed_at: new Date(2) }), "Dismissed");
+  assert.equal(INTENT_ROUTES.slack_test, "slack");
+  assert.equal(deliveryFor("slack_test", null, "a"), "skip", "a runner without a Slack token leaves the test message alone");
+  assert.equal(deliveryFor("slack_test", "b", "a", true), "lease", "any runner with a token takes it");
+  assert.equal(INTENT_ATTEMPTS.slack_test, 1, "a token runner's error is the answer");
 
   const now = Date.parse("2026-10-27T12:00:00Z");
   const machine = (report: unknown, seen = now) => ({ last_seen_at: new Date(seen), inventory: { runnerSha: "a", t3: "unknown", connect: "unknown", projects: { source: "unknown" }, repos: [], ...(report !== undefined && { slack: report }) } });
@@ -364,6 +375,46 @@ try {
   await pass();
   assert.equal((await rowsFor(k))[0]!.state, "open");
 
+  // --- a save that fails after Slack took the post keeps the row, so the event is never posted twice
+  const realUpdate = db.update.bind(db);
+  let failSaves = 0;
+  db.update = ((table: Parameters<typeof db.update>[0]) => {
+    const builder = realUpdate(table);
+    if (table !== slackMessages) return builder;
+    const set = builder.set.bind(builder);
+    builder.set = ((values: Record<string, unknown>) => {
+      if (failSaves > 0 && "ts" in values) {
+        failSaves--;
+        throw new Error("connection reset");
+      }
+      return set(values as never);
+    }) as typeof builder.set;
+    return builder;
+  }) as typeof db.update;
+  try {
+    const m = await track("M", { stage: "waiting", stage_at: new Date(), question: "Saved once?" });
+    failSaves = 1;
+    mark = calls.length;
+    result = await pass();
+    assert.equal(failSaves, 0, "the first save failed");
+    assert.equal(since(mark, "chat.postMessage").length, 1);
+    assert.equal(result.errors, undefined, "the retry saved it");
+    assert.equal((await rowsFor(m))[0]!.state, "open");
+
+    const n = await track("N", { stage: "waiting", stage_at: new Date(), question: "Never saved?" });
+    failSaves = 3;
+    mark = calls.length;
+    result = await pass();
+    assert.equal(since(mark, "chat.postMessage").length, 1);
+    assert.match(result.errors!.join("\n"), /save .*connection reset/);
+    assert.equal((await rowsFor(n))[0]!.state, "posting", "the row stays rather than being deleted for a repost");
+    mark = calls.length;
+    await pass();
+    assert.equal(since(mark, "chat.postMessage").length, 0, "a later pass does not post it again");
+  } finally {
+    db.update = realUpdate;
+  }
+
   // --- secrets never reach Slack
   await track("L", { title: `Leak ${TOKEN}`, stage: "failed", stage_at: new Date(), stage_summary: `Failed with SLACK_SIGNING_SECRET=${SIGNING} and xoxb-another-leaked-token-999` });
   await pass();
@@ -374,7 +425,7 @@ try {
 
   // --- the test message, from Settings to the runner
   const user = async () => ({ email: OWNER, emailVerified: true });
-  const deps = { db, user, checkChannel: async () => null, slackConfigured: async () => true };
+  const deps = { db, user, slackConfigured: async () => true };
   assert.equal((await requestSlackTest({ ...deps, user: async () => ({ email: "x@example.com", emailVerified: true }) }, randomUUID())).ok, false, "owner only");
   assert.match(JSON.stringify(await requestSlackTest({ ...deps, slackConfigured: async () => false }, randomUUID())), /No online runner has a Slack token/);
   const requested = await requestSlackTest(deps, randomUUID());
@@ -386,6 +437,10 @@ try {
   const sent = await sendSlackTest(JSON.parse(intent!.detail!), slack);
   assert.deepEqual(sent, { sent: { to: "owner", channel: "DU0OWNER" } });
   assert.match(calls.at(-1)!.params.text!, /Test from the marshal factory, sent by owner@example.com/);
+  await db.update(intents).set({ result: JSON.stringify({ error: "a failed try" }) }).where(eq(intents.id, requested.intentId));
+  assert.deepEqual(await slackTestOutcome(deps, requested.intentId), { status: "pending" }, "an error on an open intent is not final");
+  await db.update(intents).set({ handled_at: new Date(), result: JSON.stringify({ error: "channel_not_found" }) }).where(eq(intents.id, requested.intentId));
+  assert.deepEqual(await slackTestOutcome(deps, requested.intentId), { status: "failed", message: "The runner could not send it: channel_not_found" }, "and is once it is closed");
   await db.update(intents).set({ handled_at: new Date(), result: JSON.stringify(sent) }).where(eq(intents.id, requested.intentId));
   assert.deepEqual(await slackTestOutcome(deps, requested.intentId), { status: "done", message: "Sent to your Slack DMs." });
   await writeConfig({ target: "channel", channelId: "C0FACTORY" });
@@ -393,21 +448,16 @@ try {
   await writeConfig({ target: "channel", channelId: "C0GONE00" });
   await assert.rejects(sendSlackTest({ actor: OWNER }, slack), /channel_not_found/, "Slack's refusal is the intent's error");
 
-  // --- saving the settings
-  const checked: string[] = [];
-  const check = async (id: string) => {
-    checked.push(id);
-    return id === "C0MISSING" ? { ok: false as const, message: "Slack has no channel C0MISSING." } : { ok: true as const };
-  };
+  // --- saving the settings: only the channel id's shape is checked, without asking Slack
   assert.equal((await saveNotifications({ ...deps, user: async () => null }, {})).ok, false, "owner only");
-  assert.match(JSON.stringify(await saveNotifications({ ...deps, checkChannel: check }, { target: "channel", channelId: "C0MISSING" })), /no channel C0MISSING/);
-  assert.deepEqual(await saveNotifications({ ...deps, checkChannel: check }, { target: "channel", channelId: "C0FACTORY", events: { merges: false } }), { ok: true });
-  assert.deepEqual(checked, ["C0MISSING", "C0FACTORY"]);
+  mark = calls.length;
+  assert.equal((await saveNotifications(deps, { target: "channel", channelId: "general" })).ok, false, "a channel name is refused");
+  assert.deepEqual(await saveNotifications(deps, { target: "channel", channelId: "C0FACTORY", events: { merges: false } }), { ok: true });
+  assert.equal(calls.length, mark, "saving never calls Slack");
   const saved = await db.select().from(notificationSettings);
   assert.equal(saved[0]!.config.channelId, "C0FACTORY");
   assert.equal(saved[0]!.config.events.merges, false);
   assert.equal(saved[0]!.updated_by, OWNER);
-  assert.match(JSON.stringify(await saveNotifications(deps, { target: "channel", channelId: "C0OTHER" })), /no Slack token to check/, "without a panel token it says to send a test");
   assert.equal((await saveNotifications(deps, { quietHours: { start: "25:00", end: "07:00", timeZone: "UTC" } })).ok, false);
 
   console.log("slack regressions passed");

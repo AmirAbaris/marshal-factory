@@ -3,7 +3,7 @@ import { harnessLabel } from "./harness";
 import { INBOX_LABELS, inboxItems, inboxReason, isDismissed, type InboxAction, type InboxJob, type InboxKind } from "./inbox";
 import { mergeDecisionSchema, type MergeDecision } from "./merge-decision";
 import { sourceLink } from "./sources/shapes";
-import { parseStop, stopNeedsOwner } from "./stop";
+import { isStopPending, parseStop, stopNeedsOwner } from "./stop";
 
 // Slack notifications: which events send a message, what it says and what it says once resolved.
 // Pure, so the runner's notifier (runner/slack.ts) and the regressions share the rules.
@@ -170,8 +170,14 @@ export function resolution(kind: NotifyKind, job: NotifyJob | undefined): string
       return isDismissed(job) ? "Dismissed" : "Moved on";
     case "revert_failed":
       return isDismissed(job) ? "Dismissed" : "Resolved";
-    case "stop_unconfirmed":
-      return stopNeedsOwner(job.stop, job.dismissed_at) ? "Resolved" : job.dismissed_at ? "Dismissed" : "✅ Stop confirmed";
+    case "stop_unconfirmed": {
+      if (stopNeedsOwner(job.stop, job.dismissed_at)) return "Resolved";
+      const stop = parseStop(job.stop);
+      if (stop?.state === "confirmed") return "✅ Stop confirmed";
+      // A retry that ends unconfirmed again is a new event, with its own message.
+      if (isStopPending(stop)) return "🔁 Retrying stop";
+      return job.dismissed_at ? "Dismissed" : "Resolved";
+    }
     case "merged":
     case "reverted":
       return LABELS[kind];

@@ -20,6 +20,8 @@ export const panelUrl = () => (process.env.FACTORY_PANEL_URL ?? "https://marshal
 export const MAX_CALLS_PER_PASS = 25;
 /** A row still posting after this belongs to a runner that died mid-post; the event is posted again. */
 export const POSTING_STALE_MS = 5 * 60_000;
+/** Tries at recording a posted message's channel and ts before the row is left posting. */
+const SAVE_ATTEMPTS = 3;
 
 /** Environment variables whose values must never reach Slack, whatever an agent writes. */
 const SECRET_NAME = /(TOKEN|SECRET|PASSWORD|PRIVATE_KEY|API_KEY|DATABASE_URL)/i;
@@ -167,28 +169,39 @@ export async function notifySlack(slack: SlackSetup | null = slackFromEnv(), now
         .returning({ id: slackMessages.id });
       if (!claimed) continue;
       const message = renderMessage(event, facts(event.job));
+      let posted: { channel: string; ts: string };
       try {
         calls++;
-        const posted = await slack.client.postMessage(target.channel, message);
-        await db
-          .update(slackMessages)
-          .set({
-            state: event.open ? "open" : "resolved",
-            channel: posted.channel,
-            ts: posted.ts,
-            fingerprint: fingerprint(message),
-            resolution: event.open ? null : resolution(event.kind, event.job),
-            resolved_at: event.open ? null : now,
-            updated_at: now,
-          })
-          .where(eq(slackMessages.id, event.id));
-        result.posted++;
+        posted = await slack.client.postMessage(target.channel, message);
       } catch (error) {
         await db.delete(slackMessages).where(and(eq(slackMessages.id, event.id), eq(slackMessages.state, "posting")));
         if (error instanceof SlackRateLimited) throw error;
         errors.push(`post ${event.id}: ${errorText(error)}`);
         // A bad channel or a revoked token fails every post the same way; try again next pass.
         if (error instanceof SlackApiError) break;
+        continue;
+      }
+      result.posted++;
+      const saved = {
+        state: event.open ? ("open" as const) : ("resolved" as const),
+        channel: posted.channel,
+        ts: posted.ts,
+        fingerprint: fingerprint(message),
+        resolution: event.open ? null : resolution(event.kind, event.job),
+        resolved_at: event.open ? null : now,
+        updated_at: now,
+      };
+      // The message is in Slack, so the row stays. If every try fails it is left posting, and the
+      // stale-posting cleanup posts it again after POSTING_STALE_MS: a rare duplicate, never a loss.
+      for (let attempt = 1; ; attempt++) {
+        try {
+          await db.update(slackMessages).set(saved).where(eq(slackMessages.id, event.id));
+          break;
+        } catch (error) {
+          if (attempt < SAVE_ATTEMPTS) continue;
+          errors.push(`save ${event.id}: ${errorText(error)}`);
+          break;
+        }
       }
     }
   } catch (error) {
