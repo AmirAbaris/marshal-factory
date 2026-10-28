@@ -93,7 +93,6 @@ const pullJson = (p: Pull, sha: string) => ({
   mergeable: true,
   title: p.title,
   commits: 1,
-  merge_commit_sha: p.merged,
   merged_by: p.merged ? (p.mergedBy ?? { login: "marshal-factory[bot]", type: "Bot" }) : null,
   html_url: `https://github.com/${p.repo}/pull/${p.number}`,
 });
@@ -133,6 +132,10 @@ const server = await serve(0, async (request) => {
     return Response.json({ state, total_count: checks.statuses.length, statuses: checks.statuses });
   }
   if (path === "/graphql") return Response.json({ data: { repository: { pullRequest: { reviewThreads: { nodes: [] } } } } });
+  if ((m = /^\/repos\/([^/]+\/[^/]+)\/issues\/(\d+)\/events$/.exec(path))) {
+    const p = pulls.get(pullKey(m[1]!, Number(m[2])));
+    return Response.json(p?.merged ? [{ event: "labeled", commit_id: null }, { event: "merged", commit_id: p.merged }] : []);
+  }
   if ((m = /^\/repos\/([^/]+\/[^/]+)\/issues\/(\d+)\/comments$/.exec(path))) {
     const list = comments.get(pullKey(m[1]!, Number(m[2]))) ?? [];
     if (request.method === "GET") return Response.json(list);

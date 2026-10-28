@@ -220,6 +220,13 @@ export function pullsClient({ api, tokens }: { api: string; tokens: TokenSource 
     return { items, complete: items.length >= total };
   }
 
+  /** The commit a merged PR landed as, from its "merged" event; null when GitHub lists none. */
+  async function mergedCommitOf(repo: RepoName, number: number): Promise<string | null> {
+    const { json } = await request(repo, "GET", `/repos/${repo}/issues/${number}/events?per_page=100`);
+    const events = z.array(z.object({ event: z.string(), commit_id: z.string().nullable().optional() })).parse(json);
+    return events.findLast((e) => e.event === "merged")?.commit_id ?? null;
+  }
+
   /** Every check run and commit status on a commit, all pages. */
   async function commitReport(repo: RepoName, sha: string) {
     let combined: z.infer<typeof statusesSchema> = { state: "pending", total_count: 0, statuses: [] };
@@ -362,18 +369,20 @@ export function pullsClient({ api, tokens }: { api: string; tokens: TokenSource 
           base: z.object({ ref: z.string() }),
           title: z.string(),
           commits: z.number().int(),
-          merge_commit_sha: z.string().nullable(),
+          // API version 2026-03-10 dropped it; a merged PR's "merged" event still carries the commit.
+          merge_commit_sha: z.string().nullish(),
           merged_by: z.object({ login: z.string(), type: z.string() }).nullable().optional(),
         })
         .parse(json);
+      const state = stateOf(pull);
       return {
-        state: stateOf(pull),
+        state,
         headSha: pull.head.sha,
         baseRef: pull.base.ref,
         title: pull.title,
         number,
         commits: Math.max(1, pull.commits),
-        mergeCommitSha: pull.merge_commit_sha,
+        mergeCommitSha: state === "merged" ? (pull.merge_commit_sha ?? (await mergedCommitOf(repo, number))) : null,
         mergedByBot: pull.merged_by?.type === "Bot",
       };
     },
