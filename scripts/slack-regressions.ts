@@ -145,14 +145,18 @@ try {
   assert.match(json, /\*Question:\* Use \[redacted\] for &lt;db&gt; &amp; co\?/, "mrkdwn text is escaped");
   assert.match(json, /claudeAgent|Codex/);
   assert.match(json, /\$1\.23/);
-  const actions = message.blocks.find((b) => b.type === "actions") as { block_id: string; elements: { url: string; action_id: string }[] };
+  const actions = message.blocks.find((b) => b.type === "actions") as { block_id: string; elements: { url?: string; action_id: string }[] };
   assert.equal(actions.block_id, `item:${pureEvent!.id}`, "the actions block names the event, for level 2");
   assert.deepEqual(
-    actions.elements.map((e) => e.url),
+    actions.elements.flatMap((e) => (e.url ? [e.url] : [])),
     ["https://panel.test/inbox?job=PURE-1", "https://github.com/o/r/pull/7", "https://linear.app/x/issue/PURE-1"],
     "links to the panel, the PR and the issue",
   );
-  assert.ok(actions.elements.every((e) => e.url && !Object.values(SLACK_ACTION_IDS).includes(e.action_id as never)), "level 1 renders only link buttons");
+  assert.deepEqual(
+    actions.elements.filter((e) => !e.url).map((e) => e.action_id),
+    [SLACK_ACTION_IDS.answer],
+    "an open question offers the inbox's Answer; the acting buttons are covered by slack-actions-regressions",
+  );
   assert.equal(resolution("question", { ...pureJob, stage: "implementing", answered_at: new Date(1) }), "✅ Answered");
   assert.equal(resolution("failed", { ...pureJob, stage: "queued" }), "🔁 Retried");
   assert.equal(resolution("failed", { ...pureJob, stage: "failed", dismissed_at: new Date(1) }), "Dismissed");

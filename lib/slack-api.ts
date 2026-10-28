@@ -97,6 +97,27 @@ export function slackClient({ token, baseUrl = SLACK_API_URL, minGapMs = 1_000, 
       const body = await call("conversations.open", { users: user });
       return str((body.channel as { id?: unknown } | undefined)?.id, "channel id");
     },
+    /** Opens a modal; the trigger id from a click is good for 3 seconds. Returns the view's id and hash for updateView. */
+    async openView(triggerId: string, view: object) {
+      const body = await call("views.open", { trigger_id: triggerId, view: JSON.stringify(view) });
+      const opened = body.view as { id?: unknown; hash?: unknown } | undefined;
+      return { id: str(opened?.id, "view id"), hash: typeof opened?.hash === "string" ? opened.hash : undefined };
+    },
+    /** Replaces an open modal; with the hash, Slack refuses the update if the view changed since. */
+    async updateView(viewId: string, view: object, hash?: string) {
+      await call("views.update", { view_id: viewId, view: JSON.stringify(view), ...(hash && { hash }) });
+    },
     pausedUntil: () => pausedUntil,
   };
+}
+
+/** Replies through a click's response_url, which needs no token: an ephemeral note, or a replacement of the message. */
+export async function postResponse(url: string, body: object) {
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(10_000),
+  });
+  if (!response.ok) throw new SlackApiError("response_url", `http_${response.status}`);
 }
