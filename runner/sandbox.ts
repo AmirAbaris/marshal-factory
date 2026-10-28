@@ -5,7 +5,7 @@ import type { FactoryConfig, SandboxLimits } from "../lib/config";
 import type { ExecError } from "../lib/exec";
 import { sandboxTokens, type RepoName } from "../lib/github/app";
 import type { JobHost } from "../lib/host";
-import { modal, modalHost, rememberSandbox, sandboxName } from "../lib/modal-host";
+import { createSandbox, modalHost, rememberSandbox, sandboxName } from "../lib/modal-host";
 import {
   CODEX_AUTH,
   CODEX_HOME,
@@ -324,7 +324,7 @@ export async function createJobSandbox({ key, attempt, label, machineId, imageId
   /** The repo's Modal secret, when its recipe's env vars have values saved. */
   namedSecrets?: string[];
 }) {
-  const sandbox = await modal.api.create({
+  const sandbox = await createSandbox({
     name: sandboxName(key, attempt),
     tags: { job: key, attempt: String(attempt), label, machine: machineId },
     imageId,

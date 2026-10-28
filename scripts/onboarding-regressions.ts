@@ -404,14 +404,67 @@ try {
   await db.update(jobs).set({ codex_slot: null }).where(eq(jobs.key, raceKey));
   assert.deepEqual(await leases(), [], "clearing the job's slot releases it");
 
-  // A runner that dies between taking the slot and creating the sandbox: the next tick hands the slot back.
+  // A sandbox create that never answers, as when the machine sleeps through it, gives up well inside the
+  // queue's step timeout: the slot goes back, the row is not failed, and the sandbox it returns late is ended.
+  const SLOW = `${NS}/slow`;
+  await insert(SLOW, "analyzing");
+  let late: FakeSandbox | undefined;
+  modal.createTimeoutMs = 50;
+  modal.api = {
+    ...fakeModal,
+    create: async (spec) => {
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      return (late = (await fakeModal.create(spec)) as FakeSandbox);
+    },
+  };
+  const slowStarted = Date.now();
+  await assert.rejects(runner.onboardRepo(SLOW), /Modal did not create sandbox onboard-agent-.+ within 0.05 s/);
+  assert.ok(Date.now() - slowStarted < 1_000, "the intent step returns at the create timeout");
+  d = await detail(SLOW);
+  assert.deepEqual([(await row(SLOW)).onboarding_state, d.run, d.failure, await leases()], ["analyzing", undefined, undefined, []], "a timed-out create leaves the row to its intent's retry");
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  assert.equal(late?.terminated, true, "the sandbox the abandoned create returned is ended");
+  modal.api = fakeModal;
+  modal.createTimeoutMs = 120_000;
+  assert.deepEqual(await runner.onboardRepo(SLOW), { repo: SLOW, agent: "thread-onb" }, "the retry starts the agent");
+  await db.update(repoSettings).set({ enabled: false, onboarding_detail: {} }).where(eq(repoSettings.repo, SLOW));
+  await db.delete(codexSlotLeases).where(eq(codexSlotLeases.slot, slotA));
+
+  // A runner that restarted between taking the slot and creating the sandbox: the next tick hands the
+  // slot back and leaves the row for the retry of the intent it never recorded.
   const DIED = `${NS}/died`;
-  await insert(DIED, "analyzing", { run: { kind: "agent", machine: TEST_MACHINE_ID, startedAt: new Date().toISOString(), slot: slotA } });
+  const leftRun = { kind: "agent" as const, machine: TEST_MACHINE_ID, startedAt: new Date().toISOString(), slot: slotA };
+  await insert(DIED, "analyzing", { run: leftRun });
   assert.deepEqual(await leases(), [[slotA, "onboarding", DIED]]);
   await runner.advanceOnboarding({ only: await ours() });
   d = await detail(DIED);
-  assert.deepEqual([(await row(DIED)).onboarding_state, d.run, await leases()], ["failed", undefined, []], "the abandoned run is cleared and its lease released");
+  assert.deepEqual([(await row(DIED)).onboarding_state, d.run, d.failure, await leases()], ["analyzing", undefined, undefined, []], "the abandoned run is cleared and its lease released");
+  // The retry can come first: it clears the run itself instead of waiting on it.
+  await db.update(repoSettings).set({ onboarding_detail: { run: leftRun } }).where(eq(repoSettings.repo, DIED));
+  assert.deepEqual(await runner.onboardRepo(DIED), { repo: DIED, agent: "thread-onb" }, "an onboard retry starts over from this runner's abandoned run");
+  await db.update(repoSettings).set({ enabled: false, onboarding_detail: {} }).where(eq(repoSettings.repo, DIED));
+  await db.delete(codexSlotLeases).where(eq(codexSlotLeases.slot, slotA));
+  // Another runner's run waits LEASING_GIVE_UP_MS for that runner, then fails for the owner to retry.
+  const GONE = `${NS}/gone`;
+  const goneRun = { kind: "agent" as const, machine: "another-machine", startedAt: new Date().toISOString(), slot: slotA };
+  await insert(GONE, "analyzing", { run: goneRun });
+  assert.match(JSON.stringify(await runner.onboardRepo(GONE)), /an agent run is in flight/, "another runner's run is waited for");
+  await runner.advanceOnboarding({ only: await ours() });
+  assert.deepEqual((await detail(GONE)).run, goneRun);
+  await db.update(repoSettings).set({ onboarding_detail: { run: { ...goneRun, startedAt: new Date(Date.now() - 31 * 60_000).toISOString() } } }).where(eq(repoSettings.repo, GONE));
+  await runner.advanceOnboarding({ only: await ours() });
+  d = await detail(GONE);
+  assert.deepEqual([(await row(GONE)).onboarding_state, d.run, await leases()], ["failed", undefined, []]);
   assert.match(d.failure!.reason, /stopped before its sandbox was created/);
+
+  // A socket that dies under a checked-out client, as a transaction's does after the machine slept, does not end the runner.
+  const checkedOut = await db.$client.connect();
+  const socketErrors: unknown[] = [];
+  console.error = (...args: unknown[]) => void socketErrors.push(...args);
+  checkedOut.emit("error", new Error("read ECONNRESET"));
+  console.error = realError;
+  checkedOut.release(true);
+  assert.match(String(socketErrors[0]), /ECONNRESET/, "the error is logged instead");
 
   // Leases no job or onboarding run records, such as one an older runner left between leasing and recording, are reaped.
   const longAgo = new Date(Date.now() - ORPHAN_LEASE_MS - 60_000);

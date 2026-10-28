@@ -130,7 +130,7 @@ try {
   const woken = await row(H);
   const sbW = sandboxes.get(woken.sandbox_id!)!;
   assert.equal(sbW.spec!.imageId, "im-snap-1", "started from the snapshot");
-  assert.equal(sbW.spec!.name, `job-${H}-a1`);
+  assert.match(sbW.spec!.name, new RegExp(`^job-${H}-a1-[0-9a-z]+$`));
   assert.deepEqual(sbW.spec!.tags, { job: H, attempt: "1", label, machine: TEST_MACHINE_ID });
   assert.deepEqual([woken.sandbox_snapshot, woken.codex_slot, woken.conflict_head], [null, slotA, "head-1"], "snapshot cleared, the free slot leased, the conflict claimed");
   assert.ok(fake.deletedImages.includes("im-snap-1"), "the snapshot is deleted once the sandbox serves");
