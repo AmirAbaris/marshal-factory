@@ -372,8 +372,8 @@ export function Inbox({
   const [cursor, setCursor] = useState<string | null>(selected ?? null);
   const open = items.find((i) => i.job.key === selected);
   const full = fullView.full && open !== undefined;
-  // In full view Esc goes back to the side panel, which the detail handles.
-  useRowKeys(listRef, { cursor, setCursor, hrefOf: itemHref, closeHref: selected && !full ? "/inbox" : null });
+  // In full view the list is hidden and Esc goes back to the side panel, which the detail handles.
+  useRowKeys(listRef, { cursor, setCursor, hrefOf: itemHref, closeHref: selected ? "/inbox" : null, enabled: !full });
 
   if (items.length === 0) {
     return (
