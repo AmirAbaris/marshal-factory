@@ -11,15 +11,13 @@ export const FINISHED_STAGES = ["merged", "failed"] as const satisfies readonly 
 
 export const isFinished = (stage: Stage) => (FINISHED_STAGES as readonly Stage[]).includes(stage);
 
-export type ArchiveJob = Pick<JobRow, "stage" | "stage_at" | "updated_at" | "archived_at" | "stop" | "dismissed_at">;
-
-type ArchivableJob = InboxJob & Pick<JobRow, "archived_at">;
+export type ArchiveJob = InboxJob & Pick<JobRow, "archived_at">;
 
 /** Owner-blocking outcomes a finished job can reach without changing stage, such as a revert that failed after the merge. */
 const STILL_NEEDS_OWNER: ReadonlySet<InboxKind> = new Set(["revert_failed", "stop_unconfirmed"]);
 
 /** An archive hides the finished job it saw; a job reclaimed or moved on since, or one that needs the owner again, shows again. */
-export const isArchived = (job: ArchivableJob) => {
+export const isArchived = (job: ArchiveJob) => {
   if (job.archived_at === null || !isFinished(job.stage) || job.archived_at.getTime() < (job.stage_at ?? job.updated_at).getTime()) return false;
   const kind = inboxKind(job);
   return kind === null || !STILL_NEEDS_OWNER.has(kind);
@@ -29,11 +27,12 @@ export const isArchived = (job: ArchivableJob) => {
 export function archiveRefusal(job: ArchiveJob): string | null {
   if (!isFinished(job.stage)) return "Only merged or failed jobs can be archived.";
   if (isStopPending(parseStop(job.stop)) || stopNeedsOwner(job.stop, job.dismissed_at)) return "The job's stop isn't confirmed yet.";
+  if (inboxKind(job) === "revert_failed") return "Its revert failed; file a follow-up or dismiss it in the inbox first.";
   return null;
 }
 
 /** The jobs the panel shows outside the archive, and the archived ones. */
-export function splitArchived<J extends ArchivableJob>(jobs: readonly J[]) {
+export function splitArchived<J extends ArchiveJob>(jobs: readonly J[]) {
   const shown: J[] = [];
   const archived: J[] = [];
   for (const job of jobs) (isArchived(job) ? archived : shown).push(job);

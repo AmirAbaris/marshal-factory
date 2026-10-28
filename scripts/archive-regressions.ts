@@ -38,6 +38,7 @@ const revertFailed: MergeDecision = {
   watch: { state: "revert_failed", until: T(60).toISOString(), failed: ["ci"], revertPr: null, reason: "git revert failed" },
 };
 assert.equal(isArchived(fake({ archived_at: T(1), merge_decision: revertFailed })), false, "a revert that failed after the archive shows again");
+assert.match(archiveRefusal(fake({ merge_decision: revertFailed })) ?? "", /revert failed/, "a failed revert is resolved in the inbox, not archived");
 assert.equal(isArchived(fake({ archived_at: T(1), merge_decision: { ...revertFailed, watch: { state: "green", until: T(60).toISOString(), failed: [], revertPr: null, reason: null } } })), true, "a merge whose watch passed stays archived");
 for (const stage of ["queued", "triage", "investigating", "implementing", "verifying", "pr", "waiting"] as const) {
   assert.equal(archiveRefusal(fake({ stage })), "Only merged or failed jobs can be archived.", `a job in ${stage} is not archived`);
