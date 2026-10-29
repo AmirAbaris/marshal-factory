@@ -1,4 +1,4 @@
-import { ExternalLinkIcon } from "lucide-react";
+import { CloudIcon, ExternalLinkIcon, MonitorIcon } from "lucide-react";
 import Link from "next/link";
 import { Badge } from "@/components/ui/badge";
 import { Spinner } from "@/components/ui/spinner";
@@ -9,7 +9,7 @@ import type { MergeDecision } from "@/lib/merge-decision";
 import { activityHref } from "@/lib/run-links";
 import { stopLine, type StopView } from "@/lib/stop";
 import { cn } from "@/lib/utils";
-import { harnessLine, showsDecision, whereLine, type BoardCard } from "./cards";
+import { showsDecision, whereLine, type BoardCard } from "./cards";
 import { EvidenceLine } from "./evidence";
 import { formatUsd, runCost, runTitle, shortId } from "./format";
 import { jobsHref } from "./job-view";
@@ -23,6 +23,10 @@ const cardClass = (selected: boolean) =>
     selected && "border-primary ring-1 ring-primary",
   );
 
+/** What the given runs cost, their subagents included. */
+const attemptCost = (runs: readonly RunRow[], agents: readonly AgentRow[]) =>
+  runs.reduce((sum, run) => sum + runCost(run, agents.filter((a) => a.session_id === run.session_id)), 0);
+
 function AgentsAndCost({
   runs,
   agents,
@@ -34,8 +38,7 @@ function AgentsAndCost({
   allRuns?: readonly RunRow[];
 }) {
   const running = agents.filter((a) => a.status === "running").length;
-  const costOf = (list: readonly RunRow[]) =>
-    list.reduce((sum, run) => sum + runCost(run, agents.filter((a) => a.session_id === run.session_id)), 0);
+  const costOf = (list: readonly RunRow[]) => attemptCost(list, agents);
   const cost = costOf(runs);
   const total = allRuns && allRuns.length !== runs.length ? costOf(allRuns) : undefined;
   return (
@@ -113,11 +116,6 @@ export function StopLine({ view, t3Href }: { view: StopView; t3Href?: string }) 
   );
 }
 
-const prLabel = (url: string) => {
-  const number = url.match(/\/pull\/(\d+)/)?.[1];
-  return number ? `PR #${number}` : "PR";
-};
-
 export function StageCard({
   card,
   agents,
@@ -136,8 +134,10 @@ export function StageCard({
   t3Href?: string;
 }) {
   const { latest } = card;
+  const where = card.runsOn && whereLine(card.runsOn, machineName);
+  const sandbox = card.runsOn?.kind === "modal" ? card.runsOn.sandbox : null;
   return (
-    <div data-card={card.id} className={cardClass(selected)}>
+    <div data-card={card.id} className={cn(cardClass(selected), "gap-1.5")}>
       {latest && (
         <Link
           href={jobsHref("board", latest.session_id)}
@@ -146,24 +146,7 @@ export function StageCard({
           className="absolute inset-0 rounded-lg"
         />
       )}
-      <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-        {latest?.status === "active" && <Spinner className="size-2.5" />}
-        <span className="font-mono">{card.jobKey ?? card.id.slice(0, 8)}</span>
-        {repoLabel && <span className="min-w-0 truncate">{repoLabel}</span>}
-        <span className="ml-auto flex shrink-0 items-center gap-2.5">
-          {card.sourceLink && (
-            <a href={card.sourceLink.href} target="_blank" rel="noreferrer" className="relative underline-offset-2 hover:text-foreground hover:underline">
-              {card.sourceLink.label}
-            </a>
-          )}
-          {card.prUrl && (
-            <a href={card.prUrl} target="_blank" rel="noreferrer" className="relative font-mono underline-offset-2 hover:text-foreground hover:underline">
-              {prLabel(card.prUrl)}
-            </a>
-          )}
-        </span>
-      </div>
-      <div className="line-clamp-2 font-medium leading-snug">{card.title}</div>
+      <div className="line-clamp-2 font-medium leading-snug text-pretty">{card.title}</div>
       {showsDecision(card) && <MergeLine decision={card.mergeDecision} />}
       {card.evidence && <EvidenceLine line={card.evidence} />}
       {card.stop && <StopLine view={card.stop.view} t3Href={t3Href} />}
@@ -172,30 +155,27 @@ export function StageCard({
           Stuck · nudged <Time date={card.nudgedAt} />
         </p>
       )}
-      {card.answeredAt && card.stage !== "waiting" && (
-        <p className="text-xs text-success">
-          Answer received <Time date={card.answeredAt} />
-        </p>
-      )}
-      {card.stage === "waiting" && card.question ? (
-        <p className="line-clamp-2 text-xs text-warning">{card.question}</p>
-      ) : (
-        card.summary && <p className="line-clamp-2 text-xs text-muted-foreground">{card.summary}</p>
-      )}
-      <div className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
-        {card.harness && (
-          <span title={TRACKING_HINT[card.harness.tracking]}>{harnessLine(card.harness)}</span>
-        )}
-        {card.attempt > 1 && <span>attempt {card.attempt}</span>}
-        {(!card.harness || card.harness.tracking === "full") && (
-          <AgentsAndCost runs={card.attemptRuns} allRuns={card.runs} agents={agents} />
-        )}
-        {card.runsOn && (
-          <span className="ml-auto flex min-w-0 items-center gap-1.5">
-            <span className="truncate">{whereLine(card.runsOn, machineName)}</span>
-            {card.runsOn.kind === "modal" && card.runsOn.sandbox && <SandboxBadge state={card.runsOn.sandbox} bare />}
-          </span>
-        )}
+      {card.stage === "waiting" && card.question && <p className="line-clamp-2 text-xs text-warning">{card.question}</p>}
+      <div className="flex items-center gap-2 text-xs text-muted-foreground">
+        {latest?.status === "active" && <Spinner className="size-2.5 shrink-0" aria-label="Working" />}
+        <span className="shrink-0 font-mono">{card.jobKey ?? card.id.slice(0, 8)}</span>
+        {repoLabel && <span className="min-w-0 truncate">{repoLabel}</span>}
+        <span className="ms-auto flex shrink-0 items-center gap-2">
+          {card.attempt > 1 && <span>attempt {card.attempt}</span>}
+          {!card.harness || card.harness.tracking === "full" ? (
+            <span className="font-mono" title="Spend of this attempt">
+              {formatUsd(attemptCost(card.attemptRuns, agents))}
+            </span>
+          ) : (
+            <span title={TRACKING_HINT[card.harness.tracking]}>{card.harness.tracking === "stages" ? "cost unknown" : "not tracked"}</span>
+          )}
+          {where && (
+            <span title={sandbox ? `${where} · ${sandbox}` : where} className="flex items-center gap-1">
+              {card.runsOn?.kind === "modal" ? <CloudIcon className="size-3.5" aria-label={where} /> : <MonitorIcon className="size-3.5" aria-label={where} />}
+              {sandbox === "hibernated" && <span className="size-1.5 rounded-full bg-muted-foreground/50" aria-label="hibernated" />}
+            </span>
+          )}
+        </span>
       </div>
     </div>
   );

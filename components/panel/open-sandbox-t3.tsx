@@ -32,8 +32,9 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 /**
  * Asks the job's runner for a one-time pairing link to the T3 in its sandbox and shows it once.
  * The link lives only in this dialog's state; closing the dialog drops it.
+ * Returns the dialog and what opens it, so a button or a menu item can.
  */
-export function OpenSandboxT3({ jobId, className }: { jobId: JobId; className?: string }) {
+export function useSandboxT3(jobId: JobId) {
   const [open, setOpen] = useState(false);
   const [view, setView] = useState<View>({ kind: "asking", slow: false });
   const [copied, setCopied] = useState(false);
@@ -83,12 +84,8 @@ export function OpenSandboxT3({ jobId, className }: { jobId: JobId; className?: 
     setCopied(true);
   };
 
-  return (
+  const dialog = (
     <Dialog open={open} onOpenChange={change}>
-      <Button variant="outline" size="sm" className={className} onClick={() => change(true)}>
-        Open in T3
-        <ExternalLinkIcon data-icon="inline-end" />
-      </Button>
       <DialogPopup className="sm:max-w-md">
         <DialogHeader>
           <DialogTitle>Open the sandbox in T3</DialogTitle>
@@ -124,5 +121,19 @@ export function OpenSandboxT3({ jobId, className }: { jobId: JobId; className?: 
         </DialogFooter>
       </DialogPopup>
     </Dialog>
+  );
+  return { open: () => change(true), dialog };
+}
+
+export function OpenSandboxT3({ jobId, className }: { jobId: JobId; className?: string }) {
+  const t3 = useSandboxT3(jobId);
+  return (
+    <>
+      <Button variant="outline" size="sm" className={className} onClick={t3.open}>
+        Open in T3
+        <ExternalLinkIcon data-icon="inline-end" />
+      </Button>
+      {t3.dialog}
+    </>
   );
 }

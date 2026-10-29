@@ -259,8 +259,9 @@ export function LivePanel({
       />
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         <StatsStrip runs={runRows} agentsBySession={agentsBySession} startOfToday={startOfToday} />
-        <div className={cn("grid min-h-0 flex-1", selectedRun && !runFull ? "grid-cols-[1fr_420px]" : "grid-cols-1")}>
-          {!runFull && content}
+        <div className={cn("grid min-h-0 flex-1 grid-cols-1", selectedRun && !runFull && "lg:grid-cols-[minmax(0,1fr)_min(600px,46%)]")}>
+          {/* Below lg an open run takes the whole width; closing it brings the page back. */}
+          {!runFull && <div className={cn("contents", selectedRun && "max-lg:hidden")}>{content}</div>}
           {selectedRun && detail && (
             <RunDetail
               key={detail.sessionId}
