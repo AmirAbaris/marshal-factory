@@ -21,6 +21,7 @@ const { hosts, localHost } = await import("../lib/host");
 const { github } = await import("../lib/github/pulls");
 const { evidenceLine, headEvidence, outputTail, parseSummary, planChecks } = await import("../lib/evidence");
 const { writeRepoAutonomy } = await import("../lib/settings");
+const { trustedEdits } = await import("../lib/trusted-checks");
 const { decideMerges, requiredChecks } = await import("../runner/merge-decision");
 const { forgetVerifications, runnerVerification, startVerification, verificationsSettled, verifyAtHead, verifyingKeys, verifyRuntime } = await import("../runner/verify");
 const { DEFAULT_POLICY } = await import("../lib/merge-decision");
@@ -110,6 +111,7 @@ assert.ok(outputTail("x".repeat(100_000)).length <= 4000, "a single long line is
 
 // --- what evidence proves about a head
 const at = (minutes: number) => new Date(1_800_000_000_000 + minutes * 60_000);
+const planned = (...names: EvidenceCheck["name"][]) => names.map((name) => ({ name, command: `bun run ${name}` }));
 const ev = (sha: string, over: Partial<Parameters<typeof headEvidence>[0][number]> = {}) => ({
   sha,
   clean: true,
@@ -124,7 +126,15 @@ assert.deepEqual(headEvidence([], SHA_A, null), { state: "missing" });
 assert.deepEqual(headEvidence([ev(SHA_B), ev("c".repeat(40), { recordedAt: at(5) })], SHA_A, null), { state: "stale", sha: "c".repeat(40) }, "stale names the newest commit with evidence");
 assert.deepEqual(headEvidence([ev(SHA_A, { clean: false })], SHA_A, null), { state: "dirty", sha: SHA_A });
 assert.deepEqual(headEvidence([ev(SHA_A, { checks: [check("test", true), check("lint", false)] })], SHA_A, null), { state: "failed", sha: SHA_A, failed: ["lint"], passed: 1, total: 2 });
-assert.deepEqual(headEvidence([ev(SHA_A)], SHA_A, ["test", "lint", "build"]), { state: "incomplete", sha: SHA_A, missing: ["build"] }, "the recipe's checks are required");
+assert.deepEqual(headEvidence([ev(SHA_A)], SHA_A, planned("test", "lint", "build")), { state: "incomplete", sha: SHA_A, missing: ["build"] }, "the recipe's checks are required");
+assert.deepEqual(headEvidence([ev(SHA_A)], SHA_A, planned("test", "lint")), { state: "verified", sha: SHA_A, passed: 2, total: 2, producer: "agent" }, "matching commands verify");
+assert.deepEqual(
+  headEvidence([ev(SHA_A, { checks: [check("test", true, { command: "true" }), check("lint", true)] })], SHA_A, planned("test", "lint")),
+  { state: "untrusted", sha: SHA_A, mismatched: ["test"] },
+  "a check whose command was swapped to true is not verified",
+);
+assert.equal(headEvidence([ev(SHA_A, { checks: [check("test", true, { command: " bun run test " }), check("lint", true)] })], SHA_A, planned("test", "lint")).state, "verified", "whitespace around a command doesn't matter");
+assert.equal(headEvidence([ev(SHA_A, { checks: [check("custom", true, { command: "bun install" }), check("test", true), check("lint", true)] })], SHA_A, planned("test", "lint")).state, "verified", "the setup step isn't compared");
 assert.deepEqual(headEvidence([ev(SHA_A)], SHA_A, []), { state: "no_checks" }, "a recipe with no checks");
 assert.deepEqual(headEvidence([ev(SHA_A, { source: "none", checks: [] })], SHA_A, null), { state: "no_checks" }, "evidence that found no checks");
 assert.deepEqual(
@@ -133,8 +143,26 @@ assert.deepEqual(
   "a failed setup is named setup",
 );
 const rows = [{ repo: REPO, onboarding_detail: { recipe } }] as unknown as Parameters<typeof requiredChecks>[0];
-assert.deepEqual(requiredChecks(rows, REPO).required, ["test", "build"], "required comes from the recorded recipe");
+assert.deepEqual(requiredChecks(rows, REPO).required, [{ name: "test", command: "bun test" }, { name: "build", command: "bun run build" }], "required comes from the recorded recipe, commands included");
 assert.equal(requiredChecks(rows, "other/repo").required, null, "no recipe, no required list");
+
+// --- what a PR must not edit
+const scripts = (over: Record<string, string> = {}) => ({ test: "vitest", lint: "eslint .", dev: "next dev", ...over });
+const recipeChecks = [{ name: "test" as const, command: "bun run test" }];
+const edits = (files: string[], base: Record<string, string> | null = scripts(), head: Record<string, string> | null = scripts(), required: typeof recipeChecks | null = recipeChecks) => trustedEdits({ files, required, base, head });
+assert.deepEqual(edits(["src/a.ts"]), [], "an ordinary change");
+assert.match(edits([".factory/setup.json"])[0]!, /edits the recipe the factory trusts: \.factory\/setup\.json/, "the recipe");
+assert.match(edits([".github/workflows/ci.yml"])[0]!, /edits CI workflows \(\.github\/workflows\/ci\.yml\)/, "a workflow");
+assert.deepEqual(edits(["package.json"], scripts(), scripts({ test: "true" })), ["The pull request edits the check scripts the factory trusts: package.json scripts.test."], "the script a check runs");
+assert.deepEqual(edits(["package.json"], scripts(), scripts({ dev: "vite" })), [], "a script no check uses");
+assert.deepEqual(edits(["package.json"]), [], "a package.json change outside scripts, such as dependencies");
+const chained = { test: "bun run unit", unit: "vitest" };
+assert.match(edits(["package.json"], scripts(chained), scripts({ ...chained, unit: "true" }))[0]!, /scripts\.unit\./, "a script the used script calls counts");
+assert.match(edits(["package.json"], scripts(), scripts({ lint: "true" }), null)[0]!, /scripts\.lint\./, "without a recipe the scripts named like the checks count");
+assert.match(edits(["package.json"], scripts(), null)[0]!, /couldn't be compared/, "an unreadable head is a handover, not a pass");
+const noBuild = { test: "vitest" };
+assert.match(edits(["package.json"], noBuild, { ...noBuild, build: "true" }, null)[0]!, /scripts\.build\./, "without a recipe, a check script the head adds counts");
+assert.match(edits(["package.json"], scripts(chained), scripts({ ...chained, test: "bun run unit && bun run extra", extra: "true" }))[0]!, /scripts\.extra, package\.json scripts\.test\./, "a script the head adds and a used script calls counts");
 
 const summary = (over: Record<string, unknown> = {}) => parseSummary({ sha: SHA_A, attempt: 1, clean: true, producer: "agent", source: "package", at: at(0).toISOString(), checks: [{ name: "test", passed: true, exitCode: 0, durationMs: 1 }, { name: "lint", passed: true, exitCode: 0, durationMs: 1 }], ...over });
 assert.deepEqual(evidenceLine(summary(), SHA_A, { expected: true }), { text: "Verified at aaaaaaa · 2/2 checks", tone: "success" });

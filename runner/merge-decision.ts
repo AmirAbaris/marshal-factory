@@ -3,9 +3,10 @@ import { and, eq, isNotNull, inArray } from "drizzle-orm";
 import { db } from "../db/client";
 import { auditLog, jobEvidence, jobs, type AuditRow, type RepoSettingsRow } from "../db/schema";
 import { parseAssessment } from "../lib/assessment";
-import { headEvidence, type EvidenceRow, type HeadEvidence } from "../lib/evidence";
+import { headEvidence, type EvidenceRow, type HeadEvidence, type PlannedCheck } from "../lib/evidence";
 import { parseDetail } from "../lib/onboarding";
-import { CHECKS, type CheckName, type Recipe } from "../lib/recipe";
+import { CHECKS, type Recipe } from "../lib/recipe";
+import { scriptsOf, trustedEdits } from "../lib/trusted-checks";
 import type { ApproveDetail } from "../lib/inbox";
 import type { RepoName } from "../lib/github/app";
 import { github } from "../lib/github/pulls";
@@ -59,10 +60,10 @@ type Evaluated =
   | { decision: Decision; headSha: string | null; headSeenAt: number | null; review?: ReviewSummary; evidence?: HeadEvidence; runner?: RunnerVerification }
   | "unchanged";
 
-/** The checks a repo's recorded recipe requires; null when the factory knows no recipe for it. */
-export function requiredChecks(rows: readonly RepoSettingsRow[], repo: string): { recipe: Recipe | null; required: CheckName[] | null } {
+/** The checks, with their commands, a repo's recorded recipe requires; null when the factory knows no recipe for it. */
+export function requiredChecks(rows: readonly RepoSettingsRow[], repo: string): { recipe: Recipe | null; required: PlannedCheck[] | null } {
   const recipe = parseDetail(rows.find((r) => r.repo === repo)?.onboarding_detail).recipe ?? null;
-  return { recipe, required: recipe ? CHECKS.filter((name) => recipe.checks[name]) : null };
+  return { recipe, required: recipe ? CHECKS.flatMap((name) => (recipe.checks[name] ? [{ name, command: recipe.checks[name] }] : [])) : null };
 }
 
 /** This attempt's evidence, one row per commit. */
@@ -74,9 +75,18 @@ async function attemptEvidence(job: Job): Promise<EvidenceRow[]> {
   return rows.map((r) => ({ sha: r.sha, clean: r.clean, producer: r.producer, source: r.source, checks: r.checks, recordedAt: r.recorded_at }));
 }
 
+/** Whether the PR edits what the trusted checks depend on; package.json is read at the base branch and at the head only when the PR touches it. */
+async function changedTrust(job: Job, detail: { headSha: string; baseRef: string }, pr: PrFacts, required: PlannedCheck[] | null) {
+  const files = pr.files.map((f) => f.path);
+  const [base, head] = files.includes("package.json")
+    ? await Promise.all([detail.baseRef, detail.headSha].map((ref) => github.fileAt(job.repo as RepoName, "package.json", ref).then(scriptsOf, () => null)))
+    : [null, null];
+  return trustedEdits({ files, required, base, head });
+}
+
 const sameEvidence = (a: HeadEvidence | undefined, b: HeadEvidence) => JSON.stringify(a) === JSON.stringify(b);
 
-async function evaluate(job: Job, policy: RepoPolicy, previous: MergeDecision | null, now: number, required: CheckName[] | null): Promise<Evaluated> {
+async function evaluate(job: Job, policy: RepoPolicy, previous: MergeDecision | null, now: number, required: PlannedCheck[] | null): Promise<Evaluated> {
   const sameReport = previous !== null && previous.autonomy === policy.autonomy && previous.stageEventId === job.stage_event_id;
   if (policy.autonomy === "off") {
     return sameReport ? "unchanged" : { decision: OFF_DECISION, headSha: null, headSeenAt: null };
@@ -106,6 +116,7 @@ async function evaluate(job: Job, policy: RepoPolicy, previous: MergeDecision | 
     evidence,
     runner,
     browser: job.execution === "modal",
+    trustEdits: await changedTrust(job, detail, pr, required),
   });
   return { decision, headSha: detail.headSha, headSeenAt, review: reviewSummary(pr), evidence, runner };
 }
