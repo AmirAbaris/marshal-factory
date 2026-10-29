@@ -175,6 +175,8 @@ export const jobs = pgTable(
     codex_slot: text("codex_slot"),
     /** The agent's assessment from its latest pr report on this attempt; rows from before the six checks were dropped keep that shape, so read it with parseAssessment. */
     merge_assessment: jsonb("merge_assessment").$type<AssessmentInput>(),
+    /** The pr stage event merge_assessment came from; its screenshots are stored under it (job_screenshots). */
+    assessment_event_id: text("assessment_event_id"),
     /** The runner's latest merge decision while the job sits in pr; see lib/merge-decision.ts. */
     merge_decision: jsonb("merge_decision").$type<MergeDecision>(),
     /** The latest evidence for the current attempt, without output; job_evidence keeps every commit's. See lib/evidence.ts. */

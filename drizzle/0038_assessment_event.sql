@@ -1,0 +1,1 @@
+ALTER TABLE "jobs" ADD COLUMN "assessment_event_id" text;

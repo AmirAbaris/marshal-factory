@@ -267,6 +267,13 @@
       "when": 1793306460621,
       "tag": "0037_screenshots",
       "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1793307444026,
+      "tag": "0038_assessment_event",
+      "breakpoints": true
     }
   ]
 }

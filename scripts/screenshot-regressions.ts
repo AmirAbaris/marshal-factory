@@ -119,6 +119,7 @@ try {
   const [job] = await db.select().from(jobs).where(eq(jobs.key, KEY));
   assert.equal(job!.stage, "pr");
   assert.equal(job!.stage_event_id, stageEventId);
+  assert.equal(job!.assessment_event_id, stageEventId, "the job remembers which report its assessment came from");
 
   const get = (index: number, v: string | null = stageEventId) => GET(new Request(`http://panel${screenshotUrl(KEY, index, v)}`), { params: Promise.resolve({ key: KEY, index: String(index) }) } as never);
   const one = await get(0);
@@ -129,8 +130,17 @@ try {
   assert.equal((await get(2)).status, 404, "past the assessment's list");
   assert.equal((await get(0, "older-report")).status, 404, "a URL from an earlier report never shows this report's image");
 
+  // A later stage moves stage_event_id; the assessment and its images belong to the pr report still.
+  const after: FactoryEvent = { eventId: `${stageEventId}-failed`, sessionId, at: Date.now() + 1, kind: "stage", stage: "failed", summary: "CI kept failing.", jobKey: KEY, branch: attemptBranch(KEY, 1) };
+  assert.deepEqual((await ingest(db, [after])).refused, [], "the later stage applies");
+  const [moved] = await db.select().from(jobs).where(eq(jobs.key, KEY));
+  assert.equal(moved!.stage_event_id, after.eventId);
+  assert.equal(screenshotUrl(KEY, 0, moved!.assessment_event_id), screenshotUrl(KEY, 0, stageEventId), "the panel's URL stays the pr report's");
+  assert.equal((await get(0)).status, 200, "the images still serve after a later stage");
+  await db.update(jobs).set({ stage: "pr" }).where(eq(jobs.key, KEY));
+
   // A report naming a file whose image never arrived: the panel says so instead of showing another.
-  const later: FactoryEvent = { ...stage, eventId: `${stageEventId}-2`, at: Date.now() + 1, assessment: assessment({ screenshots: [{ file: "late.png", caption: "Late." }] }) };
+  const later: FactoryEvent = { ...stage, eventId: `${stageEventId}-2`, at: Date.now() + 2, assessment: assessment({ screenshots: [{ file: "late.png", caption: "Late." }] }) };
   await ingest(db, [later]);
   assert.equal((await get(0, later.eventId)).status, 404, "an image that hasn't arrived");
 

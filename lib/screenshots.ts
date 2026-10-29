@@ -46,8 +46,8 @@ export function sniffType(bytes: Uint8Array): ScreenshotType | null {
 }
 
 /** Where the panel serves one of the current assessment's screenshots; `v` changes with each report, so a cached image never outlives it. */
-export const screenshotUrl = (jobKey: string, index: number, stageEventId: string | null) =>
-  `/api/jobs/${encodeURIComponent(jobKey)}/screenshots/${index}?v=${encodeURIComponent(stageEventId ?? "")}`;
+export const screenshotUrl = (jobKey: string, index: number, reportId: string | null) =>
+  `/api/jobs/${encodeURIComponent(jobKey)}/screenshots/${index}?v=${encodeURIComponent(reportId ?? "")}`;
 
 /** Files whose change shows on a page or screen. */
 export const UI_GLOBS = ["**/*.tsx", "**/*.jsx", "**/*.vue", "**/*.svelte", "**/*.astro", "**/*.html", "**/*.css", "**/*.scss", "**/*.sass", "**/*.less"];
