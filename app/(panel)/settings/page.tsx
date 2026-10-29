@@ -1,6 +1,7 @@
 import { connection } from "next/server";
 import { Suspense } from "react";
 import { SettingsForm } from "@/components/panel/settings-form";
+import { FormSkeleton, PageSkeleton } from "@/components/panel/skeletons";
 import { db } from "@/db/client";
 import { load, machinesQuery } from "@/lib/live-queries";
 import { readNotifications } from "@/lib/notifications";
@@ -17,7 +18,7 @@ async function Panel() {
 
 export default function SettingsPage() {
   return (
-    <Suspense fallback={<div className="h-full" />}>
+    <Suspense fallback={<PageSkeleton title="Settings"><FormSkeleton /></PageSkeleton>}>
       <Panel />
     </Suspense>
   );

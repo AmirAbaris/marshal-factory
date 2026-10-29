@@ -3,7 +3,7 @@
 import { ArchiveIcon, InboxIcon } from "lucide-react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { startTransition, useMemo, useOptimistic } from "react";
+import { startTransition, Suspense, use, useMemo, useOptimistic, type ComponentProps } from "react";
 import { Button } from "@/components/ui/button";
 import type { AgentRow, AuditRow, EventRow, JobEvidenceRow, JobRow, MachineRow, RepoSettingsRow, RunRow } from "@/db/schema";
 import { Board } from "./board";
@@ -22,6 +22,7 @@ import { JOB_VIEW_COOKIE, jobsHref, type JobView } from "./job-view";
 import { NewJobButton } from "./new-job-button";
 import { OtherActivity } from "./other-activity";
 import { RunDetail } from "./run-detail";
+import { RunDetailSkeleton } from "./skeletons";
 import { useFeed, type Feed } from "./sealed";
 import { PanelFooter, PanelHeader, type KeyHint } from "./panel-header";
 import { RepoSelect, repoOptions, useRepoFilter, useRepoLabels } from "./repo-filter";
@@ -39,6 +40,19 @@ export type DetailProps = {
   /** The job's evidence per commit; present when the run belongs to a job. */
   evidence: { feed: Feed<JobEvidenceRow>; path: string } | undefined;
 };
+
+/** The open run: its id right away, its feeds once they load. */
+export type OpenRun = { sessionId: string; data: Promise<DetailProps> };
+
+type LoadedDetailProps = Omit<ComponentProps<typeof RunDetail>, "agents" | "events" | "stages" | "stagesPath" | "audit" | "evidence"> & {
+  data: Promise<DetailProps>;
+};
+
+/** Suspends until the run's feeds arrive, so the page around it never waits for them. */
+function LoadedRunDetail({ data, ...props }: LoadedDetailProps) {
+  const { agents, events, stages, stagesPath, audit, evidence } = use(data);
+  return <RunDetail {...props} agents={agents} events={events} stages={stages} stagesPath={stagesPath} audit={audit} evidence={evidence} />;
+}
 
 export type PanelView = "inbox" | "jobs" | "activity";
 
@@ -145,7 +159,7 @@ export function LivePanel({
   runs: Feed<RunRow>;
   agents: Feed<AgentRow>;
   machines: Feed<MachineRow>;
-  detail: DetailProps | undefined;
+  detail: OpenRun | undefined;
 }) {
   const { rows: jobRows } = useFeed(jobs, "/api/live/jobs");
   const { rows: runRows, status } = useFeed(runs, "/api/live/runs");
@@ -262,32 +276,29 @@ export function LivePanel({
         <div className={cn("grid min-h-0 flex-1", selectedRun && !runFull ? "grid-cols-[1fr_420px]" : "grid-cols-1")}>
           {!runFull && content}
           {selectedRun && detail && (
-            <RunDetail
-              key={detail.sessionId}
-              run={selectedRun}
-              agents={detail.agents}
-              events={detail.events}
-              stages={detail.stages}
-              stagesPath={detail.stagesPath}
-              audit={detail.audit}
-              evidence={detail.evidence}
-              closeHref={closeHref(view, jobView, showArchive)}
-              fullView={fullView}
-              job={selectedJob}
-              machine={selectedJob?.machine_id ? machineById.get(selectedJob.machine_id) : undefined}
-              harnesses={harnesses}
-              jobSpend={
-                selectedJob
-                  ? {
-                      usd: spendOf(
-                        runRows.filter((r) => r.branch === attemptBranch(selectedJob.key, selectedJob.attempt)),
-                        agentsBySession,
-                      ),
-                      attempt: selectedJob.attempt,
-                    }
-                  : undefined
-              }
-            />
+            // Keyed by run, so opening another card shows the skeleton instead of holding the last run.
+            <Suspense key={detail.sessionId} fallback={<RunDetailSkeleton />}>
+              <LoadedRunDetail
+                data={detail.data}
+                run={selectedRun}
+                closeHref={closeHref(view, jobView, showArchive)}
+                fullView={fullView}
+                job={selectedJob}
+                machine={selectedJob?.machine_id ? machineById.get(selectedJob.machine_id) : undefined}
+                harnesses={harnesses}
+                jobSpend={
+                  selectedJob
+                    ? {
+                        usd: spendOf(
+                          runRows.filter((r) => r.branch === attemptBranch(selectedJob.key, selectedJob.attempt)),
+                          agentsBySession,
+                        ),
+                        attempt: selectedJob.attempt,
+                      }
+                    : undefined
+                }
+              />
+            </Suspense>
           )}
         </div>
       </div>
