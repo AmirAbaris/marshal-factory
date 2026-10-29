@@ -1,6 +1,6 @@
 "use client";
 
-import { MenuIcon, PanelLeftIcon } from "lucide-react";
+import { MenuIcon } from "lucide-react";
 import { motion } from "motion/react";
 import type { ReactNode } from "react";
 import { Button } from "@/components/ui/button";
@@ -50,17 +50,12 @@ function ViewSwitch({ current, onChange }: ViewSwitchProps) {
 
 /** The page's hairline header: the title, the board and list switch on the jobs page, and the page's actions. */
 export function PanelHeader({ title, jobView, actions }: { title: string; jobView?: ViewSwitchProps; actions?: ReactNode }) {
-  const { collapsed, expand, openNav } = useShell();
+  const { openNav } = useShell();
   return (
     <header className="flex h-11 shrink-0 items-center gap-2 border-b px-2 md:px-3">
       <Button aria-label="Open navigation" className="md:hidden" onClick={openNav} size="icon-sm" variant="ghost">
         <MenuIcon />
       </Button>
-      {collapsed && (
-        <Button aria-label="Expand sidebar" className="hidden md:inline-flex" onClick={expand} size="icon-sm" variant="ghost">
-          <PanelLeftIcon />
-        </Button>
-      )}
       <h1 className="min-w-0 flex-1 truncate ps-1 font-medium">{title}</h1>
       {jobView && <ViewSwitch {...jobView} />}
       {actions}
