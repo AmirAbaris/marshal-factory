@@ -1,6 +1,6 @@
 "use client";
 
-import { ArchiveIcon, InboxIcon } from "lucide-react";
+import { ArchiveIcon, InboxIcon, XIcon } from "lucide-react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { startTransition, Suspense, use, useMemo, useOptimistic, type ComponentProps } from "react";
@@ -16,7 +16,7 @@ import { reportedHarnesses } from "@/lib/machine";
 import { cn } from "@/lib/utils";
 import { groupBy, spendOf } from "./format";
 import { Inbox } from "./inbox";
-import { useFullView } from "./full-view";
+import { FullViewToggle, useEscapeToSidePanel, useFullView } from "./full-view";
 import { JobList } from "./job-list";
 import { JOB_VIEW_COOKIE, jobsHref, type JobView } from "./job-view";
 import { NewJobButton } from "./new-job-button";
@@ -197,6 +197,8 @@ export function LivePanel({
 
   const inboxCount = useMemo(() => inboxItems(liveJobs).length, [liveJobs]);
   const fullView = useFullView();
+  // Here rather than in RunDetail, so Esc leaves full view while the run is still loading too.
+  useEscapeToSidePanel(selectedRun && detail ? fullView : { ...fullView, full: false });
   const [jobView, switchJobView] = useJobView(currentJobView);
 
   // The filter applies to the loaded feeds; the inbox count stays global.
@@ -277,7 +279,21 @@ export function LivePanel({
           {!runFull && content}
           {selectedRun && detail && (
             // Keyed by run, so opening another card shows the skeleton instead of holding the last run.
-            <Suspense key={detail.sessionId} fallback={<RunDetailSkeleton />}>
+            <Suspense
+              key={detail.sessionId}
+              fallback={
+                <RunDetailSkeleton
+                  controls={
+                    <>
+                      <FullViewToggle {...fullView} />
+                      <Button render={<Link href={closeHref(view, jobView, showArchive)} scroll={false} />} variant="ghost" size="icon-sm" aria-label="Close run">
+                        <XIcon />
+                      </Button>
+                    </>
+                  }
+                />
+              }
+            >
               <LoadedRunDetail
                 data={detail.data}
                 run={selectedRun}

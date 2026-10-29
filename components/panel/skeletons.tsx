@@ -118,12 +118,15 @@ export function PanelPageSkeleton({ view }: { view: PanelView }) {
   );
 }
 
-/** The run detail side panel while its agents, events and timeline load. */
-export function RunDetailSkeleton() {
+/** The run detail side panel while its agents, events and timeline load; `controls` keep full view and close working meanwhile. */
+export function RunDetailSkeleton({ controls }: { controls?: ReactNode }) {
   return (
     <div aria-busy="true" aria-label="Loading run" className="flex min-h-0 flex-col gap-6 border-l bg-card px-4.5 py-4">
       <div className="flex flex-col gap-2.5">
-        <Skeleton className="h-3 w-40" />
+        <div className="flex items-center justify-between gap-2">
+          <Skeleton className="h-3 w-40" />
+          {controls && <span className="flex shrink-0 items-center gap-0.5">{controls}</span>}
+        </div>
         <Skeleton className="h-5 w-4/5" />
         <div className="flex gap-2">
           <Skeleton className="h-5 w-20" />
