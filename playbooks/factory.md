@@ -54,7 +54,7 @@ Every run ends one of three ways: the factory merges it, it hands it over to the
 3. Recommend `merge` when you are confident you built what the issue asked for and that it works. Additive changes the issue asked for, such as new exports or new endpoints, are fine.
 4. Recommend `handover` only when you are not confident: you are unsure what the issue meant, unsure about an assumption you had to make, or you could not show the change works. Say why in one or two sentences.
 
-When you report `pr`, pass `assessment`: `recommendation`, `interpretation`, `assumptions`, and `confidence` with `confident` and, when you are not confident, the `reason`. Add `notes` for anything else the owner should know. Be honest: the factory checks CI, Bugbot, size and protected paths itself, holds the head to the evidence `factory-verify` reported for it, and a `merge` it cannot back up costs trust.
+When you report `pr`, pass `assessment`: `recommendation`, `interpretation`, `assumptions`, and `confidence` with `confident` and, when you are not confident, the `reason`. Add `notes` for anything else the owner should know. Be honest: the factory checks CI, conflicts and Bugbot itself, holds the head to the evidence `factory-verify` reported for it, and a `merge` it cannot back up costs trust.
 
 ## Changes to the bundled playbooks
 
