@@ -183,8 +183,8 @@ function ApproveButton({ job, headSha, disabled, loading, onApprove }: { job: Jo
             <span className="font-medium text-foreground">{job.title}</span>
             <span>
               The factory merges {headSha ? <span className="font-mono">{headSha.slice(0, 7)}</span> : "the latest commit"} into{" "}
-              <span className="font-mono">{job.repo}</span> the way it merges on its own, then watches main. A newer push, a red or running check, a conflict or a
-              branch behind its base still stops it.
+              <span className="font-mono">{job.repo}</span> the way it merges on its own, then watches main. A newer push, a red or running check, a conflict, or
+              GitHub refusing the merge still stops it.
             </span>
           </AlertDialogDescription>
         </AlertDialogHeader>

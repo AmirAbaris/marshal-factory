@@ -1,7 +1,6 @@
 import { z } from "zod";
 import type { MergeAssessment } from "./assessment";
 import { headEvidenceSchema, notVerifiedWhy, shortSha, type HeadEvidence } from "./evidence";
-import { globToRegExp, matchesAny } from "./globs";
 
 // Whether a factory PR would merge on its own. The agent recommends merge unless it isn't confident
 // (lib/assessment.ts); the runner enforces factual hard limits that no recommendation overrides. Pure, so the runner pass and the
@@ -13,27 +12,14 @@ export type Autonomy = z.infer<typeof autonomySchema>;
 
 export const AUTONOMY_LABELS: Record<Autonomy, string> = { off: "Off", trial: "Trial", auto: "Merge when confident" };
 
-export const DEFAULT_PROTECTED_PATHS = [
-  "drizzle/**",
-  "**/migrations/**",
-  "**/auth/**",
-  "**/permissions/**",
-  "**/billing/**",
-  "**/payments/**",
-  ".github/**",
-  "vercel.json",
-  "vercel.ts",
-  "**/.env*",
-];
-export const DEFAULT_MAX_CHANGED_LINES = 300;
 export const CHECKS_TIMEOUT_MS = 60 * 60_000;
 /** How long a head with no check run and no status may wait for CI to start before it counts as having none. */
 export const DEFAULT_NO_CI_GRACE_MS = 5 * 60_000;
 export const REVIEW_LABEL = "review";
 
 /** `requireBugbot` false means the repo has no Bugbot: its review is neither awaited nor read. */
-export type RepoPolicy = { autonomy: Autonomy; protectedPaths: readonly string[]; maxChangedLines: number; requireBugbot: boolean };
-export const DEFAULT_POLICY: RepoPolicy = { autonomy: "off", protectedPaths: DEFAULT_PROTECTED_PATHS, maxChangedLines: DEFAULT_MAX_CHANGED_LINES, requireBugbot: true };
+export type RepoPolicy = { autonomy: Autonomy; requireBugbot: boolean };
+export const DEFAULT_POLICY: RepoPolicy = { autonomy: "off", requireBugbot: true };
 
 export const MERGE_OUTCOMES = ["merge", "handover", "pending"] as const;
 export type MergeOutcome = (typeof MERGE_OUTCOMES)[number];
@@ -141,13 +127,12 @@ export type CheckState = "success" | "pending" | "failure" | "none";
 export type BugbotFinding = { severity: "high" | "medium" | "low"; resolved: boolean };
 /** Bugbot's run on the head: still running (or not started), reviewed, or ended without a review. */
 export type BugbotReview = { state: "pending" } | { state: "reviewed" } | { state: "failed"; conclusion: string };
-export type ChangedFile = { path: string; previousPath?: string; additions: number; deletions: number; patch?: string };
+export type ChangedFile = { path: string; additions: number; deletions: number };
 
 /** What GitHub says about the PR head. */
 export type PrFacts = {
   headSha: string;
   mergeable: "mergeable" | "conflicting" | "unknown";
-  behindBy: number;
   /** Every check run and commit status on the head, Bugbot's aside; pending also when none reported yet, none once the repo has no CI. */
   checks: CheckState;
   bugbot: { review: BugbotReview; findings: readonly BugbotFinding[] };
@@ -157,7 +142,6 @@ export type PrFacts = {
 export type DecisionInput = {
   policy: RepoPolicy;
   assessment: MergeAssessment | null;
-  attempt: number;
   labels: readonly string[];
   /** Null only when autonomy is off, which never asks GitHub. */
   pr: PrFacts | null;
@@ -172,52 +156,19 @@ export type DecisionInput = {
 /** `verify` is set when only verification at the head stands between the PR and a merge, and the runner may run it. */
 export type Decision = { outcome: MergeOutcome; reasons: string[]; verify?: true };
 
-export { globToRegExp, matchesAny };
-
-const MANIFEST = /(^|\/)package\.json$/;
-const DEPENDENCY_LINE = /^([+-])\s*"([^"]+)"\s*:\s*"[~^>=<v\s]*(\d+)[^"]*"\s*,?\s*$/;
-
-/** Dependencies whose major version a manifest diff raises or lowers. */
-export function majorBumps(files: readonly ChangedFile[]): string[] {
-  const bumped = new Set<string>();
-  for (const file of files) {
-    if (!MANIFEST.test(file.path) || !file.patch) continue;
-    const before = new Map<string, number>();
-    const after = new Map<string, number>();
-    for (const line of file.patch.split("\n")) {
-      const match = DEPENDENCY_LINE.exec(line);
-      if (match) (match[1] === "-" ? before : after).set(match[2]!, Number(match[3]));
-    }
-    for (const [name, major] of after) {
-      const was = before.get(name);
-      if (was !== undefined && was !== major) bumped.add(name);
-    }
-  }
-  return [...bumped].sort();
-}
-
 const minutes = (ms: number) => Math.round(ms / 60_000);
 
 /** Hard limits only; each failure is one plain reason. */
 function hardLimits(input: DecisionInput, pr: PrFacts) {
   const reasons: string[] = [];
   if (input.labels.some((l) => l.toLowerCase() === REVIEW_LABEL)) reasons.push(`The issue has the "${REVIEW_LABEL}" label.`);
-  if (input.attempt !== 1) reasons.push(`This is attempt ${input.attempt}; only a first attempt merges on its own.`);
   if (pr.checks === "failure") reasons.push("A check failed on the latest commit.");
   if (pr.mergeable === "conflicting") reasons.push("The pull request conflicts with its base branch.");
-  if (pr.behindBy > 0) reasons.push(`The branch is ${pr.behindBy} commit${pr.behindBy === 1 ? "" : "s"} behind its base.`);
   if (input.policy.requireBugbot) {
     if (pr.bugbot.review.state === "failed") reasons.push(`Bugbot didn't complete its review (${pr.bugbot.review.conclusion}).`);
     const open = pr.bugbot.findings.filter((f) => !f.resolved && f.severity !== "low");
     if (open.length > 0) reasons.push(`Bugbot has ${open.length} unresolved medium or high finding${open.length === 1 ? "" : "s"}.`);
   }
-  const touched = pr.files.flatMap((f) => [f.path, ...(f.previousPath ? [f.previousPath] : [])]);
-  const protectedHits = [...new Set(touched.filter((p) => matchesAny(p, input.policy.protectedPaths)))];
-  if (protectedHits.length > 0) reasons.push(`It touches protected paths: ${protectedHits.slice(0, 5).join(", ")}${protectedHits.length > 5 ? ", …" : ""}.`);
-  const bumps = majorBumps(pr.files);
-  if (bumps.length > 0) reasons.push(`It changes the major version of ${bumps.join(", ")}.`);
-  const lines = pr.files.reduce((sum, f) => sum + f.additions + f.deletions, 0);
-  if (lines > input.policy.maxChangedLines) reasons.push(`It changes ${lines} lines, over the limit of ${input.policy.maxChangedLines}.`);
   return reasons;
 }
 
@@ -310,13 +261,12 @@ export function reviewSummary(pr: Pick<PrFacts, "headSha" | "files" | "bugbot">)
  * What still stops a merge the owner approved. Only facts about the PR count: the agent's
  * reasons, the policy's limits and Bugbot's findings are the owner's to overrule.
  */
-export function approvalBlockers(pr: Pick<PrFacts, "checks" | "mergeable" | "behindBy">): string[] {
+export function approvalBlockers(pr: Pick<PrFacts, "checks" | "mergeable">): string[] {
   const reasons: string[] = [];
   if (pr.checks === "failure") reasons.push("A check failed on the latest commit.");
   if (pr.checks === "pending") reasons.push("Checks are still running on the latest commit.");
   if (pr.mergeable === "conflicting") reasons.push("The pull request conflicts with its base branch.");
   if (pr.mergeable === "unknown") reasons.push("GitHub is still checking whether the pull request merges cleanly.");
-  if (pr.behindBy > 0) reasons.push(`The branch is ${pr.behindBy} commit${pr.behindBy === 1 ? "" : "s"} behind its base.`);
   return reasons;
 }
 

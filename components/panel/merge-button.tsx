@@ -63,7 +63,7 @@ export function MergeButton({ jobId, jobKey }: { jobId: JobId; jobKey: string })
               <span className="font-medium text-foreground">{target.title}</span>
               <span>
                 The factory merges <span className="font-mono">{target.headSha.slice(0, 7)}</span> into <span className="font-mono">{target.repo}</span> the way
-                it merges on its own, then watches main. A newer push, a red or running check, a conflict or a branch behind its base still stops it.
+                it merges on its own, then watches main. A newer push, a red or running check, a conflict, or GitHub refusing the merge still stops it.
               </span>
               {target.mergeable === "conflicting" && <span className="text-warning">GitHub reports a conflict with the base branch.</span>}
             </AlertDialogDescription>

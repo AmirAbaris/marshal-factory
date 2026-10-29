@@ -69,6 +69,7 @@ type Pull = {
   merge: (pull: Pull) => { status: number; body: unknown };
   branch?: string;
   mergedBy?: { login: string; type: string };
+  files?: { filename: string; additions: number; deletions: number; patch?: string }[];
 };
 const pulls = new Map<string, Pull>();
 const pullKey = (repo: string, n: number) => `${repo}#${n}`;
@@ -117,14 +118,14 @@ const server = await serve(0, async (request) => {
   if ((m = /^\/repos\/([^/]+\/[^/]+)\/pulls\/(\d+)(\/files|\/merge)?$/.exec(path))) {
     const p = pulls.get(pullKey(m[1]!, Number(m[2])));
     if (!p) return Response.json({ message: "Not Found" }, { status: 404 });
-    if (m[3] === "/files") return Response.json([{ filename: "src/list.tsx", additions: 5, deletions: 1 }]);
+    if (m[3] === "/files") return Response.json(p.files ?? [{ filename: "src/list.tsx", additions: 5, deletions: 1 }]);
     if (m[3] === "/merge") {
       const answer = p.merge(p);
       return Response.json(answer.body, { status: answer.status });
     }
     return Response.json(pullJson(p, read(p)));
   }
-  if (/\/compare\//.test(path)) return Response.json({ behind_by: 0 });
+  if (/\/compare\//.test(path)) return Response.json({ behind_by: 7 });
   if ((m = /\/commits\/([^/]+)\/(check-runs|status)$/.exec(path))) {
     const checks = checksOf.get(m[1]!) ?? { runs: [checkRun("ci", "success"), checkRun("Cursor Bugbot", "neutral")], statuses: [] };
     if (m[2] === "check-runs") return Response.json({ total_count: checks.runs.length, check_runs: checks.runs });
@@ -431,6 +432,19 @@ try {
   assert.match(comments.get(pullKey(AUTO, 8))!.at(-1)!.body, /Merged by the factory/);
   checksOf.set("m8", { runs: [checkRun("ci", "success")], statuses: [] });
   assert.deepEqual(await watchMerges({ only: [CRASH], now: at(43) }), [`${CRASH}:green`], "and watched at stage merged");
+
+  // A second attempt, 303 changed lines in a migration and a major bump, on a branch GitHub would call behind main: none hands over on its own.
+  const LOOSE = await job("LOOSE", AUTO, 10, {
+    files: [
+      { filename: "drizzle/0042_big.sql", additions: 300, deletions: 2 },
+      { filename: "package.json", additions: 1, deletions: 0, patch: '-    "next": "^15.0.0",\n+    "next": "^16.0.0",' },
+    ],
+  });
+  await db.update(jobs).set({ attempt: 2 }).where(eq(jobs.key, LOOSE));
+  await db.insert(runs).values(usageRun(LOOSE, undefined, undefined, 2));
+  await db.update(jobEvidence).set({ attempt: 2 }).where(eq(jobEvidence.job_key, LOOSE));
+  assert.deepEqual(await decideMerges({ only: [LOOSE], now: at(50) }), [`${LOOSE}:merge`, `${LOOSE}:merged`], JSON.stringify(await decision(LOOSE)));
+  assert.deepEqual(putsTo(AUTO, 10).length, 1, "it merges");
 
   // The token never reached a log line or an error.
   assert.ok(!logged.some((l) => l.includes(TOKEN)), "no token in the logs");
