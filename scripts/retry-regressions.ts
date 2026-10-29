@@ -55,7 +55,7 @@ config.factory.maxInFlight = 1000;
 
 async function failed(name: string, over: Partial<typeof jobs.$inferInsert> = {}) {
   const key = `RTY-${name}-${stamp}`;
-  await db.insert(jobs).values(linearJob(key, key, { stage: "failed", stage_at: new Date(), stage_summary: "The tests never passed.", stage_event_id: `e-${key}`, machine_id: TEST_MACHINE_ID, ...over }));
+  await db.insert(jobs).values(linearJob(key, key, { stage: "failed", stage_at: new Date(), stage_summary: "The tests never passed.", stage_event_id: `e-${key}`, synced_event_id: `e-${key}`, machine_id: TEST_MACHINE_ID, ...over }));
   return key;
 }
 
@@ -121,6 +121,13 @@ try {
   assert.deepEqual(refused, { refused: "The job is implementing, not failed; there is nothing to retry." });
   assert.deepEqual([requeued, (await row(live)).attempt, (await row(live)).attempt_note], [[], 1, null]);
   assert.deepEqual(await retryJob(`linear:RTY-gone-${stamp}` as never, detail, claimReady), { refused: `No job linear:RTY-gone-${stamp}.` });
+
+  // --- a failure not yet written back would undo the requeue, so it waits for the write-back
+  const unsynced = await failed("unsynced", { synced_event_id: null });
+  requeued.length = 0;
+  const early = await retryJob((await row(unsynced)).id, { actor: OWNER, attempt: 1, note: "soon" }, claimReady);
+  assert.deepEqual(early, { refused: "The failure is still being written back to the issue. Retry again in a minute." });
+  assert.deepEqual([requeued, (await row(unsynced)).attempt, (await row(unsynced)).attempt_note], [[], 1, null], "and requeues nothing");
 
   // --- a failed job whose old attempt still holds a sandbox cannot start yet: said, not silent
   const held = await failed("held", { sandbox_id: "sbx-1" });

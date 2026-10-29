@@ -199,6 +199,8 @@ export async function retryJob(id: JobId, { actor, attempt, note }: RetryDetail,
   if (!job) return { refused: `No job ${id}.` };
   if (job.attempt > attempt) return { started: job.attempt };
   if (job.stage !== "failed") return { refused: `The job is ${job.stage}, not failed; there is nothing to retry.` };
+  // Until the failure is written back, that write-back would take the label away again after requeue.
+  if (job.synced_event_id !== job.stage_event_id) return { refused: "The failure is still being written back to the issue. Retry again in a minute." };
   const next = job.attempt + 1;
   const text = note.trim();
   if (text) {
