@@ -31,6 +31,7 @@ const { confirmStops, retryStop } = await import("./stops");
 const { approveDetailSchema, closeDetailSchema, feedbackDetailSchema } = await import("../lib/inbox");
 const { watchMerges } = await import("./post-merge");
 const { syncOverrideLabels } = await import("./overrides");
+const { rebuildBaseImage } = await import("./base-image");
 const { advanceOnboarding, onboardRepo, repoPushed, requestRebuild } = await import("./onboarding");
 const { repoPushDetailSchema } = await import("../lib/webhooks");
 const { notifySlack, sendSlackTest, slackFromEnv } = await import("./slack");
@@ -209,6 +210,14 @@ async function tick() {
     stopsConfirmed: await isolated(() => confirmStops()),
     pairingsExpired: await isolated(expirePairings),
     synced: await isolated(async () => ops.writeBack()),
+    // Starts a rebuild when the pins drifted and returns; the build runs beside the queue.
+    baseImage: await isolated(async () =>
+      rebuildBaseImage({
+        changed: () => void beat({ fresh: true }),
+        // Queued Modal jobs would otherwise wait for the next tick.
+        landed: () => void serial("launch", launchAndAnnounce),
+      }),
+    ),
   };
 }
 

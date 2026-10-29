@@ -10,6 +10,7 @@ import { loadConfig } from "../lib/config";
 import { UNKNOWN, type Heartbeat, type Inventory } from "../lib/machine";
 import { sandboxReadiness } from "../lib/sandbox";
 import { connectStatus, readHarnesses, readProjects, readT3Runtime } from "../lib/t3-state";
+import { baseImageBuild } from "./base-image";
 import { message, withTimeout } from "./queue";
 
 const run = promisify(execFile);
@@ -101,7 +102,10 @@ export function inventoryCollectors(): InventoryCollectors {
         })),
       ),
     harnesses: async () => readHarnesses(),
-    sandbox: async () => sandboxReadiness(factory.sandbox),
+    sandbox: async () => {
+      const imageBuild = baseImageBuild();
+      return { ...sandboxReadiness(factory.sandbox), ...(imageBuild && { imageBuild }) };
+    },
     slack: async () => ({ configured: Boolean(process.env.SLACK_BOT_TOKEN?.trim()), owner: Boolean(process.env.SLACK_OWNER_USER_ID?.trim()) }),
   };
 }
@@ -184,8 +188,12 @@ export function createBeat({
     log("inventory", { ms: now() - collectedAt, result });
   }
 
-  /** `inventory: false` writes only the heartbeat, for the startup beat that runs before the reconcile. */
-  return async function beat({ inventory: withInventory = true } = {}) {
+  /**
+   * `inventory: false` writes only the heartbeat, for the startup beat that runs before the reconcile;
+   * `fresh` collects the inventory now, for a change the panel should not wait inventoryMinutes for.
+   */
+  return async function beat({ inventory: withInventory = true, fresh = false } = {}) {
+    if (fresh) inventoryAt = undefined;
     if (running) {
       log("heartbeat:skipped", { reason: "the previous beat is still running" });
       return;

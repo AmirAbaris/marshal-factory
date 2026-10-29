@@ -6,6 +6,7 @@ import { HostGoneError, hosts, localHost, type JobHost } from "../lib/host";
 import { terminateSandbox } from "../lib/modal-host";
 import { withPlaybook } from "../lib/playbook";
 import { builtVersions, imageProblem, REPO_DIR } from "../lib/sandbox";
+import { baseImageBuild } from "./base-image";
 import { modalSecretName, parseDetail, repoImage } from "../lib/onboarding";
 import { RECIPE_PATH, UNMERGED_RECIPE_PATH, type Recipe } from "../lib/recipe";
 import { listThreads, showThread, startThread as t3Start } from "../lib/t3-client";
@@ -400,7 +401,8 @@ export async function launchInSandboxes(pending: readonly LaunchEntry[], slot: L
   const image = runtime.image();
   const problem = imageProblem(image, limits);
   if (problem || !image) {
-    runtime.log("sandbox:no-image", { queued: pending.map((e) => e.key), reason: problem });
+    const build = baseImageBuild();
+    runtime.log("sandbox:no-image", { queued: pending.map((e) => e.key), reason: problem, ...(build && { build }) });
     return [];
   }
   const base = { imageId: image.imageId, builtAt: image.builtAt, versions: builtVersions(image) };
