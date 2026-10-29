@@ -153,7 +153,7 @@ try {
     actionIds(JSON.stringify(renderMessage({ id: "e", kind, job: pureJob, reason: "r" }, facts, resolved, pending).blocks)).filter((id) => INBOX_IDS.includes(id));
   assert.deepEqual(buttons("handover"), [SLACK_ACTION_IDS.approve, SLACK_ACTION_IDS.request_changes, SLACK_ACTION_IDS.close]);
   assert.deepEqual(buttons("question"), [SLACK_ACTION_IDS.answer]);
-  assert.deepEqual(buttons("failed"), [SLACK_ACTION_IDS.close, SLACK_ACTION_IDS.dismiss]);
+  assert.deepEqual(buttons("failed"), [SLACK_ACTION_IDS.retry, SLACK_ACTION_IDS.close, SLACK_ACTION_IDS.dismiss]);
   assert.deepEqual(buttons("revert_failed"), [SLACK_ACTION_IDS.follow_up, SLACK_ACTION_IDS.dismiss]);
   assert.deepEqual(buttons("stop_unconfirmed"), [SLACK_ACTION_IDS.retry_stop, SLACK_ACTION_IDS.dismiss]);
   assert.deepEqual(buttons("merged"), [], "an update offers nothing to do");
@@ -329,6 +329,22 @@ try {
   assert.ok(!JSON.stringify(responses).includes(TOKEN) && !JSON.stringify(calls).includes(TOKEN), "no secret reaches Slack");
   assert.deepEqual(actionIds(updatesOf(leaky.ts).at(-1)!.params.blocks!).filter((id) => INBOX_IDS.includes(id)), [SLACK_ACTION_IDS.answer]);
   assert.equal((await intentsFor(leaky.id)).length, 0);
+
+  // --- retry: a modal whose note is optional, then the retry_job intent
+  const retried = await item("RETRY", { stage: "failed", stage_summary: "Tests failed." });
+  const retryClick = click(retried.eventId, SLACK_ACTION_IDS.retry);
+  await retryClick.sent;
+  await drain();
+  const retryView = modalView();
+  assert.equal(retryView.callback_id, SLACK_ACTION_IDS.retry);
+  assert.equal(retryView.blocks.find((b) => b.type === "input")!.optional, true, "the note is optional");
+  assert.equal((await intentsFor(retried.id)).length, 0, "opening the modal records nothing");
+  await submit(retryView, "Use the staging key.");
+  await drain();
+  const [retryIntent] = await intentsFor(retried.id);
+  assert.equal(retryIntent!.id, `panel:retry_job:${slackRequestId(retried.eventId, "retry")}`);
+  assert.deepEqual([retryIntent!.kind, JSON.parse(retryIntent!.detail!)], ["retry_job", { actor: OWNER, attempt: 1, note: "Use the staging key." }]);
+  assert.match(updatesOf(retried.ts)[0]!.params.text!, /Retrying/);
 
   // --- dismiss acts at once
   const failed = await item("F", { stage: "failed", stage_summary: "Tests failed." });

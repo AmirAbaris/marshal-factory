@@ -70,6 +70,8 @@ export interface SourceAdapter<S extends JobSource> {
   labels(job: Job<S>): Promise<string[]>;
   /** Returns a stopped job to the source's not-started state, so adding the label again retries it. */
   reopen(job: Job<S>): Promise<void>;
+  /** Puts a failed job where the source's intake offers it again, as a person adding the factory label does; the next claim starts a new attempt. */
+  requeue(job: Job<S>): Promise<void>;
   /** The noun phrase naming the job in messages to the thread, such as "Linear issue FAC-7". */
   describe(job: Pick<Job<S>, "key">): string;
   /**

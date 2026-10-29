@@ -79,6 +79,7 @@ export const SLACK_ACTION_IDS = {
   close: "inbox:close",
   dismiss: "inbox:dismiss",
   retry_stop: "inbox:retry_stop",
+  retry: "inbox:retry",
 } as const satisfies Record<InboxAction, string>;
 
 export const slackAction = (actionId: string): InboxAction | null =>
@@ -93,6 +94,7 @@ export const ACTION_LABELS: Record<InboxAction, string> = {
   close: "Close",
   dismiss: "Dismiss",
   retry_stop: "Retry stop",
+  retry: "Retry",
 };
 
 /** What the message says between the click and the notifier's resolution; it has no action buttons, so a second click finds none. */
@@ -104,6 +106,7 @@ export const PENDING_LABELS: Record<InboxAction, string> = {
   close: "⏳ Closing…",
   dismiss: "Dismissed",
   retry_stop: "⏳ Interrupting again…",
+  retry: "⏳ Retrying…",
 };
 
 const isInboxKind = (kind: NotifyKind): kind is InboxKind => (INBOX_KINDS as readonly string[]).includes(kind);

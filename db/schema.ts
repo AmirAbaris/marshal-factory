@@ -144,6 +144,8 @@ export const jobs = pgTable(
     attempt: integer("attempt").notNull().default(1),
     /** Why the previous attempt failed; the next attempt's first message quotes it. */
     previous_failure: text("previous_failure"),
+    /** The owner's note for one attempt, from Retry in the inbox. Keyed by attempt, so a later attempt ignores a stale note and the claim need not clear it. */
+    attempt_note: jsonb("attempt_note").$type<{ attempt: number; text: string }>(),
     /** Unused: the per-attempt cap it held was removed. Kept, with a default, for runners and ingest deployed before that. */
     budget_usd: doublePrecision("budget_usd").notNull().default(5),
     /** When the watchdog nudged a stuck run, and in which stage; cleared once the stage moves on. */
@@ -282,6 +284,7 @@ export const intentKind = pgEnum("intent_kind", [
   "rebuild_repo_image",
   "repo_push",
   "retry_stop",
+  "retry_job",
   "slack_test",
 ]);
 

@@ -60,6 +60,7 @@ registerSource(
     overrides: (state) => ({ ...NO_OVERRIDES, runsOn: (state as unknown as typeof draft.sourceState).asks.runsOn }),
     labels: async () => [],
     reopen: async (job) => call("reopen", job.key),
+    requeue: async (job) => call("requeue", job.key),
     describe: (job) => `fake item ${job.key}`,
   },
 );

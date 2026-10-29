@@ -11,6 +11,7 @@ import { checkoutRepo, cleanupRepo, cleanupSubagentWorktrees } from "../lib/work
 import { github } from "../lib/github/pulls";
 import { claimConflict, conflictMessage, unclaimedRunsWithPr } from "../lib/conflicts";
 import { attemptBranch, isJobKey, isMcpSession } from "../lib/factory";
+import { ownerNoteSection } from "../lib/inbox";
 import { attemptBranchSql } from "../lib/branch-sql";
 import { nudgeMessage, watch } from "../lib/watchdog";
 import { factoryPlaybook, jobExecution } from "../lib/playbook";
@@ -612,7 +613,8 @@ export async function announceClaims() {
   await eachJob(parseJobs(queued), "announce", (job) => sourceFor(job.source).announceClaim(job));
 }
 
-function launchMessage(job: Job) {
+export function launchMessage(job: Job) {
+  const ownerNote = ownerNoteSection(job);
   return [
     `Work ${sourceFor(job.source).describe(job)}: ${job.title}`,
     job.url,
@@ -628,6 +630,7 @@ function launchMessage(job: Job) {
           `This is attempt ${job.attempt}. The previous attempt failed: ${job.previous_failure} Start fresh from main on this branch.`,
         ]
       : []),
+    ...(ownerNote ? ["", ownerNote] : []),
     ...(job.resume_context
       ? [
           "",
