@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { closeSync, mkdirSync, mkdtempSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { ModalClient } from "modal";
@@ -89,11 +89,18 @@ export const openModalBuildSandbox: OpenBuildSandbox = async (limits, log) => {
   const modal = new ModalClient();
   try {
     const app = await modal.apps.fromName(limits.appName, { createIfMissing: true });
+    // The caller holds this machine's build lock, so a build sandbox of this machine still running
+    // was left by a build that stopped mid-create; it is ended rather than billed until its timeout.
+    const tags = { purpose: "image-build", host: hostname() };
+    for await (const left of modal.sandboxes.list({ appId: app.appId, tags })) {
+      log(`ending build sandbox ${left.sandboxId}, left by an earlier build`);
+      await left.terminate().catch((error: unknown) => log(`could not end ${left.sandboxId}: ${String(error)}`));
+    }
     const base = modal.images.fromRegistry("node:22-bookworm").dockerfileCommands(baseLayers(limits));
     log("building the base image (the first build takes a few minutes)");
     const sandbox = await modal.sandboxes.create(app, base, {
       name: `image-build-${Date.now()}`,
-      tags: { purpose: "image-build" },
+      tags,
       runtime: "gvisor",
       timeoutMs: 20 * 60_000,
       command: ["sleep", "infinity"],
