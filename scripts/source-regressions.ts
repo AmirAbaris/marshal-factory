@@ -357,12 +357,12 @@ try {
     linearJob("src-q1", "SRC-6", { stage: "queued", state: "Todo" }),
     linearJob("src-q2", "SRC-7", { stage: "queued", attempt: 2, state: "Todo" }),
   ].map((row) => ({ ...row, machine_id: TEST_MACHINE_ID })));
-  const synced = await ops.writeBack();
+  const { synced } = await ops.writeBack();
   await ops.announceClaims();
   const writes = { synced, calls: structuredClone(calls), rows: await snapshot() };
   calls.length = 0;
   assert.deepEqual(
-    await ops.writeBack(),
+    (await ops.writeBack()).synced,
     [],
     "a second pass writes nothing back",
   );

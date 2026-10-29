@@ -25,6 +25,9 @@ export type JobDraft<S extends JobSource = JobSource> = {
   sourceState: SourceStateDraftOf<S>;
 };
 
+/** The source no longer has the job's item, or this key can't see it; retrying changes nothing. */
+export class SourceGoneError extends Error {}
+
 export type StageTransition = { stage: Stage; eventId: string };
 
 export type Reply = { id: string; body: string; createdAt: string };
@@ -53,7 +56,7 @@ export interface SourceAdapter<S extends JobSource> {
   ready(): Promise<JobDraft<S>[]>;
   /** Tells the source the job's current attempt was picked up; does nothing once it has. */
   announceClaim(job: Job<S>): Promise<void>;
-  /** Reports the stage to the source; false when the stage has nothing to say there. */
+  /** Reports the stage to the source; false when the stage has nothing to say there. Throws SourceGoneError when the item is gone. */
   writeBack(job: Job<S>, transition: StageTransition): Promise<boolean>;
   /** What a waiting job needs from what the source shows: wait, close, or resume with the new replies. */
   replies(job: Job<S>): Promise<ResumePlan>;

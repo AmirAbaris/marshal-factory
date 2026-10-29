@@ -152,6 +152,8 @@ export type DecisionInput = {
   /** What the evidence for this attempt proves about the PR head; see lib/evidence.ts. */
   evidence: HeadEvidence;
   runner: RunnerVerification;
+  /** Why the PR edits what its checks depend on (lib/trusted-checks.ts). Any makes it a handover whatever the evidence says. */
+  trustEdits: readonly string[];
   /** Whether the agent had the sandbox's headless browser, so a change to a page can come with screenshots. */
   browser: boolean;
 };
@@ -204,6 +206,7 @@ function evidenceReasons({ evidence, runner }: DecisionInput, pr: PrFacts): stri
     case "stale":
     case "dirty":
     case "incomplete":
+    case "untrusted":
       switch (runner.kind) {
         case "available":
         case "running":
@@ -241,7 +244,7 @@ export const OFF_DECISION: Decision = { outcome: "handover", reasons: [] };
 export function decideMerge(input: DecisionInput): Decision {
   if (input.policy.autonomy === "off") return OFF_DECISION;
   if (!input.pr) throw new Error("decideMerge needs the PR's facts unless autonomy is off");
-  const reasons = [...agentReasons(input), ...hardLimits(input, input.pr), ...screenshotReasons(input, input.pr), ...evidenceReasons(input, input.pr)];
+  const reasons = [...agentReasons(input), ...hardLimits(input, input.pr), ...screenshotReasons(input, input.pr), ...input.trustEdits, ...evidenceReasons(input, input.pr)];
   if (reasons.length > 0) return { outcome: "handover", reasons };
   const waiting = waitingOn(input, input.pr);
   if (waiting.length > 0) {
