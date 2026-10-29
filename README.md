@@ -238,7 +238,7 @@ Within seconds the issue moves to In Progress, a comment says the factory took i
 
 **Stop a job.** Remove the `factory` label, or cancel the issue. The runner stops the thread.
 
-**When it fails.** A job fails when the agent gives up, or when it stays stuck after one nudge. The reason is posted on the issue, the issue goes back to Todo, and the label changes to `factory-failed`. To retry, add `factory` again. The retry runs on a new branch (`factory/FAC-7-a2`). A failed job's worktree is kept for three days, so you can look at what it did. Spend is measured per attempt and shown on the card; no amount stops a run.
+**When it fails.** A job fails when the agent gives up, or when it stays stuck after one nudge. The reason is posted on the issue, the issue goes back to Todo, and the label changes to `factory-failed`. To retry, press **Retry** on the job's item in the panel's Needs you inbox or in its Slack message, with an optional note for the next attempt, or add `factory` to the issue again. The retry runs on a new branch (`factory/FAC-7-a2`). A failed job's worktree is kept for three days, so you can look at what it did. Spend is measured per attempt and shown on the card; no amount stops a run.
 
 ## Settings
 
@@ -268,7 +268,7 @@ mkdir -p ~/.codex-factory-1 && CODEX_HOME=~/.codex-factory-1 codex login --devic
 
 For Claude Code jobs, run `claude setup-token`, add the token as `CLAUDE_CODE_OAUTH_TOKEN=...` to `.env.local` in the live checkout and restart the runner. Without it, those jobs run on Codex. A Claude Code job needs no Codex login, so with the token any number of them run side by side, up to `factory.sandbox.maxParallel` (4) and `factory.maxInFlight` (4). Each Codex job holds one Codex login while its sandbox runs: each extra login (`~/.codex-factory-2` and so on) lets one more Codex sandbox run; list them in `factory.sandbox.codexSlots`.
 
-Then set **Run jobs on** to Modal in the panel's Settings, which shows anything still missing. A job waiting for review or an answer hibernates to a snapshot after five minutes and wakes when it is needed, so it does not pay for a running sandbox while it waits. Claude Code and Codex jobs show stages and cost; other harnesses show neither. Rebuild the image (`bun scripts/sandbox-image.ts`) when you change T3's version, the hooks, the MCP server or the playbook. [docs/operations.md](docs/operations.md#running-jobs-in-modal-sandboxes) has the details, including opening a sandboxed job in T3.
+Then set **Run jobs on** to Modal in the panel's Settings, which shows anything still missing. A job waiting for review or an answer hibernates to a snapshot after five minutes and wakes when it is needed, so it does not pay for a running sandbox while it waits. Claude Code and Codex jobs show stages and cost; other harnesses show neither. The runner rebuilds the image itself when a pin or a playbook changes; rebuild it by hand (`bun scripts/sandbox-image.ts`) when you change the hooks or the MCP server. [docs/operations.md](docs/operations.md#running-jobs-in-modal-sandboxes) has the details, including opening a sandboxed job in T3.
 
 ## Connecting Slack
 

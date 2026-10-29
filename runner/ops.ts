@@ -4,13 +4,14 @@ import { agents, jobs, runs, type JobRow, type RunRow } from "../db/schema";
 import { STAGES, type Stage, type Usage } from "../lib/events";
 import { allSources, jobId, parseJob, parseJobs, sourceFor } from "../lib/sources";
 import { parseJobId, SOURCE_SHAPES } from "../lib/sources/shapes";
-import type { Job, JobDraft, JobId, JobSource, SourceAdapter } from "../lib/sources/types";
+import { SourceGoneError, type Job, type JobDraft, type JobId, type JobSource, type SourceAdapter } from "../lib/sources/types";
 import { canTransition, runnerEventId } from "../lib/stages";
 import { subagentTranscripts, sumUsage, transcriptPathFor } from "../lib/transcript";
 import { checkoutRepo, cleanupRepo, cleanupSubagentWorktrees } from "../lib/worktrees";
 import { github } from "../lib/github/pulls";
 import { claimConflict, conflictMessage, unclaimedRunsWithPr } from "../lib/conflicts";
 import { attemptBranch, isJobKey, isMcpSession } from "../lib/factory";
+import { ownerNoteSection } from "../lib/inbox";
 import { attemptBranchSql } from "../lib/branch-sql";
 import { nudgeMessage, watch } from "../lib/watchdog";
 import { factoryPlaybook, jobExecution } from "../lib/playbook";
@@ -436,29 +437,40 @@ export async function writeBack({ only }: { only?: readonly string[] } = {}) {
       .orderBy(asc(jobs.key)),
   );
   const synced: string[] = [];
-  await eachJob(pending, "write back", async (job) => {
-    const written = await sourceFor(job.source).writeBack(job, { stage: job.stage, eventId: job.stage_event_id! });
-    // Only this event counts as synced; a newer one that landed meanwhile goes next pass.
-    await db
-      .update(jobs)
-      .set({ synced_event_id: job.stage_event_id })
-      .where(and(eq(jobs.id, job.id), eq(jobs.stage_event_id, job.stage_event_id!)));
-    if (written) synced.push(`${job.key}:${job.stage}`);
+  const gaveUp: { key: string; reason: string }[] = [];
+  const failures = await eachJob(pending, async (job) => {
+    const eventId = job.stage_event_id!;
+    const settle = () =>
+      // Only this event counts as synced; a newer one that landed meanwhile goes next pass.
+      db
+        .update(jobs)
+        .set({ synced_event_id: eventId })
+        .where(and(eq(jobs.id, job.id), eq(jobs.stage_event_id, eventId)));
+    try {
+      const written = await sourceFor(job.source).writeBack(job, { stage: job.stage, eventId });
+      await settle();
+      if (written) synced.push(`${job.key}:${job.stage}`);
+    } catch (error) {
+      if (!(error instanceof SourceGoneError)) throw error;
+      // Marking the event synced is the give-up record: no column needed, and a later stage event is tried afresh.
+      await settle();
+      gaveUp.push({ key: job.key, reason: error.message });
+    }
   });
-  return synced;
+  return { synced, gaveUp, errors: failures };
 }
 
 /**
- * Runs a source step for each job on its own, so one issue the source refuses (deleted, no access,
- * a malformed state) does not hold back the rest. The failures are thrown together at the end, so
- * an intent is retried and the timer reports them; the jobs that went through are not redone.
+ * Runs a source step for each job on its own, so one issue the source refuses (a malformed state, an
+ * outage) does not hold back the rest. Returns the failures instead of throwing, so a caller that
+ * must not fail on them can report them; the jobs that went through are not redone.
  */
-async function eachJob(list: readonly Job[], what: string, step: (job: Job) => Promise<void>) {
+async function eachJob(list: readonly Job[], step: (job: Job) => Promise<void>) {
   const failed: string[] = [];
   for (const job of list) {
     await step(job).catch((error: unknown) => void failed.push(`${job.key}: ${error instanceof Error ? error.message : String(error)}`));
   }
-  if (failed.length > 0) throw new Error(`could not ${what} ${failed.join("; ")}`);
+  return failed;
 }
 
 /** This machine's factory checkouts, keyed by the GitHub repo each one tracks. */
@@ -609,10 +621,13 @@ export async function announceClaims() {
     .from(jobs)
     .where(and(await mine(), eq(jobs.stage, "queued")))
     .orderBy(asc(jobs.claimed_at), asc(jobs.key));
-  await eachJob(parseJobs(queued), "announce", (job) => sourceFor(job.source).announceClaim(job));
+  const failed = await eachJob(parseJobs(queued), (job) => sourceFor(job.source).announceClaim(job));
+  // Thrown so the intent is retried and the timer reports it.
+  if (failed.length > 0) throw new Error(`could not announce ${failed.join("; ")}`);
 }
 
-function launchMessage(job: Job) {
+export function launchMessage(job: Job) {
+  const ownerNote = ownerNoteSection(job);
   return [
     `Work ${sourceFor(job.source).describe(job)}: ${job.title}`,
     job.url,
@@ -628,6 +643,7 @@ function launchMessage(job: Job) {
           `This is attempt ${job.attempt}. The previous attempt failed: ${job.previous_failure} Start fresh from main on this branch.`,
         ]
       : []),
+    ...(ownerNote ? ["", ownerNote] : []),
     ...(job.resume_context
       ? [
           "",

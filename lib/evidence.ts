@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { CHECKS, redact, type CheckName, type Recipe } from "./recipe";
+import { CHECKS, redact, type Recipe } from "./recipe";
 
 // Proof tied to a commit: which checks ran at one exact revision, what each exited with, and
 // whether the tree held that commit and nothing else. The agent's stage says what it reports; this
@@ -188,18 +188,22 @@ export const headEvidenceSchema = z.discriminatedUnion("state", [
   z.object({ state: z.literal("dirty"), sha: z.string() }),
   /** Required checks the evidence at the head didn't run. */
   z.object({ state: z.literal("incomplete"), sha: z.string(), missing: z.array(z.string()) }),
+  /** Checks that ran another command than the one the repo's recorded recipe names, so they prove nothing about it. */
+  z.object({ state: z.literal("untrusted"), sha: z.string(), mismatched: z.array(z.string()) }),
   z.object({ state: z.literal("failed"), sha: z.string(), failed: z.array(z.string()), passed: z.number().int(), total: z.number().int() }),
   z.object({ state: z.literal("verified"), sha: z.string(), passed: z.number().int(), total: z.number().int(), producer: z.enum(PRODUCERS) }),
 ]);
 export type HeadEvidence = z.infer<typeof headEvidenceSchema>;
 
-export type EvidenceRow = { sha: string; clean: boolean; producer: Producer; source: CheckSource; checks: readonly Pick<EvidenceCheck, "name" | "passed">[]; recordedAt: Date };
+export type EvidenceRow = { sha: string; clean: boolean; producer: Producer; source: CheckSource; checks: readonly Pick<EvidenceCheck, "name" | "passed" | "command">[]; recordedAt: Date };
 
 /**
- * What the evidence for this attempt says about `headSha`. `required` is the repo's recipe checks
- * when the factory knows its recipe; without one, the checks the evidence itself found count.
+ * What the evidence for this attempt says about `headSha`. `required` is the repo's recorded recipe
+ * checks, names and commands, when the factory knows its recipe; without one, the checks the
+ * evidence itself found count. An agent plans its checks from its own worktree, so a check whose
+ * command differs from the recorded one proves nothing.
  */
-export function headEvidence(rows: readonly EvidenceRow[], headSha: string, required: readonly CheckName[] | null): HeadEvidence {
+export function headEvidence(rows: readonly EvidenceRow[], headSha: string, required: readonly PlannedCheck[] | null): HeadEvidence {
   if (required?.length === 0) return { state: "no_checks" };
   const atHead = rows.find((r) => r.sha === headSha);
   if (!atHead) {
@@ -209,8 +213,10 @@ export function headEvidence(rows: readonly EvidenceRow[], headSha: string, requ
   const named = atHead.checks.filter((c) => c.name !== "custom").map((c) => c.name);
   if (!required && named.length === 0) return { state: "no_checks" };
   if (!atHead.clean) return { state: "dirty", sha: headSha };
-  const missing = (required ?? []).filter((name) => !named.includes(name));
+  const missing = (required ?? []).filter(({ name }) => !named.includes(name)).map(({ name }) => name);
   if (missing.length > 0) return { state: "incomplete", sha: headSha, missing };
+  const mismatched = atHead.checks.filter((c) => required?.some((r) => r.name === c.name && r.command.trim() !== c.command.trim())).map((c) => c.name);
+  if (mismatched.length > 0) return { state: "untrusted", sha: headSha, mismatched };
   const failed = atHead.checks.filter((c) => !c.passed).map((c) => (c.name === "custom" ? "setup" : c.name));
   const passed = atHead.checks.length - failed.length;
   if (failed.length > 0) return { state: "failed", sha: headSha, failed: [...new Set(failed)], passed, total: atHead.checks.length };
@@ -218,11 +224,11 @@ export function headEvidence(rows: readonly EvidenceRow[], headSha: string, requ
 }
 
 /** Evidence that leaves the head unproven, but that a fresh run of the checks could settle. */
-export const unproven = (e: HeadEvidence): e is Extract<HeadEvidence, { state: "missing" | "stale" | "dirty" | "incomplete" }> =>
-  e.state === "missing" || e.state === "stale" || e.state === "dirty" || e.state === "incomplete";
+export const unproven = (e: HeadEvidence): e is Extract<HeadEvidence, { state: "missing" | "stale" | "dirty" | "incomplete" | "untrusted" }> =>
+  e.state === "missing" || e.state === "stale" || e.state === "dirty" || e.state === "incomplete" || e.state === "untrusted";
 
 /** Why an unproven head is unproven, as a clause. */
-export function notVerifiedWhy(e: Extract<HeadEvidence, { state: "missing" | "stale" | "dirty" | "incomplete" }>) {
+export function notVerifiedWhy(e: Extract<HeadEvidence, { state: "missing" | "stale" | "dirty" | "incomplete" | "untrusted" }>) {
   switch (e.state) {
     case "missing":
       return "no checks were reported for it";
@@ -232,6 +238,8 @@ export function notVerifiedWhy(e: Extract<HeadEvidence, { state: "missing" | "st
       return "the checks ran with uncommitted changes";
     case "incomplete":
       return `the checks didn't include ${e.missing.join(", ")}`;
+    case "untrusted":
+      return `the checks ran other commands than the recipe records for ${e.mismatched.join(", ")}`;
     default: {
       const never: never = e;
       throw new Error(`unknown evidence state ${String(never)}`);

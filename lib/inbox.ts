@@ -123,10 +123,10 @@ export const INBOX_ACTIONS = {
   question: ["answer"],
   revert_failed: ["follow_up", "dismiss"],
   handover: ["approve", "request_changes", "close"],
-  failed: ["close", "dismiss"],
+  failed: ["retry", "close", "dismiss"],
   stop_unconfirmed: ["retry_stop", "dismiss"],
 } as const satisfies Record<InboxKind, readonly InboxAction[]>;
-export type InboxAction = "answer" | "approve" | "request_changes" | "follow_up" | "close" | "dismiss" | "retry_stop";
+export type InboxAction = "answer" | "approve" | "request_changes" | "follow_up" | "close" | "dismiss" | "retry_stop" | "retry";
 
 export const allows = (kind: InboxKind | null, action: InboxAction) =>
   kind !== null && (INBOX_ACTIONS[kind] as readonly InboxAction[]).includes(action);
@@ -134,6 +134,19 @@ export const allows = (kind: InboxKind | null, action: InboxAction) =>
 export const MAX_FEEDBACK_CHARS = 20_000;
 /** A follow-up's text goes into a new issue, whose description holds 10,000 characters with the failure's facts. */
 export const MAX_FOLLOW_UP_CHARS = 8_000;
+
+/** A retry's note goes into the next attempt's first message and, where the source takes comments, onto the issue. */
+export const MAX_RETRY_NOTE_CHARS = 4_000;
+
+/** A retry_job intent: `attempt` is the failed attempt the owner saw, so a replay after the new attempt started changes nothing. */
+export const retryDetailSchema = z.object({ actor: z.string(), attempt: z.number().int().positive(), note: z.string() });
+export type RetryDetail = z.infer<typeof retryDetailSchema>;
+
+/** The note as the next attempt's launch message gives it; null when the owner left none or it belongs to another attempt. */
+export function ownerNoteSection(job: Pick<JobRow, "attempt" | "attempt_note">): string | null {
+  const note = job.attempt_note;
+  return note && note.attempt === job.attempt && note.text.trim() ? `## Owner's note for this attempt\n\n${note.text.trim()}` : null;
+}
 
 /**
  * An approve_merge intent: the owner, the head they reviewed (null when they saw no head) and

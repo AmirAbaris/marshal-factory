@@ -3,7 +3,7 @@ import { z } from "zod";
 import { intents, jobs, slackMessages, type IntentKind, type JobRow, type SlackMessageRow } from "@/db/schema";
 import type { SessionUser } from "@/lib/auth/owner";
 import { attemptBranch } from "@/lib/factory";
-import { followUpHint, MAX_FEEDBACK_CHARS, MAX_FOLLOW_UP_CHARS, type InboxAction } from "@/lib/inbox";
+import { followUpHint, MAX_FEEDBACK_CHARS, MAX_FOLLOW_UP_CHARS, MAX_RETRY_NOTE_CHARS, type InboxAction } from "@/lib/inbox";
 import {
   answerQuestion,
   approveMerge,
@@ -13,6 +13,7 @@ import {
   fileFollowUp,
   intentOutcome,
   requestChanges,
+  retryFailed,
   retryStop,
   type InboxDeps,
   type InboxOutcome,
@@ -55,6 +56,7 @@ const INTENT_KINDS = {
   request_changes: "request_changes",
   close: "close_job",
   retry_stop: "retry_stop",
+  retry: "retry_job",
 } as const satisfies Partial<Record<InboxAction, IntentKind>>;
 
 /**
@@ -73,7 +75,7 @@ async function nextRequestId(deps: InteractionDeps, eventId: string, action: Inb
   }
 }
 
-const MODAL_ACTIONS = ["answer", "request_changes", "follow_up", "close"] as const satisfies readonly InboxAction[];
+const MODAL_ACTIONS = ["answer", "request_changes", "follow_up", "close", "retry"] as const satisfies readonly InboxAction[];
 type ModalAction = (typeof MODAL_ACTIONS)[number];
 const isModal = (action: InboxAction): action is ModalAction => (MODAL_ACTIONS as readonly string[]).includes(action);
 
@@ -88,6 +90,7 @@ const MODAL_TITLES: Record<ModalAction, string> = {
   request_changes: "Request changes",
   follow_up: "File a follow-up",
   close: "Close the job",
+  retry: "Retry the job",
 };
 
 type ModalCopy = { title: string; label: string; hint: string; submit: string; optional: boolean; max: number };
@@ -119,6 +122,15 @@ function modalCopy(action: ModalAction, job: JobRow): ModalCopy {
         submit: "Close the job",
         optional: true,
         max: 2000,
+      };
+    case "retry":
+      return {
+        title,
+        label: "Note for the next attempt (optional)",
+        hint: "Goes into the new attempt's first message and onto the issue as a comment. Leave it empty to retry as is.",
+        submit: "Retry",
+        optional: true,
+        max: MAX_RETRY_NOTE_CHARS,
       };
     default: {
       const never: never = action;
@@ -228,6 +240,8 @@ function runAction(inbox: InboxDeps, action: InboxAction, job: JobRow, requestId
       return dismissJob(inbox, job.id);
     case "retry_stop":
       return retryStop(inbox, job.id, requestId);
+    case "retry":
+      return retryFailed(inbox, job.id, requestId, text);
     default: {
       const never: never = action;
       throw new Error(`unknown inbox action ${String(never)}`);

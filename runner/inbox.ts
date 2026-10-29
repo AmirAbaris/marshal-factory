@@ -4,12 +4,12 @@ import { auditLog, intents, jobs, type IntentRow } from "../db/schema";
 import { attemptBranch, parseBranch } from "../lib/factory";
 import { github } from "../lib/github/pulls";
 import { ensureAwake } from "../lib/host";
-import { changesMessage, type CloseDetail, type FeedbackDetail, type ReviewComment } from "../lib/inbox";
-import { parseJob } from "../lib/sources";
+import { changesMessage, type CloseDetail, type FeedbackDetail, type RetryDetail, type ReviewComment } from "../lib/inbox";
+import { parseJob, sourceFor } from "../lib/sources";
 import type { Job, JobId } from "../lib/sources/types";
 import { canTransition, runnerEventId } from "../lib/stages";
 import { requestedStop } from "../lib/stop";
-import { finishStop, IN_FLIGHT, postEvent, threads } from "./ops";
+import { claim, finishStop, IN_FLIGHT, postEvent, threads } from "./ops";
 
 // The inbox's actions on the job's own machine. Requested changes reach the thread once per
 // feedback id: the id is claimed on the job before the send and given back if the send fails, as
@@ -184,4 +184,36 @@ export async function closeJob(id: JobId, { actor, reason }: CloseDetail, now = 
     return { closed: job.key, pr };
   }
   throw new Error("the stage kept changing; the close is retried");
+}
+
+export type RetryResult = { started: number } | { refused: string };
+
+/**
+ * Starts the next attempt of a failed job the way the label does: the source shows the issue as
+ * ready again and the usual claim bumps the attempt. The note is stored under the attempt it is
+ * for before anything else, and the source's comment is keyed by attempt, so a replay repeats
+ * nothing. A replay after the new attempt exists finds it and says so.
+ */
+export async function retryJob(id: JobId, { actor, attempt, note }: RetryDetail, claimReady: () => Promise<unknown> = claim): Promise<RetryResult> {
+  const job = await readJob(id);
+  if (!job) return { refused: `No job ${id}.` };
+  if (job.attempt > attempt) return { started: job.attempt };
+  if (job.stage !== "failed") return { refused: `The job is ${job.stage}, not failed; there is nothing to retry.` };
+  // Until the failure is written back, that write-back would take the label away again after requeue.
+  if (job.synced_event_id !== job.stage_event_id) return { refused: "The failure is still being written back to the issue. Retry again in a minute." };
+  const next = job.attempt + 1;
+  const text = note.trim();
+  if (text) {
+    await db
+      .update(jobs)
+      .set({ attempt_note: { attempt: next, text }, updated_at: new Date() })
+      .where(and(eq(jobs.id, job.id), eq(jobs.stage, "failed"), eq(jobs.attempt, job.attempt)));
+  }
+  const source = sourceFor(job.source);
+  await source.requeue(job);
+  if (text) await source.note(job, `retry-${next}`, `**Note from ${actor} for attempt ${next}**\n\n${text}`);
+  await claimReady();
+  const after = await readJob(id);
+  if (after && after.attempt > job.attempt) return { started: after.attempt };
+  return { refused: "The factory can't start another attempt yet, for example while the failed one is still stopping. The factory label is back on the issue, so the next attempt starts as soon as it can." };
 }

@@ -25,6 +25,7 @@ export const INTENT_ROUTES = {
   rebuild_repo_image: "any",
   repo_push: "any",
   retry_stop: "owner",
+  retry_job: "any",
   slack_test: "slack",
 } as const satisfies Record<IntentKind, "any" | "owner" | "broadcast" | "slack">;
 
@@ -50,6 +51,8 @@ export const INTENT_ATTEMPTS = {
   repo_push: 20,
   // The owner sees the error on the inbox item and can retry again.
   retry_stop: 3,
+  // The owner sees the error on the inbox item and can retry again.
+  retry_job: 3,
   // The owner watches Settings for the outcome and can send another.
   slack_test: 1,
 } as const satisfies Record<IntentKind, number>;

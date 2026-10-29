@@ -118,7 +118,7 @@ assert.equal(imageProblem(image, pins), undefined, "an image built with every pi
 assert.match(imageProblem(null, pins)!, /no sandbox image is built/);
 for (const [component, name] of [["t3", "T3"], ["claudeCode", "Claude Code"], ["codex", "Codex"], ["playwrightMcp", "Playwright MCP"], ["pstack", "PStack"]] as const) {
   const stale = { ...image, ...(component === "t3" && { t3Version: "0.0.1" }), versions: { ...image.versions, [component]: "0.0.1" } };
-  assert.equal(imageProblem(stale, pins), `Rebuild the sandbox image: ${name} 0.0.1 → ${pinnedVersions(pins)[component]}; run bun scripts/sandbox-image.ts`, `a ${name} mismatch alone makes the image outdated`);
+  assert.equal(imageProblem(stale, pins), `Rebuild the sandbox image: ${name} 0.0.1 → ${pinnedVersions(pins)[component]}; the runner rebuilds it on its tick, or run bun scripts/sandbox-image.ts`, `a ${name} mismatch alone makes the image outdated`);
 }
 const beforePins = { ...image, versions: undefined };
 assert.match(imageProblem(beforePins, pins)!, /^Rebuild the sandbox image: Claude Code missing → .+, Codex missing → .+, Playwright MCP missing → .+, PStack missing → .+;/, "an image built before the other pins is outdated");
@@ -173,7 +173,7 @@ try {
   assert.equal((await row(keys[0]!)).t3_thread_id, null, "nor with an outdated one");
   assert.deepEqual(events.at(-1), {
     event: "sandbox:no-image",
-    detail: { queued: [keys[0]], reason: `Rebuild the sandbox image: Claude Code 2.1.309 → ${pins.claudeCodeVersion}; run bun scripts/sandbox-image.ts` },
+    detail: { queued: [keys[0]], reason: `Rebuild the sandbox image: Claude Code 2.1.309 → ${pins.claudeCodeVersion}; the runner rebuilds it on its tick, or run bun scripts/sandbox-image.ts` },
   });
   sandboxRuntime.image = () => image;
   assert.equal(fake.created, 0, "and no sandbox was created");

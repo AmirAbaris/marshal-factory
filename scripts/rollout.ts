@@ -157,7 +157,7 @@ async function afterPull() {
   else {
     const problem = imageProblem(image, loadLimits().sandbox);
     const imageChanged = changedSince(image.factoryCommit);
-    const imageTouched = imageChanged && touchedInputs(imageChanged, [...(bundleInputs(IMAGE_BUNDLES)), "scripts/sandbox-image.ts"]);
+    const imageTouched = imageChanged && touchedInputs(imageChanged, [...(bundleInputs(IMAGE_BUNDLES)), "scripts/sandbox-image.ts", "lib/sandbox-image-build.ts"]);
     const why = [problem, imageTouched === null ? `its commit ${image.factoryCommit.slice(0, 7)} is not in this checkout` : imageTouched.length > 0 && `${imageTouched.join(", ")} changed`].filter(Boolean);
     if (why.length > 0) {
       log(`image: rebuilding, ${why.join("; ")}`);

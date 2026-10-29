@@ -25,6 +25,9 @@ export type JobDraft<S extends JobSource = JobSource> = {
   sourceState: SourceStateDraftOf<S>;
 };
 
+/** The source no longer has the job's item, or this key can't see it; retrying changes nothing. */
+export class SourceGoneError extends Error {}
+
 export type StageTransition = { stage: Stage; eventId: string };
 
 export type Reply = { id: string; body: string; createdAt: string };
@@ -53,7 +56,7 @@ export interface SourceAdapter<S extends JobSource> {
   ready(): Promise<JobDraft<S>[]>;
   /** Tells the source the job's current attempt was picked up; does nothing once it has. */
   announceClaim(job: Job<S>): Promise<void>;
-  /** Reports the stage to the source; false when the stage has nothing to say there. */
+  /** Reports the stage to the source; false when the stage has nothing to say there. Throws SourceGoneError when the item is gone. */
   writeBack(job: Job<S>, transition: StageTransition): Promise<boolean>;
   /** What a waiting job needs from what the source shows: wait, close, or resume with the new replies. */
   replies(job: Job<S>): Promise<ResumePlan>;
@@ -70,6 +73,8 @@ export interface SourceAdapter<S extends JobSource> {
   labels(job: Job<S>): Promise<string[]>;
   /** Returns a stopped job to the source's not-started state, so adding the label again retries it. */
   reopen(job: Job<S>): Promise<void>;
+  /** Puts a failed job where the source's intake offers it again, as a person adding the factory label does; the next claim starts a new attempt. */
+  requeue(job: Job<S>): Promise<void>;
   /** The noun phrase naming the job in messages to the thread, such as "Linear issue FAC-7". */
   describe(job: Pick<Job<S>, "key">): string;
   /**

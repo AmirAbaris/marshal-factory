@@ -176,6 +176,8 @@ try {
   let clock = at.getTime();
   let hangCapacity = false;
   let hangInventory = false;
+  let sandboxGate: Promise<void> | undefined;
+  let sandboxEntered = () => {};
   const beatMachine = { id: `${machine.id}-beat`, name: "Beat Mac", idFrom: "config" as const };
   const beat = createBeat({
     machine: beatMachine,
@@ -187,7 +189,7 @@ try {
       projects: async () => inventoryA.projects,
       repos: async () => inventoryA.repos,
       harnesses: async () => inventoryA.harnesses,
-      sandbox: async () => inventoryA.sandbox,
+      sandbox: async () => (sandboxEntered(), await sandboxGate, inventoryA.sandbox),
       slack: async () => inventoryA.slack,
     },
     inventoryMs: 600_000,
@@ -233,6 +235,27 @@ try {
     await beat();
     assert.deepEqual(since(mark), ["heartbeat", "inventory"], "the inventory is due again after inventoryMs");
     assert.equal(events.at(-1)!.detail!.result, "unchanged");
+
+    // A fresh request while a beat is collecting: that older inventory does not count as the fresh one.
+    clock += 600_000;
+    let open = () => {};
+    sandboxGate = new Promise((resolve) => (open = resolve));
+    const entered = new Promise<void>((resolve) => (sandboxEntered = resolve));
+    const collecting = beat();
+    await entered;
+    sandboxEntered = () => {};
+    mark = events.length;
+    await beat({ fresh: true });
+    assert.deepEqual(since(mark), ["heartbeat:skipped"]);
+    open();
+    sandboxGate = undefined;
+    await collecting;
+    mark = events.length;
+    await beat();
+    assert.deepEqual(since(mark), ["heartbeat", "inventory"], "the next beat collects the fresh inventory");
+    mark = events.length;
+    await beat({ fresh: true });
+    assert.deepEqual(since(mark), ["heartbeat", "inventory"], "a fresh beat collects at once");
   } finally {
     await db.delete(machines).where(eq(machines.id, beatMachine.id));
   }
