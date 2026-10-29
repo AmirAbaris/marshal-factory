@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { useState, useTransition, type ReactNode } from "react";
 import { saveNotifications, sendSlackTest, slackTestStatus } from "@/app/actions/notifications";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardFooter } from "@/components/ui/card";
 import { Field, FieldDescription, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -16,6 +16,7 @@ import type { NotificationSettingsRow } from "@/db/schema";
 import type { SlackReadiness } from "@/lib/machine";
 import { parseNotificationConfig, SLACK_TARGETS, TARGET_LABELS, type NotificationConfig, type SlackTarget } from "@/lib/notifications";
 import { NOTIFY_TOGGLES, TOGGLE_LABELS, type NotifyToggle } from "@/lib/slack";
+import { SettingsSection } from "./settings-section";
 import { useAfterHydration } from "./time";
 
 const POLL_MS = 1_500;
@@ -116,91 +117,90 @@ export function NotificationsCard({ saved, slack }: { saved: NotificationSetting
   };
 
   return (
-    <Card className="max-w-3xl">
-      <CardHeader>
-        <CardTitle>Notifications</CardTitle>
-        <CardDescription>
-          The runner posts a Slack message when a job needs you, when the factory merges or reverts on its own, and edits the same message once
-          it is resolved.
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="flex flex-col gap-6">
-        <Status slack={slack} target={target} />
-        <Field>
-          <FieldLabel htmlFor="notify-target">Send to</FieldLabel>
-          <Select items={SLACK_TARGETS.map((t) => ({ value: t, label: TARGET_LABELS[t] }))} value={target} onValueChange={(value) => value && edit(setTarget)(value)}>
-            <SelectTrigger id="notify-target" className="w-full">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectPopup>
-              {SLACK_TARGETS.map((t) => (
-                <SelectItem key={t} value={t}>
-                  {TARGET_LABELS[t]}
-                </SelectItem>
-              ))}
-            </SelectPopup>
-          </Select>
-          <FieldDescription>Off posts nothing new; messages already sent are still marked resolved.</FieldDescription>
-        </Field>
-        {target === "channel" && (
+    <SettingsSection
+      id="notifications"
+      title="Notifications"
+      description="The runner posts a Slack message when a job needs you, when the factory merges or reverts on its own, and edits the same message once it is resolved."
+    >
+      <Card>
+        <CardContent className="flex flex-col gap-6">
+          <Status slack={slack} target={target} />
           <Field>
-            <FieldLabel htmlFor="notify-channel">Channel id</FieldLabel>
-            <Input id="notify-channel" value={channelId} placeholder="C0123456789" onChange={(e) => edit(setChannelId)(e.target.value)} className="font-mono" />
-            <FieldDescription>In Slack, open the channel&apos;s details; the id is at the bottom. Invite the app first if the channel is private.</FieldDescription>
+            <FieldLabel htmlFor="notify-target">Send to</FieldLabel>
+            <Select items={SLACK_TARGETS.map((t) => ({ value: t, label: TARGET_LABELS[t] }))} value={target} onValueChange={(value) => value && edit(setTarget)(value)}>
+              <SelectTrigger id="notify-target" className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectPopup>
+                {SLACK_TARGETS.map((t) => (
+                  <SelectItem key={t} value={t}>
+                    {TARGET_LABELS[t]}
+                  </SelectItem>
+                ))}
+              </SelectPopup>
+            </Select>
+            <FieldDescription>Off posts nothing new; messages already sent are still marked resolved.</FieldDescription>
           </Field>
-        )}
-        <div className="flex flex-col gap-3">
-          <span className="text-sm font-medium">Send a message for</span>
-          {NOTIFY_TOGGLES.map((toggle: NotifyToggle) => (
-            <label key={toggle} className="flex items-center justify-between gap-3 text-sm">
-              <span>{TOGGLE_LABELS[toggle]}</span>
-              <Switch checked={events[toggle]} onCheckedChange={(on) => edit(setEvents)({ ...events, [toggle]: on })} />
-            </label>
-          ))}
-        </div>
-        <div className="flex flex-col gap-3">
-          <label className="flex items-center justify-between gap-3 text-sm">
-            <span className="font-medium">Quiet hours</span>
-            <Switch checked={quietOn} onCheckedChange={edit(setQuietOn)} />
-          </label>
-          {quietOn && (
-            <div className="grid gap-3 sm:grid-cols-3">
-              <Field>
-                <FieldLabel htmlFor="notify-quiet-start">From</FieldLabel>
-                <Input id="notify-quiet-start" type="time" value={start} onChange={(e) => edit(setStart)(e.target.value)} />
-              </Field>
-              <Field>
-                <FieldLabel htmlFor="notify-quiet-end">Until</FieldLabel>
-                <Input id="notify-quiet-end" type="time" value={end} onChange={(e) => edit(setEnd)(e.target.value)} />
-              </Field>
-              <Field>
-                <FieldLabel htmlFor="notify-quiet-zone">Time zone</FieldLabel>
-                <Input id="notify-quiet-zone" value={zone ?? browserZone} onChange={(e) => edit(setZone)(e.target.value)} />
-              </Field>
-            </div>
+          {target === "channel" && (
+            <Field>
+              <FieldLabel htmlFor="notify-channel">Channel id</FieldLabel>
+              <Input id="notify-channel" value={channelId} placeholder="C0123456789" onChange={(e) => edit(setChannelId)(e.target.value)} className="font-mono" />
+              <FieldDescription>In Slack, open the channel&apos;s details; the id is at the bottom. Invite the app first if the channel is private.</FieldDescription>
+            </Field>
           )}
-          <p className="text-sm text-muted-foreground">
-            During quiet hours only failed reverts and stops that couldn&apos;t be confirmed are sent. Anything else that still needs you when they
-            end is sent then; what was resolved in the meantime is not sent at all.
-          </p>
-        </div>
-        {failure && (
-          <p role="alert" className="text-sm text-destructive">
-            {failure}
-          </p>
-        )}
-      </CardContent>
-      <CardFooter className="gap-3">
-        <Button onClick={submit} disabled={saving || unchanged}>
-          {saving && <Spinner data-icon="inline-start" />}
-          Save
-        </Button>
-        <Button variant="outline" onClick={() => void test()} disabled={testing || !slack?.configured}>
-          {testing && <Spinner data-icon="inline-start" />}
-          Send test message
-        </Button>
-        {savedNow && unchanged && <span className="text-sm text-muted-foreground">{savedNow}</span>}
-      </CardFooter>
-    </Card>
+          <div className="flex flex-col gap-3">
+            <span className="text-sm font-medium">Send a message for</span>
+            {NOTIFY_TOGGLES.map((toggle: NotifyToggle) => (
+              <label key={toggle} className="flex items-center justify-between gap-3 text-sm">
+                <span>{TOGGLE_LABELS[toggle]}</span>
+                <Switch checked={events[toggle]} onCheckedChange={(on) => edit(setEvents)({ ...events, [toggle]: on })} />
+              </label>
+            ))}
+          </div>
+          <div className="flex flex-col gap-3">
+            <label className="flex items-center justify-between gap-3 text-sm">
+              <span className="font-medium">Quiet hours</span>
+              <Switch checked={quietOn} onCheckedChange={edit(setQuietOn)} />
+            </label>
+            {quietOn && (
+              <div className="grid gap-3 sm:grid-cols-3">
+                <Field>
+                  <FieldLabel htmlFor="notify-quiet-start">From</FieldLabel>
+                  <Input id="notify-quiet-start" type="time" value={start} onChange={(e) => edit(setStart)(e.target.value)} />
+                </Field>
+                <Field>
+                  <FieldLabel htmlFor="notify-quiet-end">Until</FieldLabel>
+                  <Input id="notify-quiet-end" type="time" value={end} onChange={(e) => edit(setEnd)(e.target.value)} />
+                </Field>
+                <Field>
+                  <FieldLabel htmlFor="notify-quiet-zone">Time zone</FieldLabel>
+                  <Input id="notify-quiet-zone" value={zone ?? browserZone} onChange={(e) => edit(setZone)(e.target.value)} />
+                </Field>
+              </div>
+            )}
+            <p className="text-sm text-muted-foreground">
+              During quiet hours only failed reverts and stops that couldn&apos;t be confirmed are sent. Anything else that still needs you when they
+              end is sent then; what was resolved in the meantime is not sent at all.
+            </p>
+          </div>
+          {failure && (
+            <p role="alert" className="text-sm text-destructive">
+              {failure}
+            </p>
+          )}
+        </CardContent>
+        <CardFooter className="gap-3 border-t">
+          <Button onClick={submit} disabled={saving || unchanged}>
+            {saving && <Spinner data-icon="inline-start" />}
+            Save
+          </Button>
+          <Button variant="outline" onClick={() => void test()} disabled={testing || !slack?.configured}>
+            {testing && <Spinner data-icon="inline-start" />}
+            Send test message
+          </Button>
+          {savedNow && unchanged && <span className="text-sm text-muted-foreground">{savedNow}</span>}
+        </CardFooter>
+      </Card>
+    </SettingsSection>
   );
 }
