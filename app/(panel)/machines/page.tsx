@@ -1,6 +1,7 @@
 import { connection } from "next/server";
 import { Suspense } from "react";
 import { Machines } from "@/components/panel/machines";
+import { PageSkeleton, RowsSkeleton } from "@/components/panel/skeletons";
 import { load, machinesQuery } from "@/lib/live-queries";
 
 async function Panel() {
@@ -12,7 +13,7 @@ async function Panel() {
 
 export default function MachinesPage() {
   return (
-    <Suspense fallback={<div className="h-full" />}>
+    <Suspense fallback={<PageSkeleton title="Machines"><RowsSkeleton rows={3} /></PageSkeleton>}>
       <Panel />
     </Suspense>
   );

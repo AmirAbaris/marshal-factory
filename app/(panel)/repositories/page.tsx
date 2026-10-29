@@ -1,6 +1,7 @@
 import { connection } from "next/server";
 import { Suspense } from "react";
 import { Repositories } from "@/components/panel/repositories";
+import { PageSkeleton, RowsSkeleton } from "@/components/panel/skeletons";
 import { db } from "@/db/client";
 import { load, machinesQuery } from "@/lib/live-queries";
 import { modalEnvConfigured } from "@/lib/modal-secrets";
@@ -18,7 +19,7 @@ async function Panel({ searchParams }: { searchParams: Promise<Record<string, st
 
 export default function RepositoriesPage(props: PageProps<"/repositories">) {
   return (
-    <Suspense fallback={<div className="h-full" />}>
+    <Suspense fallback={<PageSkeleton title="Repositories"><RowsSkeleton /></PageSkeleton>}>
       <Panel searchParams={props.searchParams} />
     </Suspense>
   );

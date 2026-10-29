@@ -21,7 +21,7 @@ import { runsOn } from "./cards";
 import { AgentTree } from "./agent-tree";
 import { useArchiveAction, type ArchiveAction } from "./archive-action";
 import { EventFeed } from "./event-feed";
-import { FullViewToggle, useEscapeToSidePanel, type FullView } from "./full-view";
+import { FullViewToggle, type FullView } from "./full-view";
 import { EvidenceSection } from "./evidence";
 import { AuditLog } from "./audit-log";
 import { formatUsd, runCost, runTitle, shortId } from "./format";
@@ -214,7 +214,6 @@ export function RunDetail({
   const sandboxed = job ? sandboxState(job) !== null : false;
   const where = job && runsOn(job);
   const stopThread = job && (parseStop(job.stop)?.thread ?? job.t3_thread_id);
-  useEscapeToSidePanel(fullView);
 
   const place = machineName && (where?.kind === "modal" ? `Cloud sandbox via ${machineName}` : `Local · ${machineName}`);
   const spend = jobSpend ? (
