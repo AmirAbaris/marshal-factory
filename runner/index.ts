@@ -251,8 +251,9 @@ if (process.argv.includes("--once")) {
   if (slackFromEnv()) await serial("slack", () => notifySlack());
   takeIntents(await openIntents());
   await queue.idle();
-  // A rebuild the reconcile started is this run's to finish.
+  // A rebuild the reconcile started is this run's to finish, with the launch it queues when it lands.
   await baseImageIdle();
+  await queue.idle();
   await beat();
   process.exit(0);
 }

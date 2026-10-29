@@ -203,9 +203,10 @@ export async function buildSandboxImage({
 }): Promise<SandboxImage> {
   const held = lock(path);
   if ("heldBy" in held) throw new BuildLockedError(held.heldBy);
-  const bundleDir = mkdtempSync(join(tmpdir(), "factory-bundle-"));
+  let bundleDir: string | undefined;
   let sandbox: SandboxHandle | undefined;
   try {
+    bundleDir = mkdtempSync(join(tmpdir(), "factory-bundle-"));
     await execFileAsync("bun", ["build", ...ENTRIES, "--target=bun", "--root", ".", "--outdir", bundleDir, "--entry-naming", "[dir]/[name].ts"], { cwd: ROOT });
     log(`bundled ${ENTRIES.join(", ")}`);
     if (signal?.aborted) throw new Error("the build was stopped");
@@ -244,7 +245,7 @@ export async function buildSandboxImage({
     return state;
   } finally {
     await sandbox?.terminate().catch((error: unknown) => log(`could not terminate the build sandbox: ${String(error)}`));
-    rmSync(bundleDir, { recursive: true, force: true });
+    if (bundleDir) rmSync(bundleDir, { recursive: true, force: true });
     held.release();
   }
 }
