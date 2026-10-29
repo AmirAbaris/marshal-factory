@@ -361,6 +361,14 @@ export function createLinearAdapter(load: () => LinearDeps | Promise<LinearDeps>
       await d.client.setState(job.writeback.issueId, stateId(await teamOf(d), d.limits.teamKey, "Todo"));
     },
 
+    async requeue(job) {
+      const d = await deps();
+      await d.client.update(job.writeback.issueId, {
+        stateId: stateId(await teamOf(d), d.limits.teamKey, "Todo"),
+        ...(await labelChangesAgainstIssue(d, job.writeback.issueId, { add: [d.limits.label] })),
+      });
+    },
+
     async acknowledgeReplies(job, replyIds) {
       await postComment(await deps(), job, resumeCommentId(job.writeback.issueId, replyIds), "Answer received, resuming.");
     },

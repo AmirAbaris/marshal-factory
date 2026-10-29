@@ -26,9 +26,9 @@ const { stopDeliverable } = await import("./binding");
 const { inferUntracked } = await import("./untracked");
 const { flushLocalOutbox } = await import("./outbox");
 const { approveMerge, decideMerges } = await import("./merge-decision");
-const { closeJob, forwardReview, requestChanges } = await import("./inbox");
+const { closeJob, forwardReview, requestChanges, retryJob } = await import("./inbox");
 const { confirmStops, retryStop } = await import("./stops");
-const { approveDetailSchema, closeDetailSchema, feedbackDetailSchema } = await import("../lib/inbox");
+const { approveDetailSchema, closeDetailSchema, feedbackDetailSchema, retryDetailSchema } = await import("../lib/inbox");
 const { watchMerges } = await import("./post-merge");
 const { syncOverrideLabels } = await import("./overrides");
 const { advanceOnboarding, onboardRepo, repoPushed, requestRebuild } = await import("./onboarding");
@@ -107,6 +107,10 @@ async function handle(intent: IntentRow) {
       return { push: await repoPushed(repoPushDetailSchema.parse(JSON.parse(intent.detail ?? "null"))) };
     case "retry_stop":
       return { retry: await retryStop(intent.job_id!), synced: await writeBackPass() };
+    case "retry_job": {
+      const attempt = await retryJob(intent.job_id!, retryDetailSchema.parse(JSON.parse(intent.detail ?? "null")));
+      return { attempt, ...("started" in attempt ? await launchAndAnnounce() : {}) };
+    }
     case "slack_test":
       return sendSlackTest(JSON.parse(intent.detail ?? "null"));
     default: {

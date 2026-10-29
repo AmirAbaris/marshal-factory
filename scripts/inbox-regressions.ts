@@ -93,6 +93,7 @@ assert.ok(allows("revert_failed", "follow_up") && allows("revert_failed", "dismi
 assert.ok(!allows("revert_failed", "request_changes"), "the merged attempt's worktree is gone, so a failed revert takes a follow-up job instead");
 assert.ok(!allows("handover", "follow_up") && !allows("failed", "follow_up"));
 assert.ok(allows("failed", "dismiss") && allows("failed", "close") && !allows("failed", "request_changes"));
+assert.ok(allows("failed", "retry") && !allows("handover", "retry") && !allows("stop_unconfirmed", "retry") && !allows(null, "retry"), "only a failed job offers Retry");
 assert.ok(allows("question", "answer") && !allows("question", "approve") && !allows(null, "dismiss"));
 
 assert.deepEqual(approvalBlockers({ checks: "success", mergeable: "mergeable" }), [], "green and clean: nothing blocks");

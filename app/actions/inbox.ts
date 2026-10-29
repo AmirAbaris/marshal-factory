@@ -10,6 +10,7 @@ import {
   fileFollowUp as followUp,
   intentOutcome as outcome,
   requestChanges as changes,
+  retryFailed as retryJob,
   retryStop as retry,
 } from "@/lib/inbox-actions";
 import { inboxDeps } from "@/lib/inbox-deps";
@@ -43,6 +44,10 @@ export async function closeJob(jobId: JobId, requestId: string, reason: string) 
 
 export async function retryStop(jobId: JobId, requestId: string) {
   return retry(deps, jobId, requestId);
+}
+
+export async function retryFailed(jobId: JobId, requestId: string, note: string) {
+  return retryJob(deps, jobId, requestId, note);
 }
 
 export async function dismissJob(jobId: JobId) {

@@ -12,10 +12,12 @@ import {
   inboxKind,
   MAX_FEEDBACK_CHARS,
   MAX_FOLLOW_UP_CHARS,
+  MAX_RETRY_NOTE_CHARS,
   type ApproveDetail,
   type CloseDetail,
   type FeedbackDetail,
   type InboxAction,
+  type RetryDetail,
 } from "@/lib/inbox";
 import { mergeDecisionSchema, reviewSummary, type ReviewSummary } from "@/lib/merge-decision";
 import { createJob, type NewJobDeps } from "@/lib/new-job";
@@ -51,6 +53,7 @@ const NOT_OFFERED: Record<InboxAction, string> = {
   close: "The job is no longer waiting on you.",
   dismiss: "Only a failed job or a stop that couldn't be confirmed can be dismissed.",
   retry_stop: "The stop is no longer waiting on you.",
+  retry: "Only a failed job can be retried.",
 };
 
 async function ownerJob(deps: InboxDeps, jobId: JobId, action: InboxAction) {
@@ -206,6 +209,22 @@ export async function retryStop(deps: InboxDeps, jobId: JobId, requestId: string
   return record(deps, found.job, "retry_stop", requestId, { actor: found.actor });
 }
 
+const retryNoteSchema = z.string().trim().max(MAX_RETRY_NOTE_CHARS, "The note is too long.");
+
+/**
+ * Asks the runner to start another attempt of a failed job, the way adding the factory label again
+ * does, with an optional note for that attempt. The detail names the failed attempt, so a double
+ * click or a replay starts one attempt.
+ */
+export async function retryFailed(deps: InboxDeps, jobId: JobId, requestId: string, note: string): Promise<InboxOutcome> {
+  if (badRequest(requestId)) return { ok: false, message: "The request is not valid." };
+  const text = retryNoteSchema.safeParse(note);
+  if (!text.success) return { ok: false, message: text.error.issues[0]!.message };
+  const found = await ownerJob(deps, jobId, "retry");
+  if (!found.ok) return found;
+  return record(deps, found.job, "retry_job", requestId, { actor: found.actor, attempt: found.job.attempt, note: text.data } satisfies RetryDetail);
+}
+
 /**
  * Hides a failed job, or an unconfirmed stop the owner checked in T3, from the inbox and changes
  * nothing else; a later failure shows again. Dismissing an unconfirmed stop also lets the label retry the job.
@@ -219,7 +238,7 @@ export async function dismissJob(deps: InboxDeps, jobId: JobId): Promise<InboxOu
 
 export type IntentOutcome = { status: "pending" } | { status: "done"; message: string } | { status: "failed"; message: string };
 
-const INBOX_INTENTS = ["approve_merge", "request_changes", "close_job", "answer", "retry_stop"] as const satisfies readonly IntentKind[];
+const INBOX_INTENTS = ["approve_merge", "request_changes", "close_job", "answer", "retry_stop", "retry_job"] as const satisfies readonly IntentKind[];
 
 const resultSchema = z.object({
   error: z.string().optional(),
@@ -227,6 +246,7 @@ const resultSchema = z.object({
   changes: z.union([z.object({ sent: z.string(), moved: z.boolean() }), z.object({ skipped: z.string() }), z.object({ refused: z.string() })]).optional(),
   close: z.union([z.object({ closed: z.string(), pr: z.string() }), z.object({ refused: z.string() })]).optional(),
   retry: z.union([z.object({ retried: z.string() }), z.object({ refused: z.string() })]).optional(),
+  attempt: z.union([z.object({ started: z.number() }), z.object({ refused: z.string() })]).optional(),
 });
 
 /** What the runner made of an intent: the result it stored, said for the owner. */
@@ -258,6 +278,11 @@ export function describeOutcome(kind: (typeof INBOX_INTENTS)[number], raw: strin
       const r = result.retry;
       if (!r) break;
       return "retried" in r ? { status: "done", message: "Interrupting the agent again; the job says when it stopped." } : { status: "failed", message: r.refused };
+    }
+    case "retry_job": {
+      const a = result.attempt;
+      if (!a) break;
+      return "started" in a ? { status: "done", message: `Attempt ${a.started} is queued.` } : { status: "failed", message: a.refused };
     }
     default: {
       const never: never = kind;

@@ -1,8 +1,8 @@
 "use client";
 
-import { FilePlusIcon, GitMergeIcon, MessageSquareReplyIcon, OctagonXIcon, SendIcon, XIcon } from "lucide-react";
+import { FilePlusIcon, GitMergeIcon, MessageSquareReplyIcon, OctagonXIcon, RotateCcwIcon, SendIcon, XIcon } from "lucide-react";
 import { type ReactNode, useEffect, useRef, useState } from "react";
-import { answerQuestion, approveMerge, closeJob, dismissJob, fileFollowUp, inboxIntentOutcome, requestChanges, retryStop } from "@/app/actions/inbox";
+import { answerQuestion, approveMerge, closeJob, dismissJob, fileFollowUp, inboxIntentOutcome, requestChanges, retryFailed, retryStop } from "@/app/actions/inbox";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import {
   AlertDialog,
@@ -21,7 +21,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
 import { toastManager } from "@/components/ui/toast";
 import type { JobRow } from "@/db/schema";
-import { followUpHint, INBOX_ACTIONS, MAX_FEEDBACK_CHARS, MAX_FOLLOW_UP_CHARS, type InboxAction, type InboxKind } from "@/lib/inbox";
+import { followUpHint, INBOX_ACTIONS, MAX_FEEDBACK_CHARS, MAX_FOLLOW_UP_CHARS, MAX_RETRY_NOTE_CHARS, type InboxAction, type InboxKind } from "@/lib/inbox";
 import type { InboxOutcome, IntentOutcome } from "@/lib/inbox-actions";
 import type { MergeDecision } from "@/lib/merge-decision";
 
@@ -120,6 +120,7 @@ function Compose({
   placeholder,
   initial = "",
   maxLength = MAX_FEEDBACK_CHARS,
+  optional = false,
   submit,
   icon,
   disabled,
@@ -132,6 +133,8 @@ function Compose({
   /** Text the box starts with, for the owner to edit. */
   initial?: string;
   maxLength?: number;
+  /** Sends with an empty box. */
+  optional?: boolean;
   submit: string;
   icon: ReactNode;
   disabled: boolean;
@@ -139,7 +142,7 @@ function Compose({
   onSend: (text: string, clear: () => void) => void;
 }) {
   const [text, setText] = useState(initial);
-  const send = () => text.trim() && onSend(text, () => setText(""));
+  const send = () => (optional || text.trim()) && onSend(text, () => setText(""));
   return (
     <Field className="w-full">
       <FieldLabel>{label}</FieldLabel>
@@ -158,7 +161,7 @@ function Compose({
       />
       <div className="flex w-full items-center gap-3">
         <FieldDescription className="min-w-0 flex-1">{description}</FieldDescription>
-        <Button size="sm" variant="outline" disabled={disabled || !text.trim()} loading={loading} onClick={send}>
+        <Button size="sm" variant="outline" disabled={disabled || (!optional && !text.trim())} loading={loading} onClick={send}>
           {icon}
           {submit}
           <Kbd className="ms-1 hidden sm:inline-flex">⌘↵</Kbd>
@@ -319,6 +322,20 @@ export function InboxActions({
           disabled={disabled}
           loading={loading("request_changes")}
           onSend={(text, clear) => void run("request_changes", () => requestChanges(job.id, requestId(), text), "Sent to the agent.", clear)}
+        />
+      )}
+      {has("retry") && (
+        <Compose
+          label="Retry"
+          description="Starts a new attempt on a new branch, as adding the factory label again would. A note goes to the agent and onto the issue."
+          placeholder="A note for the next attempt (optional)"
+          maxLength={MAX_RETRY_NOTE_CHARS}
+          optional
+          submit="Retry"
+          icon={<RotateCcwIcon data-icon="inline-start" />}
+          disabled={disabled}
+          loading={loading("retry")}
+          onSend={(text, clear) => void run("retry", () => retryFailed(job.id, requestId(), text), "Retry queued.", clear)}
         />
       )}
       {has("follow_up") && (
