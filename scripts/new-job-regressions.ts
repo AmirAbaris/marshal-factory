@@ -74,6 +74,10 @@ const draft = { title: "Show the item count", description: "On the weight sort b
   created = false;
   await file({ ...draft, requestId: "0b9d2f71-3c55-4e1a-8f6b-7a2c9e4d1f00" });
   assert.notEqual(creates()[2]!.id, id, "a new request gets a new issue");
+  created = false;
+  await file({ ...draft, requestId: "3e1a7c52-9d04-4b6f-a1c8-5f2e8b7d0a19", tags: ["review"] });
+  assert.deepEqual(creates()[3]!.labelIds, ["label-factory", "label-factory"], "a tag is looked up by name and goes on the issue at creation");
+  assert.equal(sent.filter((r) => r.query.includes("issueLabels(")).at(-1)!.variables.name, "review");
 }
 
 {

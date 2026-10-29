@@ -283,15 +283,13 @@ Optional. With Slack connected, the runner messages you when a job needs you or 
 
 ## Updating
 
-Pull the latest version into the live checkout with the runner paused, so it never runs half-updated code:
+After a merge to `main`, update the live checkout with:
 
 ```sh
-bun scripts/install-runner.ts --uninstall
-git pull --ff-only && bun install
-bun scripts/install-runner.ts
+bun scripts/rollout.ts
 ```
 
-When the panel is deployed from your repo, Vercel runs the new migrations itself when you merge to `main`. Update the live checkout after that deploy is ready. If you update without Vercel, run `bun run db:migrate` first.
+It waits for Vercel's production deploy (which runs the migrations), stops the runner, pulls, migrates, redeploys the ingest Function and rebuilds the sandbox image when they changed, and starts the runner again. [docs/operations.md](docs/operations.md#rolling-out-a-merge) has the steps and the opt-in canary.
 
 ## Troubleshooting
 

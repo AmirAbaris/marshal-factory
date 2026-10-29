@@ -12,6 +12,7 @@ import {
   enabledPstack,
   FACTORY_ROOT,
   GITHUB_TOKEN_PATH,
+  IMAGE_BUNDLES,
   installPlaybooks,
   parseVersion,
   pinnedVersions,
@@ -37,8 +38,6 @@ import { forbidInTest } from "./test-mode";
 
 const execFileAsync = promisify(execFile);
 const ROOT = join(import.meta.dirname, "..");
-// hooks/budget.ts is a no-op kept for repos wired before the budget cap was removed.
-const ENTRIES = ["hooks/report.ts", "hooks/budget.ts", "hooks/verify.ts", "mcp/factory-report.ts"];
 
 const b64 = (text: string) => Buffer.from(text).toString("base64");
 const install = (path: string, text: string) => `RUN echo ${b64(text)} | base64 -d > ${path} && chmod 755 ${path}`;
@@ -207,8 +206,8 @@ export async function buildSandboxImage({
   let sandbox: SandboxHandle | undefined;
   try {
     bundleDir = mkdtempSync(join(tmpdir(), "factory-bundle-"));
-    await execFileAsync("bun", ["build", ...ENTRIES, "--target=bun", "--root", ".", "--outdir", bundleDir, "--entry-naming", "[dir]/[name].ts"], { cwd: ROOT });
-    log(`bundled ${ENTRIES.join(", ")}`);
+    await execFileAsync("bun", ["build", ...IMAGE_BUNDLES, "--target=bun", "--root", ".", "--outdir", bundleDir, "--entry-naming", "[dir]/[name].ts"], { cwd: ROOT });
+    log(`bundled ${IMAGE_BUNDLES.join(", ")}`);
     if (signal?.aborted) throw new Error("the build was stopped");
     sandbox = await open(limits, log);
     log(`build sandbox ${sandbox.sandboxId} up`);
@@ -216,7 +215,7 @@ export async function buildSandboxImage({
     const end = () => void opened.terminate().catch(() => {});
     signal?.addEventListener("abort", end, { once: true });
     if (signal?.aborted) end();
-    for (const entry of ENTRIES) await sandbox.filesystem.writeText(readFileSync(join(bundleDir, entry), "utf8"), join(FACTORY_ROOT, entry));
+    for (const entry of IMAGE_BUNDLES) await sandbox.filesystem.writeText(readFileSync(join(bundleDir, entry), "utf8"), join(FACTORY_ROOT, entry));
     const playbooks = await installPlaybooks(sandbox.filesystem);
     log(`playbooks ${PLAYBOOK_FILES.join(", ")} in ${SANDBOX_PLAYBOOKS} at ${playbooks}`);
     const pinned = pinnedVersions(limits);
