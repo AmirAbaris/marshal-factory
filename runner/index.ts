@@ -31,6 +31,7 @@ const { confirmStops, retryStop } = await import("./stops");
 const { approveDetailSchema, closeDetailSchema, feedbackDetailSchema, retryDetailSchema } = await import("../lib/inbox");
 const { watchMerges } = await import("./post-merge");
 const { syncOverrideLabels } = await import("./overrides");
+const { baseImageIdle, rebuildBaseImage, stopBaseImage } = await import("./base-image");
 const { advanceOnboarding, onboardRepo, repoPushed, requestRebuild } = await import("./onboarding");
 const { repoPushDetailSchema } = await import("../lib/webhooks");
 const { notifySlack, sendSlackTest, slackFromEnv } = await import("./slack");
@@ -224,6 +225,14 @@ async function tick() {
     stopsConfirmed: await isolated(() => confirmStops()),
     pairingsExpired: await isolated(expirePairings),
     synced: await isolated(writeBackPass),
+    // Starts a rebuild when the pins drifted and returns; the build runs beside the queue.
+    baseImage: await isolated(async () =>
+      rebuildBaseImage({
+        changed: () => void beat({ fresh: true }),
+        // Queued Modal jobs would otherwise wait for the next tick.
+        landed: () => void serial("launch", launchAndAnnounce),
+      }),
+    ),
   };
 }
 
@@ -245,6 +254,9 @@ if (process.argv.includes("--once")) {
   await serial("reconcile", startupReconcile);
   if (slackFromEnv()) await serial("slack", () => notifySlack());
   takeIntents(await openIntents());
+  await queue.idle();
+  // A rebuild the reconcile started is this run's to finish, with the launch it queues when it lands.
+  await baseImageIdle();
   await queue.idle();
   await beat();
   process.exit(0);
@@ -325,6 +337,7 @@ for (const signal of ["SIGTERM", "SIGINT"] as const) {
   process.once(signal, () => {
     log("stop", { signal });
     realtime.close();
-    void queue.idle().finally(() => process.exit(0));
+    // A rebuild in flight is ended, not waited for: the next start builds again from the tick.
+    void Promise.all([queue.idle(), stopBaseImage()]).finally(() => process.exit(0));
   });
 }

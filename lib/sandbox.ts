@@ -133,11 +133,14 @@ export function readSandboxImage(path = SANDBOX_IMAGE_PATH): SandboxImage | null
   }
 }
 
+/** How an outdated image gets rebuilt: runner/base-image.ts does it on the tick. */
+export const REBUILDS_ITSELF = "the runner rebuilds it on its tick, or run bun scripts/sandbox-image.ts";
+
 /** Why this image cannot launch jobs under these limits, or undefined when it can. */
 export function imageProblem(image: SandboxImage | null, limits: Pins) {
   if (!image) return "no sandbox image is built; run bun scripts/sandbox-image.ts";
   const drift = imageDrift(builtVersions(image), pinnedVersions(limits));
-  return drift.length > 0 ? `${rebuildText(drift)}; run bun scripts/sandbox-image.ts` : undefined;
+  return drift.length > 0 ? `${rebuildText(drift)}; ${REBUILDS_ITSELF}` : undefined;
 }
 
 export const slotAuthPath = (slot: string) => join(slot, "auth.json");

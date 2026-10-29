@@ -67,12 +67,44 @@ const imageSummary = (info: NonNullable<SandboxReadiness["imageInfo"]>) => {
   return IMAGE_COMPONENTS.flatMap((c) => (versions[c] ? [`${componentName(c)} ${versions[c]}`] : [])).join(" · ");
 };
 
+/** An outdated image as the runner's own rebuild of it stands: under way, failed, or not started yet. */
+function imageRebuild(build: SandboxReadiness["imageBuild"], drift: string, buildImage: ReactNode): Check {
+  if (build?.state === "building") {
+    return {
+      tone: "warn",
+      label: (
+        <>
+          Rebuilding the sandbox image since <When date={new Date(build.startedAt)} />
+          <span className="text-muted-foreground"> · {build.reason}. Cloud jobs launch once it lands</span>
+        </>
+      ),
+    };
+  }
+  if (build?.state === "failed") {
+    return {
+      tone: "missing",
+      label: (
+        <>
+          The sandbox image rebuild failed <When date={new Date(build.at)} />
+          <span className="text-muted-foreground"> · {build.error}</span>
+        </>
+      ),
+      howTo: (
+        <>
+          The runner tries again in an hour or when a pin changes. To retry now, run <Cmd>bun scripts/sandbox-image.ts</Cmd> on the runner Mac.
+        </>
+      ),
+    };
+  }
+  return { tone: "missing", label: drift, howTo: <>The runner starts the rebuild on its next tick; to build by hand, {buildImage}</> };
+}
+
 function sandboxChecks(readiness: SandboxReadiness): Check[] {
   const { imageInfo } = readiness;
   const drift = reportedDrift(readiness);
   const buildImage = (
     <>
-      Run <Cmd>bun scripts/sandbox-image.ts</Cmd> on the runner Mac.
+      run <Cmd>bun scripts/sandbox-image.ts</Cmd> on the runner Mac.
     </>
   );
   const unusable = readiness.codexSlotsUnusable ?? 0;
@@ -89,9 +121,9 @@ function sandboxChecks(readiness: SandboxReadiness): Check[] {
           ),
         },
     !readiness.image
-      ? { tone: "missing", label: "No sandbox image built", howTo: buildImage }
+      ? { tone: "missing", label: "No sandbox image built", howTo: <>For the first build, {buildImage}</> }
       : drift.length > 0
-        ? { tone: "missing", label: rebuildText(drift), howTo: buildImage }
+        ? imageRebuild(readiness.imageBuild, rebuildText(drift), buildImage)
         : {
             tone: "ok",
             label: imageInfo ? (

@@ -76,7 +76,7 @@ assert.equal(imageProblem(image, pins), undefined);
 const edited = playbooksVersion((file) => `${readFileSync(join(root, "playbooks", file), "utf8")}\nOne more rule.`);
 assert.notEqual(edited, version, "an edit changes the version");
 const older = { ...image, versions: { ...image.versions, playbooks: edited } };
-assert.equal(imageProblem(older, pins), `Rebuild the sandbox image: Factory playbooks ${edited} → ${version}; run bun scripts/sandbox-image.ts`);
+assert.equal(imageProblem(older, pins), `Rebuild the sandbox image: Factory playbooks ${edited} → ${version}; the runner rebuilds it on its tick, or run bun scripts/sandbox-image.ts`);
 assert.match(imageProblem({ ...image, versions: { ...image.versions, playbooks: undefined } }, pins)!, /^Rebuild the sandbox image: Factory playbooks missing → /, "an image from before the playbooks shipped is outdated");
 
 // What the playbook points at still resolves from outside the repo.

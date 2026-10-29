@@ -70,6 +70,13 @@ export const imageDrift = (built: ImageVersions, pinned: ImageVersions): ImageDr
 export const rebuildText = (drift: readonly ImageDrift[]) =>
   `Rebuild the sandbox image: ${drift.map((d) => `${componentName(d.component)} ${d.built ?? "missing"} → ${d.pinned}`).join(", ")}`;
 
+/** The runner's own rebuild of the base image: one in flight, or the last one that failed. */
+export const baseImageBuildSchema = z.discriminatedUnion("state", [
+  z.object({ state: z.literal("building"), reason: z.string(), startedAt: z.string() }),
+  z.object({ state: z.literal("failed"), reason: z.string(), error: z.string(), at: z.string() }),
+]);
+export type BaseImageBuild = z.infer<typeof baseImageBuildSchema>;
+
 /** Whether a runner could launch jobs on Modal; booleans and a count, never the credentials. */
 export const sandboxReadinessSchema = z.object({
   modal: z.boolean(),
@@ -89,6 +96,8 @@ export const sandboxReadinessSchema = z.object({
   /** Every component version the runner pins; older runners report only pinnedT3Version. */
   pinnedVersions: imageVersionsSchema.optional(),
   maxParallel: z.number().int().positive().optional(),
+  /** Absent when no rebuild runs and none failed; older runners never report one. */
+  imageBuild: baseImageBuildSchema.optional(),
 });
 export type SandboxReadiness = z.infer<typeof sandboxReadinessSchema>;
 

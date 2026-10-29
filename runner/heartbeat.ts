@@ -10,6 +10,7 @@ import { loadConfig } from "../lib/config";
 import { UNKNOWN, type Heartbeat, type Inventory } from "../lib/machine";
 import { sandboxReadiness } from "../lib/sandbox";
 import { connectStatus, readHarnesses, readProjects, readT3Runtime } from "../lib/t3-state";
+import { baseImageBuild } from "./base-image";
 import { message, withTimeout } from "./queue";
 
 const run = promisify(execFile);
@@ -101,7 +102,10 @@ export function inventoryCollectors(): InventoryCollectors {
         })),
       ),
     harnesses: async () => readHarnesses(),
-    sandbox: async () => sandboxReadiness(factory.sandbox),
+    sandbox: async () => {
+      const imageBuild = baseImageBuild();
+      return { ...sandboxReadiness(factory.sandbox), ...(imageBuild && { imageBuild }) };
+    },
     slack: async () => ({ configured: Boolean(process.env.SLACK_BOT_TOKEN?.trim()), owner: Boolean(process.env.SLACK_OWNER_USER_ID?.trim()) }),
   };
 }
@@ -172,6 +176,8 @@ export function createBeat({
   const report = inventoryReporter((value) => writeInventory(machine.id, value, new Date(now())));
   let running = false;
   let inventoryAt: number | undefined;
+  /** Bumped by each fresh request, so an inventory collected before it does not count as fresh. */
+  let freshAsked = 0;
   async function beatOnce(withInventory: boolean) {
     const started = now();
     const heartbeat = await collectHeartbeat(heartbeatCollectors);
@@ -179,13 +185,21 @@ export function createBeat({
     log("heartbeat", { ms: now() - started, unknown: Object.entries(heartbeat).filter(([, v]) => v === UNKNOWN).map(([k]) => k) });
     if (!withInventory || (inventoryAt !== undefined && now() - inventoryAt < inventoryMs)) return;
     const collectedAt = now();
+    const asked = freshAsked;
     const result = await report(await collectInventory(inventory));
-    if (result !== "missing") inventoryAt = collectedAt;
+    if (result !== "missing" && asked === freshAsked) inventoryAt = collectedAt;
     log("inventory", { ms: now() - collectedAt, result });
   }
 
-  /** `inventory: false` writes only the heartbeat, for the startup beat that runs before the reconcile. */
-  return async function beat({ inventory: withInventory = true } = {}) {
+  /**
+   * `inventory: false` writes only the heartbeat, for the startup beat that runs before the reconcile;
+   * `fresh` collects the inventory now, for a change the panel should not wait inventoryMinutes for.
+   */
+  return async function beat({ inventory: withInventory = true, fresh = false } = {}) {
+    if (fresh) {
+      freshAsked++;
+      inventoryAt = undefined;
+    }
     if (running) {
       log("heartbeat:skipped", { reason: "the previous beat is still running" });
       return;
