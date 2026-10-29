@@ -21,9 +21,17 @@ export const CODEX_HOME = `${SANDBOX_HOME}/.codex`;
 export const CODEX_AUTH = `${CODEX_HOME}/auth.json`;
 export const T3_PORT = 3773;
 
-/** Headless browser for the agent. The output dir sits outside REPO_DIR so screenshots never land in its worktree. */
+/**
+ * Headless browser for the agent. The output dir sits outside REPO_DIR so screenshots never land in its worktree.
+ * Every request but loopback goes to a proxy nothing listens on, so a page off the web, which could carry
+ * instructions, never reaches an agent that holds a GitHub token. Chromium applies it to redirects and
+ * subresources too, which --allowed-origins does not.
+ */
 export const BROWSER_SERVER = "playwright";
-export const browserServer = { command: "playwright-mcp", args: ["--headless", "--isolated", "--browser", "chromium", "--no-sandbox", "--output-dir", SCREENSHOT_DIR] };
+export const browserServer = {
+  command: "playwright-mcp",
+  args: ["--headless", "--isolated", "--browser", "chromium", "--no-sandbox", "--output-dir", SCREENSHOT_DIR, "--proxy-server", "http://127.0.0.1:9", "--proxy-bypass", "localhost,127.0.0.1,[::1]"],
+};
 
 /** PStack's marketplace, cloned at the pinned commit, and the plugin both CLIs install from it. */
 export const PSTACK_DIR = "/opt/pstack";
