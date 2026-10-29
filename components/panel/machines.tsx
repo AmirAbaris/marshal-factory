@@ -130,6 +130,8 @@ function PathRow({ icon, title, path, aside }: { icon: ReactNode; title: ReactNo
 function Workspaces({ inventory }: { inventory: Inventory | null }) {
   const [expanded, setExpanded] = useState(false);
   if (!inventory) return <p className="text-muted-foreground">The runner has not reported its repos and T3 projects yet.</p>;
+  // When T3's projects could not be read, nothing is known to be missing from it.
+  const scanned = inventory.projects.source !== UNKNOWN;
   const projects = inventory.projects.source === UNKNOWN ? [] : inventory.projects.items;
   const projectPaths = new Set(projects.map((p) => p.path));
   const repoPaths = new Set(inventory.repos.map((r) => r.path));
@@ -145,12 +147,12 @@ function Workspaces({ inventory }: { inventory: Inventory | null }) {
             icon={<FolderGit2Icon />}
             title={<span className="font-mono text-[13px]">{known(r.origin) ?? "origin unknown"}</span>}
             path={r.path}
-            aside={projectPaths.has(r.path) ? "T3 project" : <span className="text-warning">not in T3</span>}
+            aside={!scanned ? undefined : projectPaths.has(r.path) ? "T3 project" : <span className="text-warning">not in T3</span>}
           />
         ))}
       </ListSection>
       <ListSection title="Other T3 projects" note={inventory.projects.source === UNKNOWN ? "unknown" : `${others.length} · ${PROJECT_SOURCE[inventory.projects.source]}`}>
-        {others.length === 0 && <li className="px-3 py-2 text-muted-foreground">None</li>}
+        {others.length === 0 && <li className="px-3 py-2 text-muted-foreground">{scanned ? "None" : "The runner could not read T3's projects."}</li>}
         {shown.map((p) => (
           <PathRow key={p.path} icon={<FolderIcon />} title={p.title} path={p.path} />
         ))}
