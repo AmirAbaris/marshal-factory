@@ -160,6 +160,9 @@ const chained = { test: "bun run unit", unit: "vitest" };
 assert.match(edits(["package.json"], scripts(chained), scripts({ ...chained, unit: "true" }))[0]!, /scripts\.unit\./, "a script the used script calls counts");
 assert.match(edits(["package.json"], scripts(), scripts({ lint: "true" }), null)[0]!, /scripts\.lint\./, "without a recipe the scripts named like the checks count");
 assert.match(edits(["package.json"], scripts(), null)[0]!, /couldn't be compared/, "an unreadable head is a handover, not a pass");
+const noBuild = { test: "vitest" };
+assert.match(edits(["package.json"], noBuild, { ...noBuild, build: "true" }, null)[0]!, /scripts\.build\./, "without a recipe, a check script the head adds counts");
+assert.match(edits(["package.json"], scripts(chained), scripts({ ...chained, test: "bun run unit && bun run extra", extra: "true" }))[0]!, /scripts\.extra, package\.json scripts\.test\./, "a script the head adds and a used script calls counts");
 
 const summary = (over: Record<string, unknown> = {}) => parseSummary({ sha: SHA_A, attempt: 1, clean: true, producer: "agent", source: "package", at: at(0).toISOString(), checks: [{ name: "test", passed: true, exitCode: 0, durationMs: 1 }, { name: "lint", passed: true, exitCode: 0, durationMs: 1 }], ...over });
 assert.deepEqual(evidenceLine(summary(), SHA_A, { expected: true }), { text: "Verified at aaaaaaa · 2/2 checks", tone: "success" });

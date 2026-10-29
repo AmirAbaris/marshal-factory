@@ -25,16 +25,20 @@ export function scriptsOf(packageJson: string | null): Scripts | null {
 
 const RUNS_SCRIPT = /\b(?:bun|npm|pnpm|yarn)\s+(?:run\s+)?([\w][\w:.-]*)/g;
 
-/** The base scripts the commands run, following one script calling another. */
-export function usedScripts(commands: readonly string[], base: Scripts): string[] {
+/**
+ * The scripts the commands run in any of these versions, following one script calling another. A
+ * script only the head has counts too, so adding one is as visible as changing one.
+ */
+export function usedScripts(commands: readonly string[], ...versions: readonly Scripts[]): string[] {
   const used = new Set<string>();
   const queue = [...commands];
   for (let command = queue.pop(); command !== undefined; command = queue.pop()) {
     for (const [, name] of command.matchAll(RUNS_SCRIPT)) {
-      if (name && !used.has(name) && name in base) {
-        used.add(name);
-        queue.push(base[name]!);
-      }
+      if (!name || used.has(name)) continue;
+      const bodies = versions.flatMap((scripts) => (name in scripts ? [scripts[name]!] : []));
+      if (bodies.length === 0) continue;
+      used.add(name);
+      queue.push(...bodies);
     }
   }
   return [...used].sort();
@@ -54,7 +58,7 @@ export function trustedEdits({ files, required, base, head }: { files: readonly 
     if (!base || !head) reasons.push("The pull request edits package.json, and its scripts couldn't be compared with the base branch's.");
     else {
       const commands = required ? required.map((c) => c.command) : CHECKS.map((name) => `bun run ${name}`);
-      const changed = usedScripts(commands, base).filter((name) => base[name] !== head[name]);
+      const changed = usedScripts(commands, base, head).filter((name) => base[name] !== head[name]);
       if (changed.length > 0) reasons.push(`The pull request edits the check scripts the factory trusts: ${changed.map((name) => `package.json scripts.${name}`).join(", ")}.`);
     }
   }
