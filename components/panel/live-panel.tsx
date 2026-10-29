@@ -3,7 +3,7 @@
 import { ArchiveIcon, InboxIcon, XIcon } from "lucide-react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { startTransition, Suspense, use, useMemo, useOptimistic, type ComponentProps } from "react";
+import { startTransition, Suspense, use, useMemo, useOptimistic, useSyncExternalStore, type ComponentProps } from "react";
 import { Button } from "@/components/ui/button";
 import type { AgentRow, AuditRow, EventRow, JobEvidenceRow, JobRow, MachineRow, RepoSettingsRow, RunRow } from "@/db/schema";
 import { Board } from "./board";
@@ -115,6 +115,20 @@ function closeHref(view: PanelView, jobView: JobView, archived: boolean) {
   }
 }
 
+const WIDE = "(min-width: 64rem)";
+
+/** Whether the page is at Tailwind's lg or wider; the server assumes it is. */
+function useWide() {
+  return useSyncExternalStore(
+    (notify) => {
+      window.addEventListener("resize", notify);
+      return () => window.removeEventListener("resize", notify);
+    },
+    () => window.matchMedia(WIDE).matches,
+    () => true,
+  );
+}
+
 /** The jobs page's board or list. Switching keeps the page mounted, so the live feeds stay subscribed. */
 function useJobView(current: JobView) {
   const router = useRouter();
@@ -214,6 +228,9 @@ export function LivePanel({
     [view, inboxKey, shownJobs],
   );
   const runFull = fullView.full && selectedRun !== undefined;
+  // Below lg an open run takes the whole width, so the list unmounts like in full view and its row keys stop.
+  const wide = useWide();
+  const runCovers = runFull || (selectedRun !== undefined && detail !== undefined && !wide);
   const repoSelect = options.length > 0 && <RepoSelect options={options} value={repo} onChange={pickRepo} />;
 
   const meta = viewMeta(view);
@@ -275,8 +292,9 @@ export function LivePanel({
       />
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         <StatsStrip runs={runRows} agentsBySession={agentsBySession} startOfToday={startOfToday} />
-        <div className={cn("grid min-h-0 flex-1", selectedRun && !runFull ? "grid-cols-[1fr_420px]" : "grid-cols-1")}>
-          {!runFull && content}
+        <div className={cn("grid min-h-0 flex-1 grid-cols-1", selectedRun && !runFull && "lg:grid-cols-[minmax(0,1fr)_min(600px,46%)]")}>
+          {/* Below lg an open run takes the whole width; closing it brings the page back. The class covers the first paint. */}
+          {!runCovers && <div className={cn("contents", selectedRun && "max-lg:hidden")}>{content}</div>}
           {selectedRun && detail && (
             // Keyed by run, so opening another card shows the skeleton instead of holding the last run.
             <Suspense
