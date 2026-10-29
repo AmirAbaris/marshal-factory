@@ -35,10 +35,15 @@ export const baseImageBuild = () => status;
 /** Resolves once the build in flight, if any, is done. */
 export const baseImageIdle = () => building ?? Promise.resolve();
 
+/** How long a stopping runner waits for the build to wind down; a create still running ends its sandbox when it returns. */
+export const STOP_WAIT_MS = 10_000;
+
 /** For a stopping runner: ends the build sandbox in flight, which then fails and records nothing. */
-export function stopBaseImage() {
+export function stopBaseImage(waitMs = STOP_WAIT_MS) {
   stopping?.abort();
-  return baseImageIdle();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const waited = new Promise<void>((resolve) => (timer = setTimeout(resolve, waitMs)));
+  return Promise.race([baseImageIdle(), waited]).finally(() => clearTimeout(timer));
 }
 
 /** Regressions start each case from no build and no failure. */

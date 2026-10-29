@@ -221,6 +221,30 @@ resetBaseImage();
   assert.equal(existsSync(buildLockPath(path)), false, "with the lock released");
 }
 
+// A stop while the sandbox is still being created: the runner does not wait for the create, and the sandbox ends once it is up.
+resetBaseImage();
+{
+  const path = join(dir, "runner-stop-create.json");
+  storeOld(path);
+  baseImageRuntime.image = () => readSandboxImage(path);
+  let up: (box: FakeSandbox) => void = () => {};
+  const box = buildBox();
+  let creating = () => {};
+  const created = new Promise<void>((resolve) => (creating = resolve));
+  baseImageRuntime.build = (pins, log, signal) =>
+    buildSandboxImage({ limits: pins, log, signal, path, open: () => new Promise((resolve) => ((up = resolve), creating())) });
+  rebuildBaseImage(hooks);
+  await created;
+  const t0 = Date.now();
+  await stopBaseImage(50);
+  assert.ok(Date.now() - t0 < 1_000, "a stop does not wait out a slow create");
+  up(box);
+  await baseImageIdle();
+  assert.equal(box.terminated, true, "the sandbox ends as soon as the create returns");
+  assert.equal(readSandboxImage(path)!.imageId, "im-old");
+  assert.equal(fake.snapshots.filter((s) => s.sandboxId === box.sandboxId).length, 0, "and is never snapshotted");
+}
+
 // No stored image, or no Modal token: nothing is built.
 resetBaseImage();
 let built = false;

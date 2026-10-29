@@ -191,7 +191,7 @@ export async function buildSandboxImage({
   log: Log;
   open?: OpenBuildSandbox;
   path?: string;
-  /** Aborting ends the build sandbox, so the build fails at its next step and records nothing. */
+  /** Aborting ends the build sandbox, at once or as soon as its create returns, so the build fails and records nothing. */
   signal?: AbortSignal;
 }): Promise<SandboxImage> {
   const held = lock(path);
@@ -201,6 +201,7 @@ export async function buildSandboxImage({
   try {
     await execFileAsync("bun", ["build", ...ENTRIES, "--target=bun", "--root", ".", "--outdir", bundleDir, "--entry-naming", "[dir]/[name].ts"], { cwd: ROOT });
     log(`bundled ${ENTRIES.join(", ")}`);
+    if (signal?.aborted) throw new Error("the build was stopped");
     sandbox = await open(limits, log);
     log(`build sandbox ${sandbox.sandboxId} up`);
     const opened = sandbox;
@@ -227,8 +228,8 @@ export async function buildSandboxImage({
     await sh(sandbox, `cd /tmp && { factory-verify --no-post 2>/dev/null; test $? -eq 2; }`);
     log("hook bundles run");
 
+    // A stop from here on ends the sandbox under the snapshot, which then fails; one after it records the image, which passed every check.
     const image = await sandbox.snapshotFilesystem({ ttlMs: null, timeoutMs: 300_000 });
-    if (signal?.aborted) throw new Error("the build was stopped");
     const factoryCommit = (await execFileAsync("git", ["rev-parse", "HEAD"], { cwd: ROOT })).stdout.trim();
     const state: SandboxImage = { imageId: image.imageId, t3Version: limits.t3Version, versions: pinned, factoryCommit, builtAt: new Date().toISOString() };
     writeImage(path, state);
