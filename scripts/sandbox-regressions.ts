@@ -97,7 +97,6 @@ assert.match(sandboxName("weird key/ü", 1), /^[A-Za-z0-9._-]+$/);
 const stamp = Date.now();
 const keys = ["A", "B", "C", "D", "E", "F"].map((k) => `SBX${k}-${stamp % 100000}`);
 const slotA = `/tmp/slot-a-${stamp}`;
-const slotB = `/tmp/slot-b-${stamp}`;
 const slot = { id: TEST_MACHINE_ID, repos: ["ski043/factory-demo"], maxInFlight: 1000 };
 const events: { event: string; detail: Record<string, unknown> }[] = [];
 const pins = config.factory.sandbox;
@@ -124,7 +123,7 @@ const beforePins = { ...image, versions: undefined };
 assert.match(imageProblem(beforePins, pins)!, /^Rebuild the sandbox image: Claude Code missing → .+, Codex missing → .+, PStack missing → .+;/, "an image built before the other pins is outdated");
 
 let claudeToken: string | undefined;
-let slots = [slotA];
+const slots = [slotA];
 Object.assign(sandboxRuntime, {
   image: () => image,
   claudeToken: () => claudeToken,
@@ -243,9 +242,13 @@ try {
   assert.deepEqual([(await row(keys[1]!)).t3_thread_id, (await row(keys[1]!)).machine_id], [null, null], "no free slot, so the claim is undone");
   assert.equal(events.at(-1)!.event, "sandbox:no-slot");
 
-  // With a Claude token the job keeps its harness, and the token goes in as a secret.
+  // With a Claude token a Codex job still needs a free slot, and waits for one.
   claudeToken = "sk-ant-oat-fake";
-  slots = [slotA, slotB];
+  assert.deepEqual(await launchInSandboxes([entry(keys[1]!, { provider: "codex", model: "gpt-6-astra" })], slot), []);
+  assert.deepEqual([(await row(keys[1]!)).t3_thread_id, (await row(keys[1]!)).machine_id], [null, null], "a Codex job with the only slot held stays queued");
+  assert.equal(events.at(-1)!.event, "sandbox:no-slot");
+
+  // A Claude Code job keeps its harness and needs no slot, so it launches with the only one held; the token goes in as a secret.
   pstackListed = true;
   const pstackWarnings = () => events.filter((e) => e.event === "sandbox:no-pstack").length;
   const warned = pstackWarnings();
@@ -253,13 +256,12 @@ try {
   assert.equal(pstackWarnings(), warned, "a sandbox with PStack enabled launches without a warning");
   const b = await row(keys[1]!);
   const sbB = sandboxes.get(b.sandbox_id!)!;
-  assert.deepEqual([b.codex_slot, b.provider, b.model], [slotB, "claudeAgent", "claude-opus-5-5"], "the free slot is leased");
+  assert.deepEqual([b.t3_thread_id, b.codex_slot, b.provider, b.model], ["thread-1", null, "claudeAgent", "claude-opus-5-5"], "no slot is leased");
+  assert.ok(!sbB.files.has("/root/.codex/auth.json") && !sbB.execs.some((e) => e.argv.join(" ") === "codex login status"), "and no Codex login goes in");
   assert.deepEqual(sbB.spec!.secrets, { CLAUDE_CODE_OAUTH_TOKEN: "sk-ant-oat-fake" });
   assert.equal(JSON.parse(sbB.files.get("/root/.t3/userdata/settings.json")!).providerInstances.claudeAgent.enabled, true);
 
-  // maxParallel counts working jobs that hold a slot.
-  const slotC = `/tmp/slot-c-${stamp}`;
-  slots = [slotA, slotB, slotC];
+  // maxParallel counts working jobs with a sandbox, slot or not.
   const maxParallel = config.factory.sandbox.maxParallel;
   config.factory.sandbox.maxParallel = 2;
   try {
@@ -280,13 +282,13 @@ try {
   assert.ok(!sbC.execs.some((e) => e.argv[2] === "start"), "no thread was asked for");
   clone = {};
 
-  // A start that may have made the thread keeps the sandbox and the slot for recovery.
+  // A start that may have made the thread keeps the sandbox for recovery. It is a second Claude Code job launched with the only slot held.
   start = { stdout: "not json" };
   const [maybe] = await launchInSandboxes([entry(keys[3]!)], slot);
   assert.equal(maybe!.retry, "after launch recovery");
   const d = await row(keys[3]!);
   const sbD = sandboxes.get(d.sandbox_id!)!;
-  assert.ok(d.t3_thread_id!.startsWith("pending:") && d.codex_slot === slotC && !sbD.terminated, "marker, slot and sandbox stay");
+  assert.ok(d.t3_thread_id!.startsWith("pending:") && d.codex_slot === null && !sbD.terminated, "marker and sandbox stay");
   start = { stdout: '{"threadId":"thread-1"}' };
 
   // Recovery asks the sandbox's T3 for the thread on the job's branch.

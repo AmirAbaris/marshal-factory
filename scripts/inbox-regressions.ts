@@ -95,18 +95,14 @@ assert.ok(!allows("handover", "follow_up") && !allows("failed", "follow_up"));
 assert.ok(allows("failed", "dismiss") && allows("failed", "close") && !allows("failed", "request_changes"));
 assert.ok(allows("question", "answer") && !allows("question", "approve") && !allows(null, "dismiss"));
 
-assert.deepEqual(approvalBlockers({ checks: "success", mergeable: "mergeable", behindBy: 0 }), [], "green, clean and current: nothing blocks");
-assert.deepEqual(approvalBlockers({ checks: "failure", mergeable: "conflicting", behindBy: 2 }), [
-  "A check failed on the latest commit.",
-  "The pull request conflicts with its base branch.",
-  "The branch is 2 commits behind its base.",
-]);
-assert.deepEqual(approvalBlockers({ checks: "pending", mergeable: "unknown", behindBy: 0 }).length, 2, "running checks and unknown mergeability are facts too");
-assert.deepEqual(approvalBlockers({ checks: "none", mergeable: "mergeable", behindBy: 0 }), [], "a repo without CI has no checks to wait for");
+assert.deepEqual(approvalBlockers({ checks: "success", mergeable: "mergeable" }), [], "green and clean: nothing blocks");
+assert.deepEqual(approvalBlockers({ checks: "failure", mergeable: "conflicting" }), ["A check failed on the latest commit.", "The pull request conflicts with its base branch."]);
+assert.deepEqual(approvalBlockers({ checks: "pending", mergeable: "unknown" }).length, 2, "running checks and unknown mergeability are facts too");
+assert.deepEqual(approvalBlockers({ checks: "none", mergeable: "mergeable" }), [], "a repo without CI has no checks to wait for");
 assert.deepEqual(
   reviewSummary({
     headSha: "h1",
-    files: [{ path: "a.ts", additions: 3, deletions: 1, patch: "+x" }],
+    files: [{ path: "a.ts", additions: 3, deletions: 1 }],
     bugbot: { review: { state: "reviewed" }, findings: [{ severity: "high", resolved: false }, { severity: "low", resolved: false }, { severity: "medium", resolved: true }] },
   }),
   { headSha: "h1", files: [{ path: "a.ts", additions: 3, deletions: 1 }], fileCount: 1, bugbot: { state: "reviewed", high: 1, medium: 0, low: 1, resolved: 1 } },
@@ -317,7 +313,7 @@ try {
 
   // --- approve: the auto-merge path, blocked only by facts
   const approved = await approveMerge(handId, { actor: OWNER, headSha: "h1", via: "inbox" });
-  assert.deepEqual(approved, { merged: "merge-1" }, "the agent's handover, a protected path and the size limit do not block the owner");
+  assert.deepEqual(approved, { merged: "merge-1" }, "the agent's handover and a large migration do not block the owner");
   assert.deepEqual(putsTo(1).map((w) => [w.body.sha, w.body.merge_method]), [["h1", "squash"]], "one merge, pinned to the reviewed head");
   const merged1 = await row(HAND);
   assert.equal(merged1.stage, "merged", "the merge goes in as the usual stage event");
@@ -336,10 +332,11 @@ try {
   const NOCI = await job("NOCI", {}, { number: 41, checks: "none" });
   assert.deepEqual(await approveMerge((await row(NOCI)).id, { actor: OWNER, headSha: "h41", via: "run_detail" }), { merged: "merge-41" }, "a repo without CI merges on the owner's approval");
 
+  const BEHIND = await job("BEHIND", {}, { number: 42, behind: 3 });
+  assert.deepEqual(await approveMerge((await row(BEHIND)).id, { actor: OWNER, headSha: "h42", via: "inbox" }), { merged: "merge-42" }, "a branch behind its base does not block the owner; GitHub refuses when protection requires it up to date");
+
   const RED = await job("RED", {}, { number: 2, checks: "failure", behind: 3 });
-  assert.deepEqual(await approveMerge((await row(RED)).id, { actor: OWNER, headSha: null, via: "inbox" }), {
-    blocked: "A check failed on the latest commit. The branch is 3 commits behind its base.",
-  });
+  assert.deepEqual(await approveMerge((await row(RED)).id, { actor: OWNER, headSha: null, via: "inbox" }), { blocked: "A check failed on the latest commit." });
   assert.equal(putsTo(2).length, 0, "facts block before GitHub is asked to merge");
   const MOVED = await job("MOVED", {}, { number: 3 });
   assert.deepEqual(await approveMerge((await row(MOVED)).id, { actor: OWNER, headSha: "old", via: "inbox" }), {

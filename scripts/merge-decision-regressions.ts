@@ -18,7 +18,8 @@ const { ingest } = await import("../lib/ingest");
 const { hosts } = await import("../lib/host");
 const { github, bugbotFindingsOf, checkStateOf, pullsClient } = await import("../lib/github/pulls");
 const { parseAssessment } = await import("../lib/assessment");
-const { decideMerge, DEFAULT_POLICY, globToRegExp, majorBumps, matchesAny, noCiReason } = await import("../lib/merge-decision");
+const { decideMerge, DEFAULT_POLICY, noCiReason } = await import("../lib/merge-decision");
+const { globToRegExp } = await import("../lib/globs");
 const { readRepoSettings, resolvePolicy, writeRepoAutonomy } = await import("../lib/settings");
 const { decideMerges, RECHECK_MS } = await import("../runner/merge-decision");
 const { serve } = await import("./serve");
@@ -78,23 +79,16 @@ assert.deepEqual(parseAssessment(legacy({ recommendation: "handover", reviewFocu
 assert.deepEqual(parseAssessment(assessment()), assessment(), "the current shape reads as is");
 assert.equal(parseAssessment({ recommendation: "merge" }), null, "anything else is no assessment");
 
-// --- globs and manifests
+// --- globs
 assert.ok(globToRegExp("**/migrations/**").test("db/migrations/001.sql") && globToRegExp("**/migrations/**").test("migrations/1.sql"), "** spans zero or more dirs");
 assert.ok(!globToRegExp("vercel.json").test("apps/vercel.json"), "a plain name matches at the root only");
-assert.ok(matchesAny(".env.local", DEFAULT_POLICY.protectedPaths) && matchesAny("apps/web/.env", DEFAULT_POLICY.protectedPaths));
-assert.ok(matchesAny(".github/workflows/ci.yml", DEFAULT_POLICY.protectedPaths) && !matchesAny("src/app/page.tsx", DEFAULT_POLICY.protectedPaths));
 assert.ok(!globToRegExp("*.ts").test("a/b.ts") && globToRegExp("*.ts").test("b.ts"), "* stays inside one dir");
-const manifest = (patch: string) => [{ path: "package.json", additions: 1, deletions: 1, patch }];
-assert.deepEqual(majorBumps(manifest(`-    "next": "^15.1.0",\n+    "next": "^16.0.0",\n-    "zod": "^4.1.0"\n+    "zod": "^4.2.0"`)), ["next"], "a major bump, a minor one is fine");
-assert.deepEqual(majorBumps(manifest(`+    "left-pad": "^1.0.0",`)), [], "a new dependency is no bump");
-assert.deepEqual(majorBumps([{ path: "README.md", additions: 1, deletions: 1, patch: `-  "a": "1.0.0"\n+  "a": "2.0.0"` }]), [], "only manifests count");
 
 // --- decideMerge
 const NOW = 1_800_000_000_000;
 const facts = (over: Partial<PrFacts> = {}): PrFacts => ({
   headSha: "h1",
   mergeable: "mergeable",
-  behindBy: 0,
   checks: "success",
   bugbot: { review: { state: "reviewed" }, findings: [] },
   files: [{ path: "src/list.tsx", additions: 10, deletions: 2 }],
@@ -103,7 +97,6 @@ const facts = (over: Partial<PrFacts> = {}): PrFacts => ({
 const input = (over: Partial<DecisionInput> = {}): DecisionInput => ({
   policy: { ...DEFAULT_POLICY, autonomy: "trial" },
   assessment: assessment(),
-  attempt: 1,
   labels: ["factory"],
   pr: facts(),
   headSeenAt: NOW - 60_000,
@@ -120,7 +113,7 @@ const handsOver = (over: Partial<DecisionInput>, pattern: RegExp, why: string) =
 
 assert.deepEqual(decideMerge(input()), { outcome: "merge", reasons: [] }, "trial: everything holds, so it would merge");
 assert.deepEqual(decideMerge(input({ policy: { ...DEFAULT_POLICY, autonomy: "auto" } })), { outcome: "merge", reasons: [] }, "auto merges with no caveat");
-assert.deepEqual(decideMerge(input({ policy: DEFAULT_POLICY, pr: null, attempt: 3 })), { outcome: "handover", reasons: [] }, "off evaluates nothing");
+assert.deepEqual(decideMerge(input({ policy: DEFAULT_POLICY, pr: null })), { outcome: "handover", reasons: [] }, "off evaluates nothing");
 assert.throws(() => decideMerge(input({ pr: null })), /needs the PR's facts/);
 assert.deepEqual(decideMerge(input({ assessment: null })), { outcome: "handover", reasons: ["The agent didn't report an assessment."] }, "a run with no assessment");
 assert.deepEqual(
@@ -144,26 +137,21 @@ assert.deepEqual(
   "an old handover names its failed check",
 );
 handsOver({ labels: ["factory", "Review"] }, /"review" label/, "the review label forces a handover");
-handsOver({ attempt: 2 }, /attempt 2/, "a retry");
 handsOver({ pr: facts({ checks: "failure" }) }, /check failed/, "a failed check");
 handsOver({ pr: facts({ mergeable: "conflicting" }) }, /conflicts/, "a conflict");
-handsOver({ pr: facts({ behindBy: 2 }) }, /2 commits behind/, "behind its base");
 handsOver({ pr: facts({ bugbot: { review: { state: "reviewed" }, findings: [{ severity: "medium", resolved: false }] } }) }, /1 unresolved medium or high finding/, "an open Bugbot finding");
 assert.equal(decideMerge(input({ pr: facts({ bugbot: { review: { state: "reviewed" }, findings: [{ severity: "high", resolved: true }, { severity: "low", resolved: false }] } }) })).outcome, "merge", "resolved and low findings pass");
-handsOver({ pr: facts({ files: [{ path: "drizzle/0001.sql", additions: 1, deletions: 0 }] }) }, /protected paths: drizzle\/0001\.sql/, "a migration");
-handsOver({ pr: facts({ files: [{ path: "lib/session.ts", previousPath: "lib/auth/session.ts", additions: 1, deletions: 1 }] }) }, /lib\/auth\/session\.ts/, "a rename out of a protected path");
-handsOver({ pr: facts({ files: manifest(`-    "next": "^15.0.0",\n+    "next": "^16.0.0",`) }) }, /major version of next/, "a major dependency bump");
-handsOver({ pr: facts({ files: [{ path: "a.ts", additions: 200, deletions: 101 }] }) }, /301 lines, over the limit of 300/, "too big");
-assert.equal(decideMerge(input({ pr: facts({ files: [{ path: "a.ts", additions: 200, deletions: 100 }] }) })).outcome, "merge", "the limit itself is fine");
-const ownPolicy = { policy: { autonomy: "trial" as const, protectedPaths: ["src/**"], maxChangedLines: 5, requireBugbot: true } };
-handsOver(ownPolicy, /protected paths: src\/list\.tsx/, "the repo's own globs apply");
-handsOver(ownPolicy, /over the limit of 5/, "and its own size limit");
+// Size, retries, a branch behind its base, migrations and major bumps are the agent's and GitHub's to judge, not hard limits.
+const mergesAlone = (pr: PrFacts, why: string) => assert.deepEqual(decideMerge(input({ pr })), { outcome: "merge", reasons: [] }, why);
+mergesAlone(facts({ files: [{ path: "a.ts", additions: 200, deletions: 103 }] }), "a 303-line pull request");
+mergesAlone(facts({ files: [{ path: "drizzle/0001.sql", additions: 1, deletions: 0 }, { path: ".github/workflows/ci.yml", additions: 1, deletions: 1 }] }), "a migration and a workflow, once protected paths");
+mergesAlone(facts({ files: [{ path: "package.json", additions: 1, deletions: 1 }] }), "a manifest whose diff bumps a major version");
 
 const pending = decideMerge(input({ pr: facts({ checks: "pending", bugbot: { review: { state: "pending" }, findings: [] } }) }));
 assert.deepEqual(pending, { outcome: "pending", reasons: ["Waiting for checks, Bugbot."] }, "running checks are pending, not a handover");
 assert.equal(decideMerge(input({ pr: facts({ mergeable: "unknown" }) })).outcome, "pending", "so is GitHub computing mergeability");
 handsOver({ pr: facts({ checks: "pending" }), headSeenAt: NOW - 61 * 60_000 }, /^Checks didn't finish within 60 minutes\.$/, "pending past the timeout");
-handsOver({ pr: facts({ checks: "pending" }), attempt: 2 }, /attempt 2/, "a hard failure does not wait for checks");
+handsOver({ pr: facts({ checks: "pending", mergeable: "conflicting" }) }, /conflicts/, "a hard failure does not wait for checks");
 
 // --- verified at head
 const auto = { policy: { ...DEFAULT_POLICY, autonomy: "auto" as const } };
@@ -269,7 +257,6 @@ const stub = await serve(0, async (request) => {
   seen.push(`${request.method} ${url.pathname}${url.search}`);
   if (url.pathname === "/repos/o/r/pulls/9") return Response.json({ state: "open", merged_at: null, closed_at: null, mergeable: true, head: { sha: "h9" }, base: { ref: "main" } });
   if (url.pathname === "/repos/o/r/pulls/9/files") return Response.json(url.searchParams.get("page") === "1" ? filePage(100, 0) : filePage(3, 100));
-  if (url.pathname === "/repos/o/r/compare/main...h9") return Response.json({ behind_by: 4 });
   if (url.pathname === "/repos/o/r/commits/h9/check-runs") return Response.json({ total_count: 1, check_runs: [run("ci", "completed", "success")] });
   if (url.pathname === "/repos/o/r/commits/h9/status") return Response.json({ state: "pending", total_count: 0 });
   // 101 check runs: a failure on page two, or a page two GitHub never returns.
@@ -304,10 +291,9 @@ const stub = await serve(0, async (request) => {
 try {
   const client = pullsClient({ api: `http://localhost:${stub.port}`, tokens: { get: async () => "ghs_stub", evict: () => {} } });
   assert.deepEqual(await client.pullDetail("https://github.com/o/r/pull/9"), { state: "open", mergeable: "mergeable", headSha: "h9", baseRef: "main" });
-  assert.equal(await client.behindBy("o/r", "main", "h9"), 4);
   const files = await client.pullFiles("https://github.com/o/r/pull/9");
   assert.equal(files.length, 103, "files page until a short page");
-  assert.deepEqual(files[0], { path: "f0.ts", previousPath: undefined, additions: 1, deletions: 2, patch: undefined });
+  assert.deepEqual(files[0], { path: "f0.ts", additions: 1, deletions: 2 });
   assert.deepEqual(await client.checkState("o/r", "h9"), { checks: "success", bugbot: PENDING });
   assert.equal((await client.checkState("o/r", "h10")).checks, "failure", "a failed run past the first page counts");
   assert.equal((await client.checkState("o/r", "h11")).checks, "pending", "runs GitHub listed but never returned are not green");
@@ -383,7 +369,6 @@ try {
   const heads = new Map<string, string>();
   const calls: string[] = [];
   github.pullDetail = async (url) => (calls.push(`detail ${url}`), { state: "open", mergeable: "mergeable", headSha: heads.get(url) ?? "h1", baseRef: "main" });
-  github.behindBy = async () => (calls.push("behind"), 0);
   github.pullFiles = async () => (calls.push("files"), [{ path: "src/list.tsx", additions: 5, deletions: 1 }]);
   let checks: "success" | "pending" = "success";
   github.checkState = async () => (calls.push("checks"), { checks, bugbot: { state: "reviewed" as const } });

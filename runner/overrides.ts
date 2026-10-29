@@ -12,7 +12,7 @@ import { desiredRepositoryGroup, readRegistry, type Registry } from "../lib/repo
 import { desiredLabelGroups, ticketOverrides, type SourceOverrides, type TicketRecord } from "../lib/ticket-overrides";
 import { config } from "./config";
 import { thisMachine } from "./heartbeat";
-import { sandboxHarness, sandboxRuntime, usableSlots } from "./sandbox";
+import { needsCodexSlot, sandboxHarness, sandboxRuntime, usableSlots } from "./sandbox";
 
 // Per ticket, the harness and where it runs are its override labels field by field over Settings.
 // A label that cannot apply on this runner falls back, and the issue is told once per attempt.
@@ -26,6 +26,8 @@ export type Capabilities = {
   /** Why Modal cannot launch here; null when it can, even if every slot is busy right now. */
   modal: string | null;
   claude: boolean;
+  /** A Codex login slot is usable; only a sandbox thread on Codex needs one. */
+  codexSlot: boolean;
   driverOf: (provider: string) => string;
   codexModel: string;
 };
@@ -60,26 +62,27 @@ export function planLaunch(
     else notes.push(`${nameOf(asked.provider)} reports no current model, so it runs on the Settings harness ${nameOf(harness.provider)}.`);
   }
 
+  const inSandbox = sandboxHarness(harness, can.driverOf(harness.provider), can.claude, can.codexModel);
+  const modal = can.modal ?? (needsCodexSlot(inSandbox.choice.provider) && !can.codexSlot ? "no Codex login slot is usable" : null);
   const noLocal = !can.local ? "this runner's T3 is not running" : !can.checkout ? "this runner has no checkout of the repo" : null;
   let execution = asked.execution ?? settings.execution;
-  if (asked.execution === "modal" && can.modal) {
-    if (noLocal) return { kind: "wait", reason: `Cloud sandboxes cannot launch on this runner (${can.modal}) and ${noLocal}` };
+  if (asked.execution === "modal" && modal) {
+    if (noLocal) return { kind: "wait", reason: `Cloud sandboxes cannot launch on this runner (${modal}) and ${noLocal}` };
     execution = "local";
-    notes.push(`Cloud sandboxes cannot launch on this runner (${can.modal}), so it runs locally.`);
+    notes.push(`Cloud sandboxes cannot launch on this runner (${modal}), so it runs locally.`);
   }
   if (asked.execution === "local" && noLocal) {
-    if (can.modal) return { kind: "wait", reason: `${noLocal} and cloud sandboxes cannot launch here (${can.modal})` };
+    if (modal) return { kind: "wait", reason: `${noLocal} and cloud sandboxes cannot launch here (${modal})` };
     execution = "modal";
     notes.push(`${noLocal[0]!.toUpperCase()}${noLocal.slice(1)}, so it runs in a cloud sandbox.`);
   }
   // A job only Settings or its repo send to local still needs the checkout; a down T3 fails its start as before.
   if (!asked.execution && execution === "local" && !can.checkout) {
-    if (can.modal) return { kind: "wait", reason: `this runner has no checkout of the repo and cloud sandboxes cannot launch here (${can.modal})` };
+    if (modal) return { kind: "wait", reason: `this runner has no checkout of the repo and cloud sandboxes cannot launch here (${modal})` };
     execution = "modal";
   }
   if (execution === "modal" && (asked.provider || asked.execution)) {
-    const { fallback } = sandboxHarness(harness, can.driverOf(harness.provider), can.claude, can.codexModel);
-    if (fallback) notes.push(`In a cloud sandbox, ${fallback}.`);
+    if (inSandbox.fallback) notes.push(`In a cloud sandbox, ${inSandbox.fallback}.`);
   }
 
   const applied = {
@@ -120,12 +123,12 @@ export const overrideRuntime = {
 export function capabilities(): Omit<Capabilities, "checkout"> {
   const limits = config.factory.sandbox;
   const modal =
-    imageProblem(sandboxRuntime.image(), limits) ??
-    (!sandboxRuntime.modalToken() ? "there is no cloud sandbox token" : usableSlots(limits).length === 0 ? "no Codex login slot is usable" : null);
+    imageProblem(sandboxRuntime.image(), limits) ?? (!sandboxRuntime.modalToken() ? "there is no cloud sandbox token" : null);
   return {
     local: overrideRuntime.localT3(),
     modal,
     claude: Boolean(sandboxRuntime.claudeToken()),
+    codexSlot: usableSlots(limits).length > 0,
     driverOf: sandboxRuntime.driverOf,
     codexModel: limits.codexModel,
   };

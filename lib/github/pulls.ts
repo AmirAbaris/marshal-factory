@@ -56,10 +56,8 @@ export type PullDetail = { state: PullState; mergeable: Mergeable; headSha: stri
 
 const fileSchema = z.object({
   filename: z.string(),
-  previous_filename: z.string().optional(),
   additions: z.number(),
   deletions: z.number(),
-  patch: z.string().optional(),
 });
 
 const checkRunSchema = z.object({
@@ -303,12 +301,6 @@ export function pullsClient({ api, tokens }: { api: string; tokens: TokenSource 
       return { state: stateOf(pull), mergeable: mergeableOf(pull.mergeable), headSha: pull.head.sha, baseRef: pull.base.ref };
     },
 
-    /** How many commits the base branch has that the head lacks. */
-    async behindBy(repo: RepoName, base: string, head: string): Promise<number> {
-      const { json } = await request(repo, "GET", `/repos/${repo}/compare/${encodeURIComponent(base)}...${head}`);
-      return z.object({ behind_by: z.number() }).parse(json).behind_by;
-    },
-
     async pullFiles(url: string): Promise<ChangedFile[]> {
       const { repo, number } = parsePullUrl(url);
       const files: ChangedFile[] = [];
@@ -316,7 +308,7 @@ export function pullsClient({ api, tokens }: { api: string; tokens: TokenSource 
         const { json } = await request(repo, "GET", `/repos/${repo}/pulls/${number}/files?per_page=100&page=${page}`);
         const batch = z.array(fileSchema).parse(json);
         files.push(
-          ...batch.map((f) => ({ path: f.filename, previousPath: f.previous_filename, additions: f.additions, deletions: f.deletions, patch: f.patch })),
+          ...batch.map((f) => ({ path: f.filename, additions: f.additions, deletions: f.deletions })),
         );
         if (batch.length < 100) break;
       }

@@ -10,7 +10,7 @@ process.env.FACTORY_OWNER_EMAILS = OWNER;
 const { db } = await import("../db/client");
 const { jobs, settings } = await import("../db/schema");
 const { DEFAULT_MODEL, DEFAULT_PROVIDER } = await import("../lib/harness");
-const { imageOutdated, rebuildText, reportedDrift, reportedHarnesses, reportedSandbox } = await import("../lib/machine");
+const { imageOutdated, rebuildText, reportedDrift, reportedHarnesses, reportedSandbox, sandboxLogin } = await import("../lib/machine");
 const { readSettings, saveSettings, SETTINGS_ID, writeSettings } = await import("../lib/settings");
 const { readHarnesses } = await import("../lib/t3-state");
 const { claimLaunch, effectiveHarness, releaseLaunch } = await import("../runner/ops");
@@ -133,6 +133,15 @@ assert.deepEqual(
   ),
   currentImage,
   "an image with the pinned T3 outranks an outdated one, even when the outdated runner has a Claude token",
+);
+const claudeOnly = { ...currentImage, claude: true, codexSlots: 0 };
+const noLogin = { ...currentImage, claude: false, codexSlots: 0 };
+assert.equal(sandboxLogin(claudeOnly), true, "a Claude token alone makes the cloud ready, with no Codex login slot");
+assert.equal(sandboxLogin(noLogin), false, "with neither, nothing can log in");
+assert.deepEqual(
+  reportedSandbox([noLogin, claudeOnly].map((s) => ({ last_seen_at: online, inventory: { ...inventory(undefined), sandbox: s } })), now),
+  claudeOnly,
+  "a runner that can log in outranks one that cannot",
 );
 
 const owner = { email: OWNER, emailVerified: true };

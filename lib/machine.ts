@@ -164,6 +164,9 @@ export const reportedDrift = ({ imageInfo, pinnedT3Version, pinnedVersions }: Sa
 
 export const imageOutdated = (readiness: SandboxReadiness) => reportedDrift(readiness).length > 0;
 
+/** Some harness can log in to a sandbox: Claude Code with the runner's token, or Codex with a usable slot. */
+export const sandboxLogin = (readiness: SandboxReadiness) => readiness.claude || readiness.codexSlots > 0;
+
 /** The most ready sandbox report among online machines; null when none reports one. */
 export function reportedSandbox(machines: readonly { last_seen_at: Date; inventory: unknown }[], now: number): SandboxReadiness | null {
   const reports = machines.flatMap((m) => {
@@ -171,7 +174,7 @@ export function reportedSandbox(machines: readonly { last_seen_at: Date; invento
     return isOnline(m.last_seen_at, now) && sandbox && sandbox !== UNKNOWN ? [sandbox] : [];
   });
   const score = (r: SandboxReadiness) =>
-    Number(r.modal) + Number(r.codexSlots > 0) + Number(r.image && !imageOutdated(r)) + Number(r.claude) / 2;
+    Number(r.modal) + Number(sandboxLogin(r)) + Number(r.image && !imageOutdated(r)) + (Number(r.claude) + Number(r.codexSlots > 0)) / 4;
   return reports.sort((a, b) => score(b) - score(a))[0] ?? null;
 }
 

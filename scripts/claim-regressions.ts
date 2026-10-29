@@ -6,6 +6,7 @@ const { db } = await import("../db/client");
 const { intentReceipts, intents, jobs, machines } = await import("../db/schema");
 const { announceClaims, checkPullRequests, claim, claimLaunch, deliverStops, threads, writeBack } = await import("../runner/ops");
 const { TEST_MACHINE_ID } = await import("../lib/config");
+const { config } = await import("../runner/config");
 const { sourceFor } = await import("../lib/sources");
 const { github } = await import("../lib/github/pulls");
 const { closeBroadcast, deliveryFor, leaseIntent, receiptIntent } = await import("../runner/intents");
@@ -153,7 +154,9 @@ try {
     sourceState: { state: "Todo", labels: [] },
   }));
   const source = { source: "linear", ready: async () => drafts, overrides: () => NO_OVERRIDES } as unknown as Adapter;
-  const claimed = await claim({ sources: [source], repos: async () => [REPO], registry: async () => [] });
+  const maxInFlight = config.factory.maxInFlight;
+  config.factory.maxInFlight = 2;
+  const claimed = await claim({ sources: [source], repos: async () => [REPO], registry: async () => [] }).finally(() => (config.factory.maxInFlight = maxInFlight));
   assert.deepEqual(
     claimed.claimed,
     [`${prefix}-1`],

@@ -45,9 +45,9 @@ export const sandboxSchema = z
     hibernateAfterMinutes: z.number().nonnegative().default(5),
     /** How long a hibernated sandbox's snapshot lives; a job still waiting after that has a gone thread. */
     snapshotTtlDays: z.number().positive().default(30),
-    /** CODEX_HOME dirs on this machine, each with its own ChatGPT login; a sandbox holds one at a time. */
+    /** CODEX_HOME dirs on this machine, each with its own ChatGPT login; a sandbox running Codex holds one at a time. */
     codexSlots: z.array(z.string().transform(home)).default(["~/.codex-factory-1"].map(home)),
-    maxParallel: z.number().int().positive().default(3),
+    maxParallel: z.number().int().positive().default(4),
     /** The Codex model a Claude Code job falls back to when this runner has no Claude token. */
     codexModel: z.string().default("gpt-6-astra"),
   })
@@ -59,7 +59,7 @@ export const factorySchema = z
   .object({
     teamKey: z.string().default("FAC"),
     label: z.string().default("factory"),
-    maxInFlight: z.number().int().positive().default(2),
+    maxInFlight: z.number().int().positive().default(4),
     /** A working job with no event for this long, or whose thread stopped, gets one nudge. */
     stuckAfterMinutes: z.number().positive().default(30),
     /** A stopped thread counts as stuck only after this much quiet, so a turn that just ended isn't. */

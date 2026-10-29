@@ -3,7 +3,7 @@ import type { ExecError } from "../lib/exec";
 import { eventSchema, type FactoryEvent } from "../lib/events";
 import { combined, planChecks, runChecks, type CheckRunner } from "../lib/evidence";
 import { attemptBranch } from "../lib/factory";
-import { ensureAwake, HostAsleepError, HostGoneError, type HostedJob, type JobHost } from "../lib/host";
+import { ensureAwake, HostAsleepError, HostGoneError, WakeDeferredError, type HostedJob, type JobHost } from "../lib/host";
 import type { MergeDecision, RepoPolicy, RunnerVerification } from "../lib/merge-decision";
 import { parseRecipe, RECIPE_PATH, type Recipe } from "../lib/recipe";
 import { REPO_DIR } from "../lib/sandbox";
@@ -126,7 +126,9 @@ export function startVerification(job: VerifyJob, sha: string, recipe: Recipe | 
       const host = await ensureAwake(job);
       await post(await verifyAtHead(host, job, sha, recipe));
     } catch (error) {
-      flight.failed = error instanceof HostGoneError ? "the job's sandbox is gone" : message(error);
+      // No room to wake the sandbox: no run happened, so the head is tried again once the decision's retry comes round.
+      if (error instanceof WakeDeferredError) flights.delete(job.key);
+      else flight.failed = error instanceof HostGoneError ? "the job's sandbox is gone" : message(error);
     } finally {
       flight.finished = true;
     }

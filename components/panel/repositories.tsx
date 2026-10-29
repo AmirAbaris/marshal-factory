@@ -15,12 +15,11 @@ import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "@/c
 import { Separator } from "@/components/ui/separator";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
-import { Textarea } from "@/components/ui/textarea";
 import type { MachineRow, RepoSettingsRow } from "@/db/schema";
 import { EXECUTIONS, type Execution } from "@/lib/execution";
 import type { Harness } from "@/lib/harness";
-import { parseInventory, rebuildText, reportedDrift, reportedHarnesses, reportedSandbox, UNKNOWN } from "@/lib/machine";
-import { AUTONOMY_LABELS, AUTONOMY_LEVELS, DEFAULT_POLICY, type Autonomy } from "@/lib/merge-decision";
+import { parseInventory, rebuildText, reportedDrift, reportedHarnesses, reportedSandbox, sandboxLogin, UNKNOWN } from "@/lib/machine";
+import { AUTONOMY_LABELS, AUTONOMY_LEVELS, type Autonomy } from "@/lib/merge-decision";
 import { repoImage } from "@/lib/onboarding";
 import { displayName } from "@/lib/repo-name";
 import type { RepoStats } from "@/lib/repositories";
@@ -37,7 +36,7 @@ const CLOCK_TICK_MS = 30_000;
 const AUTONOMY_HELP: Record<Autonomy, string> = {
   off: "Every pull request is ready for your review. The factory evaluates nothing.",
   trial: "The factory evaluates each pull request and shows whether it would merge or why it hands over, but never merges.",
-  auto: "The factory merges a pull request it is confident about and every hard limit holds: checks green, Bugbot clear, first attempt, small, and no protected paths.",
+  auto: "The factory merges a pull request it is confident about and every hard limit holds: checks green, no conflicts, Bugbot clear, and verified at its head.",
 };
 
 const LIST_KEYS: readonly KeyHint[] = [
@@ -61,7 +60,7 @@ export type Places = { modal: boolean; modalNote: string | null; machines: strin
 function placesOf(rows: readonly MachineRow[], now: number, row: RepoSettingsRow): Places {
   const sandbox = reportedSandbox(rows, now);
   const drift = sandbox ? reportedDrift(sandbox) : [];
-  const runner = Boolean(sandbox && sandbox.modal && sandbox.image && drift.length === 0 && sandbox.codexSlots > 0);
+  const runner = Boolean(sandbox && sandbox.modal && sandbox.image && drift.length === 0 && sandboxLogin(sandbox));
   const info = sandbox?.imageInfo;
   const image = repoImage(row, info?.versions ? { versions: info.versions, builtAt: info.builtAt } : null);
   const machines = rows.filter((m) => parseInventory(m.inventory)?.repos.some((r) => r.origin !== UNKNOWN && r.origin === row.repo)).map((m) => m.name);
@@ -151,12 +150,6 @@ function Row({ entry, open, cursor, onFocus }: { entry: Entry; open: boolean; cu
   );
 }
 
-const linesOf = (text: string) =>
-  text
-    .split("\n")
-    .map((l) => l.trim())
-    .filter(Boolean);
-
 function Detail({ entry, harnesses, panelTakesSecrets }: { entry: Entry; harnesses: readonly Harness[]; panelTakesSecrets: boolean }) {
   const router = useRouter();
   const { row, stats, places } = entry;
@@ -165,8 +158,6 @@ function Detail({ entry, harnesses, panelTakesSecrets }: { entry: Entry; harness
   const [provider, setProvider] = useState(row.provider ?? SETTINGS_DEFAULT);
   const [execution, setExecution] = useState<Execution | typeof SETTINGS_DEFAULT>(row.execution ?? SETTINGS_DEFAULT);
   const [autonomy, setAutonomy] = useState<Autonomy>(row.autonomy);
-  const [paths, setPaths] = useState((row.protected_paths ?? []).join("\n"));
-  const [limit, setLimit] = useState(row.max_changed_lines === null ? "" : String(row.max_changed_lines));
   const [requireBugbot, setRequireBugbot] = useState(row.require_bugbot);
   const [failure, setFailure] = useState<string | null>(null);
   const [savedNow, setSavedNow] = useState(false);
@@ -197,7 +188,6 @@ function Detail({ entry, harnesses, panelTakesSecrets }: { entry: Entry; harness
   };
 
   const save = () => {
-    const lines = Number(limit);
     run(() =>
       saveRepository({
         repo: row.repo,
@@ -206,8 +196,6 @@ function Detail({ entry, harnesses, panelTakesSecrets }: { entry: Entry; harness
         provider: provider === SETTINGS_DEFAULT ? null : provider,
         execution: execution === SETTINGS_DEFAULT ? null : execution,
         autonomy,
-        protectedPaths: linesOf(paths).length > 0 ? linesOf(paths) : null,
-        maxChangedLines: limit.trim() === "" ? null : lines,
         requireBugbot,
       }),
     );
@@ -331,31 +319,6 @@ function Detail({ entry, harnesses, panelTakesSecrets }: { entry: Entry; harness
               </SelectPopup>
             </Select>
             <FieldDescription>{AUTONOMY_HELP[autonomy]}</FieldDescription>
-          </Field>
-          <Field>
-            <FieldLabel htmlFor={id("paths")}>Protected paths</FieldLabel>
-            <Textarea
-              id={id("paths")}
-              value={paths}
-              onChange={(e) => setPaths(e.target.value)}
-              rows={5}
-              placeholder={DEFAULT_POLICY.protectedPaths.join("\n")}
-              className="font-mono text-xs"
-            />
-            <FieldDescription>One glob per line. A pull request touching any of them never merges on its own. Empty means the defaults shown.</FieldDescription>
-          </Field>
-          <Field>
-            <FieldLabel htmlFor={id("limit")}>Size limit</FieldLabel>
-            <Input
-              id={id("limit")}
-              type="number"
-              inputMode="numeric"
-              min={1}
-              value={limit}
-              onChange={(e) => setLimit(e.target.value)}
-              placeholder={String(DEFAULT_POLICY.maxChangedLines)}
-            />
-            <FieldDescription>The most changed lines, additions plus deletions, a pull request may have to merge on its own. Empty means {DEFAULT_POLICY.maxChangedLines}.</FieldDescription>
           </Field>
           <Field>
             <FieldLabel>

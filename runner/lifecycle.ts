@@ -3,7 +3,7 @@ import { and, eq, inArray, isNotNull, isNull, lt, or, sql, type SQL } from "driz
 import { db } from "../db/client";
 import { auditLog, codexSlotLeases, jobs, repoSettings, type JobRow } from "../db/schema";
 import type { RepoName } from "../lib/github/app";
-import { HostGoneError, hosts, isHibernated, type HostedJob, type JobHost } from "../lib/host";
+import { HostGoneError, hosts, isHibernated, WakeDeferredError, type HostedJob, type JobHost } from "../lib/host";
 import { deleteSnapshot, isModalGone, modal, modalHost, snapshotSandbox, terminateSandbox, tunnelUrl } from "../lib/modal-host";
 import { modalSecretName, parseDetail } from "../lib/onboarding";
 import { CODEX_AUTH, T3_PORT } from "../lib/sandbox";
@@ -17,7 +17,7 @@ import { config } from "./config";
 import { thisMachine } from "./heartbeat";
 import { flushSandboxOutbox } from "./outbox";
 import { isolated } from "./reconcile";
-import { CodexLoginError, createJobSandbox, installCodexLogin, markSlotUnusable, pairT3, sandboxRuntime, startT3, stopT3, usableSlots, writeGithubToken } from "./sandbox";
+import { CodexLoginError, createJobSandbox, installCodexLogin, markSlotUnusable, needsCodexSlot, pairT3, sandboxRuntime, startT3, stopT3, usableSlots, writeGithubToken } from "./sandbox";
 import { threads } from "./threads";
 import { verifyingKeys } from "./verify";
 
@@ -27,9 +27,9 @@ import { verifyingKeys } from "./verify";
 //   running     sandbox_id set; the thread works, or waits in pr or waiting until it settles
 //   hibernated  pr or waiting, thread settled: the login is written back, the filesystem (worktree,
 //               T3's SQLite, Codex sessions) is snapshotted to sandbox_snapshot, the sandbox ends
-//               and the login slot is freed
+//               and the login slot, if the job holds one, is freed
 //   woken       an operation that must reach the thread (conflict send-back, answer delivery)
-//               starts a sandbox from the snapshot with a freshly leased slot, a fresh GitHub token
+//               starts a sandbox from the snapshot with a freshly leased slot (Codex threads only), a fresh GitHub token
 //               and a new `t3 serve`; the snapshot is deleted once it serves
 //   torn down   merged or failed: the login is written back, the sandbox ends, the snapshot is
 //               deleted, and sandbox_id, sandbox_snapshot and codex_slot are cleared
@@ -55,6 +55,30 @@ const tokenWrites = new Map<string, number>();
 export const noteTokenWritten = (sandboxId: string, at = Date.now()) => void tokenWrites.set(sandboxId, at);
 /** When this runner last woke each job, so a job it just woke is not put straight back to sleep. */
 const wokenAt = new Map<string, number>();
+
+/** Wakes between their room check and recording their sandbox, which the database cannot count yet. */
+let waking = 0;
+
+/**
+ * What counts against factory.sandbox.maxParallel on this machine: every job whose sandbox Modal
+ * still runs, in any stage, every sandbox launch still setting up, and every wake under way. A
+ * hibernated job, or one whose sandbox is gone but whose id stays so its thread reads as gone,
+ * holds no room.
+ */
+export async function sandboxesInFlight(machineId: string) {
+  const rows = await db
+    .select({ sandbox_id: jobs.sandbox_id })
+    .from(jobs)
+    .where(
+      and(
+        eq(jobs.machine_id, machineId),
+        or(isNotNull(jobs.sandbox_id), and(sql`${jobs.t3_thread_id} like ${`${PENDING}%`}`, or(eq(jobs.execution, "modal"), isNotNull(jobs.codex_slot)))),
+      ),
+    );
+  const ids = rows.flatMap((r) => (r.sandbox_id ? [r.sandbox_id] : []));
+  const running = ids.length > 0 ? new Set((await modal.api.list(config.factory.sandbox.appName, { label: config.factory.label })).map((s) => s.sandboxId)) : new Set<string>();
+  return rows.filter((r) => !r.sandbox_id || running.has(r.sandbox_id)).length + waking;
+}
 
 /** Runs a step per job, so one failure does not hold back the rest. */
 async function each<T extends { key: string }>(rows: readonly T[], step: (row: T) => Promise<string | undefined>) {
@@ -332,7 +356,7 @@ export async function hibernateIdle(now = Date.now()) {
 }
 
 /**
- * Starts a hibernated job's sandbox again from its snapshot, with a freshly leased slot, a fresh
+ * Starts a hibernated job's sandbox again from its snapshot, with a freshly leased slot for a Codex thread, a fresh
  * GitHub token and a serving T3, and returns its host. A failure ends the new sandbox and frees the
  * slot, keeping the snapshot for the next try; a slot whose login fails is marked unusable. A
  * snapshot Modal no longer has throws HostGoneError, so the thread counts as gone.
@@ -348,8 +372,21 @@ export async function wakeJob(job: HostedJob): Promise<JobHost> {
   const snapshot = row.sandbox_snapshot!;
   const limits = config.factory.sandbox;
   const asleep = and(eq(jobs.key, row.key), eq(jobs.sandbox_snapshot, snapshot), isNull(jobs.sandbox_id));
-  const slot = await leaseSlot(asleep, usableSlots(limits));
-  if (!slot) throw new Error(`no free Codex login slot to wake ${row.key}`);
+  // Counted before the check, so wakes that overlap each see the other.
+  waking++;
+  try {
+    const inFlight = (await sandboxesInFlight((await thisMachine()).id)) - 1;
+    if (inFlight >= limits.maxParallel) throw new WakeDeferredError(`${row.key} waits to wake: ${inFlight} sandboxes already run here (factory.sandbox.maxParallel ${limits.maxParallel})`);
+    return await wakeInRoom(row, snapshot, asleep);
+  } finally {
+    waking--;
+  }
+}
+
+async function wakeInRoom(row: JobRow, snapshot: string, asleep: SQL | undefined): Promise<JobHost> {
+  const limits = config.factory.sandbox;
+  const slot = needsCodexSlot(row.provider) ? await leaseSlot(asleep, usableSlots(limits)) : null;
+  if (slot === undefined) throw new WakeDeferredError(`no free Codex login slot to wake ${row.key}`);
   let sandboxId: string | undefined;
   try {
     const claudeToken = sandboxRuntime.claudeToken();
@@ -369,7 +406,7 @@ export async function wakeJob(job: HostedJob): Promise<JobHost> {
     sandboxId = created.sandboxId;
     const [recorded] = await db.update(jobs).set({ sandbox_id: sandboxId }).where(asleep).returning({ key: jobs.key });
     if (!recorded) throw new Error(`${row.key} changed while it was being woken`);
-    await installCodexLogin(created.host, slot, sandboxRuntime.slotAuth(slot));
+    if (slot) await installCodexLogin(created.host, slot, sandboxRuntime.slotAuth(slot));
     await writeGithubToken(created.host, await sandboxRuntime.githubToken(row.repo as RepoName));
     noteTokenWritten(sandboxId);
     await startT3(created.host);
@@ -380,7 +417,7 @@ export async function wakeJob(job: HostedJob): Promise<JobHost> {
     await deleteSnapshot(snapshot).catch((error: unknown) => log("sandbox:snapshot-delete-failed", { key: row.key, snapshot, error: message(error) }));
     return created.host;
   } catch (error) {
-    if (error instanceof CodexLoginError) await loginFailed(row.key, slot);
+    if (error instanceof CodexLoginError) await loginFailed(row.key, error.slot);
     if (sandboxId) await retireSandbox(row.key, sandboxId, slot);
     await db
       .update(jobs)

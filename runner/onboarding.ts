@@ -286,7 +286,7 @@ async function runAgent(repo: string, run: StartedRun, host: JobHost, committedE
     const [row] = await db.select().from(repoSettings).where(eq(repoSettings.repo, repo));
     const detail = parseDetail(row?.onboarding_detail);
     const githubToken = await sandboxRuntime.githubToken(repo as RepoName);
-    const setup = { repo, choice, hasClaude: Boolean(claudeToken), slot, codexAuth: sandboxRuntime.slotAuth(slot), githubToken, ingest: null };
+    const setup = { repo, choice, hasClaude: Boolean(claudeToken), codex: { slot, auth: sandboxRuntime.slotAuth(slot) }, githubToken, ingest: null };
     const outcome = await setupSandbox(host, setup, limits.codexModel);
     await host.run("mkdir", ["-p", BUILD_DIR], { timeoutMs: 30_000 });
     const threadId = await startThread(host, REPO_DIR, ONBOARDING_BRANCH, `Onboard ${repo}`, agentMessage(repo, detail, committedError), outcome.choice);

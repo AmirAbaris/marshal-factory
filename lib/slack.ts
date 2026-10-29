@@ -280,7 +280,7 @@ function actionButton(action: InboxAction, job: NotifyJob): ActionButton {
       title: { type: "plain_text", text: "Approve and merge?" },
       text: {
         type: "mrkdwn",
-        text: clip(`The factory merges ${escape(job.key)} into ${escape(job.repo)} the way it merges on its own, then watches main. A newer push, a red or running check, a conflict or a branch behind its base still stops it.`, TEXT_MAX),
+        text: clip(`The factory merges ${escape(job.key)} into ${escape(job.repo)} the way it merges on its own, then watches main. A newer push, a red or running check, a conflict, or GitHub refusing the merge still stops it.`, TEXT_MAX),
       },
       confirm: { type: "plain_text", text: "Approve and merge" },
       deny: { type: "plain_text", text: "Cancel" },

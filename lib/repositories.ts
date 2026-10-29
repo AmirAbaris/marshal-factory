@@ -155,7 +155,6 @@ export async function writeDefaultRepo(database: Db, repo: string, by: string, a
   });
 }
 
-const GLOB = z.string().trim().min(1).max(200);
 
 export const repositoryInputSchema = z.object({
   repo: z.string().regex(REPO_NAME, "Name the repo as owner/name."),
@@ -170,10 +169,6 @@ export const repositoryInputSchema = z.object({
   provider: z.string().trim().min(1).nullable(),
   execution: executionSchema.nullable(),
   autonomy: autonomySchema,
-  /** Null means the default globs. */
-  protectedPaths: z.array(GLOB).max(100, "Keep it to 100 protected paths.").nullable(),
-  /** Null means the default limit. */
-  maxChangedLines: z.number().int("Use a whole number of lines.").positive("Use at least 1 line.").max(100_000, "Keep the limit under 100,000 lines.").nullable(),
   requireBugbot: z.boolean({ error: "Say whether pull requests wait for Bugbot." }),
 });
 export type RepositoryInput = z.input<typeof repositoryInputSchema>;
@@ -191,8 +186,6 @@ export async function writeRepository(database: Db, choice: RepositoryChoice, by
       provider: choice.provider,
       execution: choice.execution,
       autonomy: choice.autonomy,
-      protected_paths: choice.protectedPaths,
-      max_changed_lines: choice.maxChangedLines,
       require_bugbot: choice.requireBugbot,
       updated_at: at,
       updated_by: by,

@@ -87,7 +87,7 @@ assert.deepEqual(desiredLabelGroups([...harnesses, harness("codex2", "codex", "c
 
 // planLaunch: overrides field by field over Settings, the model, and each fallback.
 const settings = { harness: { provider: "claudeAgent", model: "claude-sonnet-5-5", from: "settings" as const }, execution: "local" as const };
-const can = { local: true, checkout: true, modal: null as string | null, claude: true, driverOf: (p: string) => harnesses.find((h) => h.id === p)?.driver ?? p, codexModel: "gpt-6-astra" };
+const can = { local: true, checkout: true, modal: null as string | null, claude: true, codexSlot: true, driverOf: (p: string) => harnesses.find((h) => h.id === p)?.driver ?? p, codexModel: "gpt-6-astra" };
 const plan = (labels: ReturnType<typeof L>[], over: Partial<typeof can> = {}, s: typeof settings | (Omit<typeof settings, "execution"> & { execution: "modal" }) = settings) =>
   planLaunch(asked(labels), s, harnesses, { ...can, ...over });
 
@@ -147,7 +147,14 @@ assert.deepEqual(
   },
   "Local without a T3 runs on Modal when Modal can launch",
 );
-assert.equal(plan([L("Local", "Runs on")], { local: false, modal: "no Codex login slot is usable" }).kind, "wait", "and waits when it cannot");
+assert.equal(plan([L("Local", "Runs on")], { local: false, modal: "there is no cloud sandbox token" }).kind, "wait", "and waits when it cannot");
+assert.equal(plan([L("Local", "Runs on")], { local: false, codexSlot: false }).kind, "launch", "a Claude Code job needs no Codex login slot to run in the cloud");
+assert.deepEqual(
+  plan([L("Local", "Runs on"), L("Codex", "Harness")], { local: false, codexSlot: false }),
+  { kind: "wait", reason: "this runner's T3 is not running and cloud sandboxes cannot launch here (no Codex login slot is usable)" },
+  "a Codex job does",
+);
+assert.equal(plan([L("Local", "Runs on")], { local: false, codexSlot: false, claude: false }).kind, "wait", "and so does a Claude Code job that falls back to Codex without a Claude token");
 assert.deepEqual(
   plan([L("Local", "Runs on")], {}, { ...settings, execution: "modal" }),
   { kind: "launch", execution: "local", harness: { provider: "claudeAgent", model: "claude-sonnet-5-5" }, ticket: { execution: "local", notes: [] } },

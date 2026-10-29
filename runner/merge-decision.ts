@@ -47,13 +47,12 @@ export const RECHECK_MS = 15 * 60_000;
 
 /** `seenAt` is when the factory first saw this head, so a repo without CI is told from CI that hasn't started. */
 async function prFacts(prUrl: string, repo: RepoName, headSha: string, baseRef: string, mergeable: PrFacts["mergeable"], seenAt?: number): Promise<PrFacts> {
-  const [behindBy, files, state, findings] = await Promise.all([
-    github.behindBy(repo, baseRef, headSha),
+  const [files, state, findings] = await Promise.all([
     github.pullFiles(prUrl),
     github.checkState(repo, headSha, { baseRef, seenAt, graceMs: config.factory.noCiGraceMinutes * 60_000 }),
     github.bugbotFindings(prUrl),
   ]);
-  return { headSha, mergeable, behindBy, files, checks: state.checks, bugbot: { review: state.bugbot, findings } };
+  return { headSha, mergeable, files, checks: state.checks, bugbot: { review: state.bugbot, findings } };
 }
 
 type Evaluated =
@@ -100,7 +99,6 @@ async function evaluate(job: Job, policy: RepoPolicy, previous: MergeDecision | 
   const decision = decideMerge({
     policy,
     assessment: parseAssessment(job.merge_assessment),
-    attempt: job.attempt,
     labels,
     pr,
     headSeenAt,
