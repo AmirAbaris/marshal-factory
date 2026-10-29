@@ -6,7 +6,7 @@ import { useRouter } from "next/navigation";
 import { useState, useTransition, type ReactNode } from "react";
 import { saveSettings } from "@/app/actions/settings";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardFooter } from "@/components/ui/card";
 import { Field, FieldDescription, FieldLabel } from "@/components/ui/field";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
@@ -17,6 +17,7 @@ import { componentName, IMAGE_COMPONENTS, rebuildText, reportedDrift, reportedHa
 import { NotificationsCard } from "./notifications-card";
 import { useFeed, type Feed } from "./sealed";
 import { PanelFooter, PanelHeader } from "./panel-header";
+import { SettingsSection } from "./settings-section";
 import { useAfterHydration, useNow } from "./time";
 
 const CLOCK_TICK_MS = 30_000;
@@ -279,119 +280,127 @@ export function SettingsForm({ machines, saved, notifications }: { machines: Fee
   return (
     <>
       <PanelHeader title="Settings" />
-      <div className="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto p-5">
-        <Card className="max-w-3xl">
-          <CardHeader>
-            <CardTitle>Harness and model</CardTitle>
-            <CardDescription>
-              The T3 provider and model every runner starts new factory threads on. Threads already running keep theirs. A
-              repository can override these, and sets how far the factory merges, on{" "}
-              <Link href="/repositories" className="underline underline-offset-2">
-                Repositories
-              </Link>
-              .
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="flex flex-col gap-6">
-            <Current saved={saved} harnesses={reported ?? []} />
-            {reported === null ? (
-              <p className="text-sm text-muted-foreground">
-                No machine has reported its harnesses yet. The runner reports them with its inventory, at startup and every
-                few minutes; once one has, you can pick a harness here.
-              </p>
-            ) : (
-              <div className="flex flex-col gap-5">
-                <Field>
-                  <FieldLabel htmlFor="settings-harness">Harness</FieldLabel>
-                  <Select
-                    items={harnesses.map((h) => ({ value: h.id, label: h.name }))}
-                    value={harness ? provider : null}
-                    onValueChange={pickHarness}
-                  >
-                    <SelectTrigger id="settings-harness" className="w-full">
-                      <SelectValue placeholder="Pick a harness" />
-                    </SelectTrigger>
-                    <SelectPopup>
-                      {harnesses.map((h) => (
-                        <SelectItem key={h.id} value={h.id}>
-                          {h.name}
-                          {h.name !== h.id && <span className="font-mono text-xs text-muted-foreground">{h.id}</span>}
-                        </SelectItem>
-                      ))}
-                    </SelectPopup>
-                  </Select>
-                  <FieldDescription>The enabled T3 providers your machines report.</FieldDescription>
-                </Field>
-                <Field>
-                  <FieldLabel htmlFor="settings-model">Model</FieldLabel>
-                  <Select
-                    items={harness?.models.map((m) => ({ value: m.slug, label: m.name })) ?? []}
-                    value={modelKnown ? model : null}
-                    onValueChange={(slug) => {
-                      if (slug === null) return;
-                      setModel(slug);
-                      setSavedNow(false);
-                    }}
-                    disabled={!harness || harness.models.length === 0}
-                  >
-                    <SelectTrigger id="settings-model" className="w-full">
-                      <SelectValue placeholder={harness && harness.models.length === 0 ? "T3 lists no models for this harness" : "Pick a model"} />
-                    </SelectTrigger>
-                    <SelectPopup>
-                      {harness?.models.map((m) => (
-                        <SelectItem key={m.slug} value={m.slug}>
-                          {m.name}
-                          {m.name !== m.slug && <span className="font-mono text-xs text-muted-foreground">{m.slug}</span>}
-                        </SelectItem>
-                      ))}
-                    </SelectPopup>
-                  </Select>
-                </Field>
-                {harness && chosen.tracking !== "full" && <UntrackedWarning name={chosen.harness} tracking={chosen.tracking} />}
-                <Field>
-                  <FieldLabel htmlFor="settings-execution">Run jobs on</FieldLabel>
-                  <Select
-                    items={EXECUTIONS.map((e) => ({ value: e, label: EXECUTION_LABELS[e] }))}
-                    value={execution}
-                    onValueChange={(value) => {
-                      if (value === null) return;
-                      setExecution(value);
-                      setSavedNow(false);
-                    }}
-                  >
-                    <SelectTrigger id="settings-execution" className="w-full">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectPopup>
-                      {EXECUTIONS.map((e) => (
-                        <SelectItem key={e} value={e}>
-                          {EXECUTION_LABELS[e]}
-                        </SelectItem>
-                      ))}
-                    </SelectPopup>
-                  </Select>
-                  <FieldDescription>Cloud runs each job in its own cloud sandbox; this Mac runs it in the runner&apos;s T3.</FieldDescription>
-                </Field>
-                {execution === "modal" && <SandboxReadinessList readiness={readiness} />}
-              </div>
-            )}
-            {failure && (
-              <p role="alert" className="text-sm text-destructive">
-                {failure}
-              </p>
-            )}
-          </CardContent>
-          {reported !== null && (
-            <CardFooter className="gap-3">
-              <Button onClick={submit} disabled={pending || !harness || !modelKnown || unchanged}>
-                {pending && <Spinner data-icon="inline-start" />}
-                Save
-              </Button>
-              {savedNow && unchanged && <span className="text-sm text-muted-foreground">Saved. The next launch uses it.</span>}
-            </CardFooter>
-          )}
-        </Card>
-        <NotificationsCard saved={notifications} slack={slack} />
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        <div className="mx-auto flex w-full max-w-6xl flex-col divide-y p-4 md:p-8">
+          <SettingsSection
+            id="new-jobs"
+            title="New jobs"
+            description={
+              <>
+                The T3 harness and model every runner starts new factory threads on, and where they run. Threads already running keep theirs. A
+                repository can override these, and sets how far the factory merges, on{" "}
+                <Link href="/repositories" className="underline underline-offset-2">
+                  Repositories
+                </Link>
+                .
+              </>
+            }
+          >
+            <Card>
+              <CardContent className="flex flex-col gap-6">
+                <Current saved={saved} harnesses={reported ?? []} />
+                {reported === null ? (
+                  <p className="text-sm text-muted-foreground">
+                    No machine has reported its harnesses yet. The runner reports them with its inventory, at startup and every
+                    few minutes; once one has, you can pick a harness here.
+                  </p>
+                ) : (
+                  <div className="flex flex-col gap-5">
+                    <div className="grid gap-5 sm:grid-cols-2">
+                      <Field>
+                        <FieldLabel htmlFor="settings-harness">Harness</FieldLabel>
+                        <Select
+                          items={harnesses.map((h) => ({ value: h.id, label: h.name }))}
+                          value={harness ? provider : null}
+                          onValueChange={pickHarness}
+                        >
+                          <SelectTrigger id="settings-harness" className="w-full">
+                            <SelectValue placeholder="Pick a harness" />
+                          </SelectTrigger>
+                          <SelectPopup>
+                            {harnesses.map((h) => (
+                              <SelectItem key={h.id} value={h.id}>
+                                {h.name}
+                                {h.name !== h.id && <span className="font-mono text-xs text-muted-foreground">{h.id}</span>}
+                              </SelectItem>
+                            ))}
+                          </SelectPopup>
+                        </Select>
+                        <FieldDescription>The enabled T3 providers your machines report.</FieldDescription>
+                      </Field>
+                      <Field>
+                        <FieldLabel htmlFor="settings-model">Model</FieldLabel>
+                        <Select
+                          items={harness?.models.map((m) => ({ value: m.slug, label: m.name })) ?? []}
+                          value={modelKnown ? model : null}
+                          onValueChange={(slug) => {
+                            if (slug === null) return;
+                            setModel(slug);
+                            setSavedNow(false);
+                          }}
+                          disabled={!harness || harness.models.length === 0}
+                        >
+                          <SelectTrigger id="settings-model" className="w-full">
+                            <SelectValue placeholder={harness && harness.models.length === 0 ? "T3 lists no models for this harness" : "Pick a model"} />
+                          </SelectTrigger>
+                          <SelectPopup>
+                            {harness?.models.map((m) => (
+                              <SelectItem key={m.slug} value={m.slug}>
+                                {m.name}
+                                {m.name !== m.slug && <span className="font-mono text-xs text-muted-foreground">{m.slug}</span>}
+                              </SelectItem>
+                            ))}
+                          </SelectPopup>
+                        </Select>
+                      </Field>
+                    </div>
+                    {harness && chosen.tracking !== "full" && <UntrackedWarning name={chosen.harness} tracking={chosen.tracking} />}
+                    <Field className="sm:max-w-[calc(50%-0.625rem)]">
+                      <FieldLabel htmlFor="settings-execution">Run jobs on</FieldLabel>
+                      <Select
+                        items={EXECUTIONS.map((e) => ({ value: e, label: EXECUTION_LABELS[e] }))}
+                        value={execution}
+                        onValueChange={(value) => {
+                          if (value === null) return;
+                          setExecution(value);
+                          setSavedNow(false);
+                        }}
+                      >
+                        <SelectTrigger id="settings-execution" className="w-full">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectPopup>
+                          {EXECUTIONS.map((e) => (
+                            <SelectItem key={e} value={e}>
+                              {EXECUTION_LABELS[e]}
+                            </SelectItem>
+                          ))}
+                        </SelectPopup>
+                      </Select>
+                      <FieldDescription>Cloud runs each job in its own cloud sandbox; this Mac runs it in the runner&apos;s T3.</FieldDescription>
+                    </Field>
+                    {execution === "modal" && <SandboxReadinessList readiness={readiness} />}
+                  </div>
+                )}
+                {failure && (
+                  <p role="alert" className="text-sm text-destructive">
+                    {failure}
+                  </p>
+                )}
+              </CardContent>
+              {reported !== null && (
+                <CardFooter className="gap-3 border-t">
+                  <Button onClick={submit} disabled={pending || !harness || !modelKnown || unchanged}>
+                    {pending && <Spinner data-icon="inline-start" />}
+                    Save
+                  </Button>
+                  {savedNow && unchanged && <span className="text-sm text-muted-foreground">Saved. The next launch uses it.</span>}
+                </CardFooter>
+              )}
+            </Card>
+          </SettingsSection>
+          <NotificationsCard saved={notifications} slack={slack} />
+        </div>
       </div>
       <PanelFooter status={status} />
     </>
