@@ -39,7 +39,7 @@ const isActive = (href: NavItem["href"], pathname: string) => (href === "/" ? pa
 export const isTyping = (target: EventTarget | null) =>
   target instanceof HTMLElement && (target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName));
 
-type Shell = { collapsed: boolean; expand: () => void; openNav: () => void };
+type Shell = { openNav: () => void };
 
 const ShellContext = createContext<Shell | null>(null);
 
@@ -107,23 +107,26 @@ function Nav({
           </div>
         ))}
       </nav>
-      <div className={cn("flex h-10 shrink-0 items-center gap-1 border-t px-1.5", collapsed && "justify-center")}>
-        <ThemeToggle />
+      {/* The rail toggle keeps the bottom-left corner in both states; the theme menu sits beside it, or above it when collapsed. */}
+      <div className="relative flex h-10 shrink-0 items-center gap-1 border-t px-1.5">
         {onToggle && (
           <RailTip
             collapsed
             label={
               <span className="flex items-center gap-1.5">
-                Collapse
+                {collapsed ? "Expand" : "Collapse"}
                 <Kbd>[</Kbd>
               </span>
             }
           >
-            <Button aria-label="Collapse sidebar" className={cn("ml-auto", collapsed && "hidden")} onClick={onToggle} size="icon-sm" variant="ghost">
+            <Button aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"} aria-expanded={!collapsed} onClick={onToggle} size="icon-sm" variant="ghost">
               <PanelLeftIcon />
             </Button>
           </RailTip>
         )}
+        <div className={cn(collapsed && "absolute bottom-full left-1.5 mb-1.5")}>
+          <ThemeToggle />
+        </div>
       </div>
     </div>
   );
@@ -147,7 +150,7 @@ export function PanelShell({ defaultCollapsed, inboxCount, children }: { default
     return () => window.removeEventListener("keydown", onKeyDown);
   }, []);
 
-  const shell: Shell = { collapsed, expand: () => setCollapsed(false), openNav: () => setNavOpen(true) };
+  const shell: Shell = { openNav: () => setNavOpen(true) };
 
   return (
     <MotionConfig reducedMotion="user">
