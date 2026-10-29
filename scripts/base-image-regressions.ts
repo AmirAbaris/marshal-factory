@@ -10,7 +10,7 @@ const { factorySchema } = await import("../lib/config");
 const { sandboxReadinessSchema } = await import("../lib/machine");
 const { pinnedVersions, PSTACK_PLUGIN, readSandboxImage } = await import("../lib/sandbox");
 const { buildLockPath, buildSandboxImage, BuildLockedError } = await import("../lib/sandbox-image-build");
-const { baseImageBuild, baseImageIdle, baseImageRuntime, rebuildBaseImage, resetBaseImage, RETRY_AFTER_MS } = await import("../runner/base-image");
+const { baseImageBuild, baseImageIdle, baseImageRuntime, rebuildBaseImage, resetBaseImage, RETRY_AFTER_MS, stopBaseImage } = await import("../runner/base-image");
 
 const limits = factorySchema.parse({}).sandbox;
 const pinned = pinnedVersions(limits);
@@ -187,6 +187,38 @@ resetBaseImage();
   rmSync(buildLockPath(path));
   assert.ok("started" in rebuildBaseImage(hooks)!, "the next tick tries again");
   await baseImageIdle();
+}
+
+// A stopping runner ends the build sandbox in flight, which records nothing.
+resetBaseImage();
+{
+  const path = join(dir, "runner-stop.json");
+  storeOld(path);
+  baseImageRuntime.image = () => readSandboxImage(path);
+  let box: FakeSandbox | undefined;
+  let stopped: Promise<void> | undefined;
+  baseImageRuntime.build = (pins, log, signal) =>
+    buildSandboxImage({
+      limits: pins,
+      log,
+      signal,
+      path,
+      open: async () => {
+        box = buildBox();
+        const answer = fake.answer;
+        fake.answer = (sandbox, argv) => {
+          if (argv[2] === "t3 --version") stopped = stopBaseImage();
+          return answer(sandbox, argv);
+        };
+        return box;
+      },
+    });
+  rebuildBaseImage(hooks);
+  await baseImageIdle();
+  await stopped;
+  assert.equal(box?.terminated, true, "the build sandbox is ended");
+  assert.equal(readSandboxImage(path)!.imageId, "im-old", "and the old image stays recorded");
+  assert.equal(existsSync(buildLockPath(path)), false, "with the lock released");
 }
 
 // No stored image, or no Modal token: nothing is built.

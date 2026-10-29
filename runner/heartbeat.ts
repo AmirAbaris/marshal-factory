@@ -176,6 +176,8 @@ export function createBeat({
   const report = inventoryReporter((value) => writeInventory(machine.id, value, new Date(now())));
   let running = false;
   let inventoryAt: number | undefined;
+  /** Bumped by each fresh request, so an inventory collected before it does not count as fresh. */
+  let freshAsked = 0;
   async function beatOnce(withInventory: boolean) {
     const started = now();
     const heartbeat = await collectHeartbeat(heartbeatCollectors);
@@ -183,8 +185,9 @@ export function createBeat({
     log("heartbeat", { ms: now() - started, unknown: Object.entries(heartbeat).filter(([, v]) => v === UNKNOWN).map(([k]) => k) });
     if (!withInventory || (inventoryAt !== undefined && now() - inventoryAt < inventoryMs)) return;
     const collectedAt = now();
+    const asked = freshAsked;
     const result = await report(await collectInventory(inventory));
-    if (result !== "missing") inventoryAt = collectedAt;
+    if (result !== "missing" && asked === freshAsked) inventoryAt = collectedAt;
     log("inventory", { ms: now() - collectedAt, result });
   }
 
@@ -193,7 +196,10 @@ export function createBeat({
    * `fresh` collects the inventory now, for a change the panel should not wait inventoryMinutes for.
    */
   return async function beat({ inventory: withInventory = true, fresh = false } = {}) {
-    if (fresh) inventoryAt = undefined;
+    if (fresh) {
+      freshAsked++;
+      inventoryAt = undefined;
+    }
     if (running) {
       log("heartbeat:skipped", { reason: "the previous beat is still running" });
       return;

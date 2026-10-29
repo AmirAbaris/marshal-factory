@@ -31,7 +31,7 @@ const { confirmStops, retryStop } = await import("./stops");
 const { approveDetailSchema, closeDetailSchema, feedbackDetailSchema } = await import("../lib/inbox");
 const { watchMerges } = await import("./post-merge");
 const { syncOverrideLabels } = await import("./overrides");
-const { rebuildBaseImage } = await import("./base-image");
+const { baseImageIdle, rebuildBaseImage, stopBaseImage } = await import("./base-image");
 const { advanceOnboarding, onboardRepo, repoPushed, requestRebuild } = await import("./onboarding");
 const { repoPushDetailSchema } = await import("../lib/webhooks");
 const { notifySlack, sendSlackTest, slackFromEnv } = await import("./slack");
@@ -240,6 +240,8 @@ if (process.argv.includes("--once")) {
   if (slackFromEnv()) await serial("slack", () => notifySlack());
   takeIntents(await openIntents());
   await queue.idle();
+  // A rebuild the reconcile started is this run's to finish.
+  await baseImageIdle();
   await beat();
   process.exit(0);
 }
@@ -319,6 +321,7 @@ for (const signal of ["SIGTERM", "SIGINT"] as const) {
   process.once(signal, () => {
     log("stop", { signal });
     realtime.close();
-    void queue.idle().finally(() => process.exit(0));
+    // A rebuild in flight is ended, not waited for: the next start builds again from the tick.
+    void Promise.all([queue.idle(), stopBaseImage()]).finally(() => process.exit(0));
   });
 }

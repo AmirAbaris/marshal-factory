@@ -19,20 +19,27 @@ export const baseImageRuntime = {
   image: () => sandboxRuntime.image(),
   limits: (): BuildLimits => config.factory.sandbox,
   modalToken: () => sandboxRuntime.modalToken(),
-  build: (limits: BuildLimits, log: (message: string) => void) => buildSandboxImage({ limits, log }),
+  build: (limits: BuildLimits, log: (message: string) => void, signal: AbortSignal) => buildSandboxImage({ limits, log, signal }),
   now: () => Date.now(),
   log: (event: string, detail: Record<string, unknown>) => sandboxRuntime.log(event, detail),
 };
 
 let building: Promise<void> | undefined;
+let stopping: AbortController | undefined;
 let status: BaseImageBuild | undefined;
 let failed: { pins: string; at: number } | undefined;
 
 /** The build in flight or the last one that failed, for the runner log and the Settings page. */
 export const baseImageBuild = () => status;
 
-/** Resolves once the build in flight, if any, is done; for regressions and a clean exit. */
+/** Resolves once the build in flight, if any, is done. */
 export const baseImageIdle = () => building ?? Promise.resolve();
+
+/** For a stopping runner: ends the build sandbox in flight, which then fails and records nothing. */
+export function stopBaseImage() {
+  stopping?.abort();
+  return baseImageIdle();
+}
 
 /** Regressions start each case from no build and no failure. */
 export function resetBaseImage() {
@@ -64,8 +71,9 @@ export function rebuildBaseImage({ changed = () => {}, landed = () => {} }: { ch
   status = { state: "building", reason, startedAt: new Date(now).toISOString() };
   baseImageRuntime.log("sandbox-image:started", { reason });
   changed();
+  const controller = (stopping = new AbortController());
   building = baseImageRuntime
-    .build(limits, (message) => baseImageRuntime.log("sandbox-image:build", { message }))
+    .build(limits, (message) => baseImageRuntime.log("sandbox-image:build", { message }), controller.signal)
     .then(
       (built) => {
         status = undefined;
@@ -88,6 +96,7 @@ export function rebuildBaseImage({ changed = () => {}, landed = () => {} }: { ch
     )
     .finally(() => {
       building = undefined;
+      stopping = undefined;
       changed();
     });
   return { started: reason };

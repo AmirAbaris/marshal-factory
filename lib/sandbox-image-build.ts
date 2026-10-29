@@ -87,19 +87,24 @@ export const baseLayers = (limits: BuildLimits) => [
 export const openModalBuildSandbox: OpenBuildSandbox = async (limits, log) => {
   forbidInTest("Modal");
   const modal = new ModalClient();
-  const app = await modal.apps.fromName(limits.appName, { createIfMissing: true });
-  const base = modal.images.fromRegistry("node:22-bookworm").dockerfileCommands(baseLayers(limits));
-  log("building the base image (the first build takes a few minutes)");
-  const sandbox = await modal.sandboxes.create(app, base, {
-    name: `image-build-${Date.now()}`,
-    tags: { purpose: "image-build" },
-    runtime: "gvisor",
-    timeoutMs: 20 * 60_000,
-    command: ["sleep", "infinity"],
-  });
-  // The client goes with the sandbox, so a runner building again later opens a fresh one.
-  const terminate = sandbox.terminate.bind(sandbox);
-  return Object.assign(sandbox, { terminate: () => terminate().finally(() => modal.close()) });
+  try {
+    const app = await modal.apps.fromName(limits.appName, { createIfMissing: true });
+    const base = modal.images.fromRegistry("node:22-bookworm").dockerfileCommands(baseLayers(limits));
+    log("building the base image (the first build takes a few minutes)");
+    const sandbox = await modal.sandboxes.create(app, base, {
+      name: `image-build-${Date.now()}`,
+      tags: { purpose: "image-build" },
+      runtime: "gvisor",
+      timeoutMs: 20 * 60_000,
+      command: ["sleep", "infinity"],
+    });
+    // The client goes with the sandbox, so a runner building again later opens a fresh one.
+    const terminate = sandbox.terminate.bind(sandbox);
+    return Object.assign(sandbox, { terminate: () => terminate().finally(() => modal.close()) });
+  } catch (error) {
+    modal.close();
+    throw error;
+  }
 };
 
 async function sh(sandbox: SandboxHandle, script: string, timeoutMs = 120_000) {
@@ -180,11 +185,14 @@ export async function buildSandboxImage({
   log,
   open = openModalBuildSandbox,
   path = SANDBOX_IMAGE_PATH,
+  signal,
 }: {
   limits: BuildLimits;
   log: Log;
   open?: OpenBuildSandbox;
   path?: string;
+  /** Aborting ends the build sandbox, so the build fails at its next step and records nothing. */
+  signal?: AbortSignal;
 }): Promise<SandboxImage> {
   const held = lock(path);
   if ("heldBy" in held) throw new BuildLockedError(held.heldBy);
@@ -195,6 +203,10 @@ export async function buildSandboxImage({
     log(`bundled ${ENTRIES.join(", ")}`);
     sandbox = await open(limits, log);
     log(`build sandbox ${sandbox.sandboxId} up`);
+    const opened = sandbox;
+    const end = () => void opened.terminate().catch(() => {});
+    signal?.addEventListener("abort", end, { once: true });
+    if (signal?.aborted) end();
     for (const entry of ENTRIES) await sandbox.filesystem.writeText(readFileSync(join(bundleDir, entry), "utf8"), join(FACTORY_ROOT, entry));
     const playbooks = await installPlaybooks(sandbox.filesystem);
     log(`playbooks ${PLAYBOOK_FILES.join(", ")} in ${SANDBOX_PLAYBOOKS} at ${playbooks}`);
@@ -216,6 +228,7 @@ export async function buildSandboxImage({
     log("hook bundles run");
 
     const image = await sandbox.snapshotFilesystem({ ttlMs: null, timeoutMs: 300_000 });
+    if (signal?.aborted) throw new Error("the build was stopped");
     const factoryCommit = (await execFileAsync("git", ["rev-parse", "HEAD"], { cwd: ROOT })).stdout.trim();
     const state: SandboxImage = { imageId: image.imageId, t3Version: limits.t3Version, versions: pinned, factoryCommit, builtAt: new Date().toISOString() };
     writeImage(path, state);
