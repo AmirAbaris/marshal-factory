@@ -79,7 +79,7 @@ assert.deepEqual(repos.desiredRepositoryGroup(registry), { group: "Repository", 
 const harness = (id: string, name: string, models: string[], enabled = true) => ({ id, driver: id, name, enabled, models: models.map((slug) => ({ slug, name: slug })) });
 const harnesses = [harness("claudeAgent", "Claude Code", ["claude-opus-5-5"]), harness("codex", "Codex", ["gpt-6-astra"]), harness("cursor", "Cursor", ["composer-2"]), harness("off", "Off", ["x"], false)];
 const settings = { harness: { provider: "claudeAgent", model: "claude-opus-5-5", from: "settings" as const }, execution: "local" as const };
-const can = { local: true, checkout: true, modal: null as string | null, claude: true, driverOf: (p: string) => p, codexModel: "gpt-6-astra" };
+const can = { local: true, checkout: true, modal: null as string | null, claude: true, codexSlot: true, driverOf: (p: string) => p, codexModel: "gpt-6-astra" };
 const launch = (labels: ReturnType<typeof L>[], repo: RepoRow | undefined, over: Partial<typeof can> = {}) =>
   planLaunch(asked(labels), repos.withRepoDefaults(settings, repo, harnesses).defaults, harnesses, { ...can, ...over });
 const shop = registry[1]!;

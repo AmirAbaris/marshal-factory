@@ -179,6 +179,28 @@ try {
   assert.equal(await sqlReclaims(SNAP), true, "SQL agrees");
   assert.deepEqual(await teardownFinished(), [], "teardown is idempotent");
 
+  // A Claude Code job holds no slot: it hibernates, wakes with no slot free, and tears down without one.
+  const sbCl = await sandboxFor(key("CL"));
+  const CL = await insert("CL", { stage: "pr", t3_thread_id: "thread-CL", sandbox_id: sbCl.sandboxId, provider: "claudeAgent", model: "claude-opus-5-5", execution: "modal" });
+  assert.deepEqual(await hibernateIdle(), [`${CL}:hibernated`]);
+  const clAsleep = await row(CL);
+  assert.deepEqual([clAsleep.sandbox_id, clAsleep.codex_slot, Boolean(clAsleep.sandbox_snapshot), sbCl.terminated], [null, null, true, true], "hibernated with no slot to hand back");
+  const allSlots = sandboxRuntime.slots;
+  sandboxRuntime.slots = () => [];
+  try {
+    await ensureAwake(clAsleep);
+  } finally {
+    sandboxRuntime.slots = allSlots;
+  }
+  const clAwake = await row(CL);
+  const sbClW = sandboxes.get(clAwake.sandbox_id!)!;
+  assert.deepEqual([clAwake.sandbox_snapshot, clAwake.codex_slot], [null, null], "woken from its snapshot without a slot");
+  assert.ok(!sbClW.execs.some((e) => e.argv.join(" ") === "codex login status") && !sbClW.files.has(CODEX_AUTH), "and no Codex login goes in");
+  await db.update(jobs).set({ stage: "merged" }).where(eq(jobs.key, CL));
+  assert.deepEqual(await teardownFinished(), [`${CL}:torn down`]);
+  assert.ok(sbClW.terminated, "its sandbox ends");
+  assert.deepEqual([(await row(CL)).sandbox_id, (await row(CL)).codex_slot], [null, null]);
+
   // Wake with a login Codex refuses: the slot is marked, the new sandbox ends, the snapshot stays.
   fake.images.set("im-snap-w", new Map([["/work/repo/marker.txt", "w"]]));
   const W = await insert("W", { stage: "waiting", t3_thread_id: "thread-W", sandbox_snapshot: "im-snap-w" });
@@ -240,10 +262,18 @@ try {
   await db.update(jobs).set({ codex_slot: null }).where(eq(jobs.key, RUN));
   claudeToken = "sk-ant-oat-fake";
   claudeOk = false;
-  const [fellBack] = await launchInSandboxes([entry(L, { provider: "claudeAgent", model: "claude-opus-5-5" })], machine);
+  const claudeEntry = entry(L, { provider: "claudeAgent", model: "claude-opus-5-5" });
+  // It launched without a slot, so the fallback leases one then, and with none free the launch ends for the next pass.
+  sandboxRuntime.slots = () => [];
+  const [noFallbackSlot] = await launchInSandboxes([claudeEntry], machine);
+  assert.equal(noFallbackSlot!.retry, "next pass", JSON.stringify(noFallbackSlot));
+  assert.match(String(noFallbackSlot!.error), /no Codex login slot is free/);
+  assert.deepEqual([(await row(L)).machine_id, (await row(L)).sandbox_id, (await row(L)).codex_slot], [null, null, null], "holding nothing");
+  sandboxRuntime.slots = () => [slotB, slotC];
+  const [fellBack] = await launchInSandboxes([claudeEntry], machine);
   assert.equal(fellBack!.threadId, "thread-launched", JSON.stringify(fellBack));
   const lf = await row(L);
-  assert.deepEqual([lf.provider, lf.model], ["codex", limits.codexModel]);
+  assert.deepEqual([lf.provider, lf.model, lf.codex_slot], ["codex", limits.codexModel, slotB], "the fallback leases the free slot");
   const sbL = sandboxes.get(lf.sandbox_id!)!;
   assert.equal(JSON.parse(sbL.files.get("/root/.t3/userdata/settings.json")!).defaultModelSelection.instanceId, "codex");
   assert.ok(sbL.execs.some((e) => e.argv.join(" ").includes(`--provider codex --model ${limits.codexModel}`)));

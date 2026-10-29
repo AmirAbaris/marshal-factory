@@ -37,7 +37,7 @@ import {
 } from "./ops";
 import { loginFailed, noteTokenWritten, retireSandbox } from "./lifecycle";
 import { announceFallbacks, capabilities, overrideRuntime, planLaunch, splitByExecution } from "./overrides";
-import { CodexLoginError, createJobSandbox, ingestConfig, sandboxHarness, sandboxRuntime, setupSandbox, usableSlots } from "./sandbox";
+import { CodexLoginError, createJobSandbox, ingestConfig, needsCodexSlot, sandboxHarness, sandboxRuntime, setupSandbox, usableSlots, type CodexLogin } from "./sandbox";
 
 const sh = async (host: JobHost, cmd: string, args: string[], cwd?: string) =>
   (await host.run(cmd, args, { cwd, timeoutMs: 60_000 })).stdout.trim();
@@ -96,7 +96,7 @@ async function threadBranches(checkout: string, host: JobHost) {
 }
 
 type PendingLaunch = Awaited<ReturnType<typeof pendingLaunches>>[number];
-const inSandbox = (p: { sandbox_id: string | null; codex_slot: string | null }) => p.sandbox_id !== null || p.codex_slot !== null;
+const inSandbox = (p: Pick<PendingLaunch, "execution" | "sandbox_id" | "codex_slot">) => p.execution === "modal" || p.sandbox_id !== null || p.codex_slot !== null;
 
 /** Ends a launch that made no thread: its sandbox first, so a cleared row never points at a live one. */
 export async function releaseSandboxLaunch(key: string, marker: string, sandboxId: string | null, slot: string | null) {
@@ -330,9 +330,9 @@ async function launchLocal(
 class SandboxSetupError extends Error {}
 
 /**
- * One Modal sandbox per job, each holding its own Codex login slot, at most maxParallel at once. A
- * launch records the sandbox and the slot on the job before anything runs in it, so a crash leaves
- * them findable. A failure before the thread start ends the sandbox and frees the slot; a start
+ * One Modal sandbox per job, at most maxParallel at once; a job on Codex also holds its own Codex
+ * login slot. A launch records the sandbox and the slot on the job before anything runs in it, so a
+ * crash leaves them findable. A failure before the thread start ends the sandbox and frees the slot; a start
  * that may have made the thread keeps both for launch recovery, which asks the sandbox's T3.
  */
 /**
@@ -409,7 +409,8 @@ export async function launchInSandboxes(pending: readonly LaunchEntry[], slot: L
   const claudeToken = runtime.claudeToken();
   const byKey = new Map(pending.map((entry) => [entry.key, entry]));
   let room = limits.maxParallel - (await sandboxesInFlight(slot.id));
-  const leases = new Map<string, { marker: string; slot: string; choice: HarnessChoice }>();
+  const leases = new Map<string, { marker: string; slot: string | null; choice: HarnessChoice }>();
+  const loginOf = (slot: string): CodexLogin => ({ slot, auth: runtime.slotAuth(slot) });
   return launchEntries(pending, {
     async claim(key, marker) {
       if (room <= 0) return false;
@@ -422,8 +423,8 @@ export async function launchInSandboxes(pending: readonly LaunchEntry[], slot: L
       if (start.outdated) runtime.log("sandbox:warm-image-outdated", { key, repo: entry.repo, reason: start.outdated });
       const { choice, fallback } = sandboxHarness(entry.harness, runtime.driverOf(entry.harness.provider), Boolean(claudeToken), limits.codexModel);
       if (!(await claimLaunch(key, marker, slot, choice, { execution: "modal", ticket: entry.ticket }))) return false;
-      const codexSlot = await leaseCodexSlot(key, marker, usableSlots(limits));
-      if (!codexSlot) {
+      const codexSlot = needsCodexSlot(choice.provider) ? await leaseCodexSlot(key, marker, usableSlots(limits)) : null;
+      if (codexSlot === undefined) {
         await releaseLaunch(key, marker);
         runtime.log("sandbox:no-slot", { key, slots: limits.codexSlots.length });
         return false;
@@ -441,7 +442,7 @@ export async function launchInSandboxes(pending: readonly LaunchEntry[], slot: L
       let host: JobHost;
       let ran: HarnessChoice;
       try {
-        const codexAuth = runtime.slotAuth(lease.slot);
+        const codex = lease.slot ? loginOf(lease.slot) : null;
         const githubToken = await runtime.githubToken(entry.repo as RepoName);
         const created = await createJobSandbox({
           key: entry.key,
@@ -464,8 +465,11 @@ export async function launchInSandboxes(pending: readonly LaunchEntry[], slot: L
           repo: entry.repo,
           choice: lease.choice,
           hasClaude: Boolean(claudeToken),
-          slot: lease.slot,
-          codexAuth,
+          codex,
+          leaseCodex: async () => {
+            const leased = await leaseCodexSlot(entry.key, lease.marker, usableSlots(limits));
+            return leased ? loginOf(leased) : undefined;
+          },
           githubToken,
           ingest: ingestConfig(config),
           job: { key: entry.key, attempt: entry.attempt },

@@ -17,7 +17,7 @@ import { config } from "./config";
 import { thisMachine } from "./heartbeat";
 import { flushSandboxOutbox } from "./outbox";
 import { isolated } from "./reconcile";
-import { CodexLoginError, createJobSandbox, installCodexLogin, markSlotUnusable, pairT3, sandboxRuntime, startT3, stopT3, usableSlots, writeGithubToken } from "./sandbox";
+import { CodexLoginError, createJobSandbox, installCodexLogin, markSlotUnusable, needsCodexSlot, pairT3, sandboxRuntime, startT3, stopT3, usableSlots, writeGithubToken } from "./sandbox";
 import { threads } from "./threads";
 import { verifyingKeys } from "./verify";
 
@@ -27,9 +27,9 @@ import { verifyingKeys } from "./verify";
 //   running     sandbox_id set; the thread works, or waits in pr or waiting until it settles
 //   hibernated  pr or waiting, thread settled: the login is written back, the filesystem (worktree,
 //               T3's SQLite, Codex sessions) is snapshotted to sandbox_snapshot, the sandbox ends
-//               and the login slot is freed
+//               and the login slot, if the job holds one, is freed
 //   woken       an operation that must reach the thread (conflict send-back, answer delivery)
-//               starts a sandbox from the snapshot with a freshly leased slot, a fresh GitHub token
+//               starts a sandbox from the snapshot with a freshly leased slot (Codex threads only), a fresh GitHub token
 //               and a new `t3 serve`; the snapshot is deleted once it serves
 //   torn down   merged or failed: the login is written back, the sandbox ends, the snapshot is
 //               deleted, and sandbox_id, sandbox_snapshot and codex_slot are cleared
@@ -332,7 +332,7 @@ export async function hibernateIdle(now = Date.now()) {
 }
 
 /**
- * Starts a hibernated job's sandbox again from its snapshot, with a freshly leased slot, a fresh
+ * Starts a hibernated job's sandbox again from its snapshot, with a freshly leased slot for a Codex thread, a fresh
  * GitHub token and a serving T3, and returns its host. A failure ends the new sandbox and frees the
  * slot, keeping the snapshot for the next try; a slot whose login fails is marked unusable. A
  * snapshot Modal no longer has throws HostGoneError, so the thread counts as gone.
@@ -348,8 +348,8 @@ export async function wakeJob(job: HostedJob): Promise<JobHost> {
   const snapshot = row.sandbox_snapshot!;
   const limits = config.factory.sandbox;
   const asleep = and(eq(jobs.key, row.key), eq(jobs.sandbox_snapshot, snapshot), isNull(jobs.sandbox_id));
-  const slot = await leaseSlot(asleep, usableSlots(limits));
-  if (!slot) throw new Error(`no free Codex login slot to wake ${row.key}`);
+  const slot = needsCodexSlot(row.provider) ? await leaseSlot(asleep, usableSlots(limits)) : null;
+  if (slot === undefined) throw new Error(`no free Codex login slot to wake ${row.key}`);
   let sandboxId: string | undefined;
   try {
     const claudeToken = sandboxRuntime.claudeToken();
@@ -369,7 +369,7 @@ export async function wakeJob(job: HostedJob): Promise<JobHost> {
     sandboxId = created.sandboxId;
     const [recorded] = await db.update(jobs).set({ sandbox_id: sandboxId }).where(asleep).returning({ key: jobs.key });
     if (!recorded) throw new Error(`${row.key} changed while it was being woken`);
-    await installCodexLogin(created.host, slot, sandboxRuntime.slotAuth(slot));
+    if (slot) await installCodexLogin(created.host, slot, sandboxRuntime.slotAuth(slot));
     await writeGithubToken(created.host, await sandboxRuntime.githubToken(row.repo as RepoName));
     noteTokenWritten(sandboxId);
     await startT3(created.host);
@@ -380,7 +380,7 @@ export async function wakeJob(job: HostedJob): Promise<JobHost> {
     await deleteSnapshot(snapshot).catch((error: unknown) => log("sandbox:snapshot-delete-failed", { key: row.key, snapshot, error: message(error) }));
     return created.host;
   } catch (error) {
-    if (error instanceof CodexLoginError) await loginFailed(row.key, slot);
+    if (error instanceof CodexLoginError) await loginFailed(row.key, error.slot);
     if (sandboxId) await retireSandbox(row.key, sandboxId, slot);
     await db
       .update(jobs)

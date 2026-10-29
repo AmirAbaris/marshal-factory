@@ -13,7 +13,7 @@ import { Spinner } from "@/components/ui/spinner";
 import type { MachineRow, NotificationSettingsRow, SettingsRow } from "@/db/schema";
 import { DEFAULT_EXECUTION, EXECUTIONS, type Execution } from "@/lib/execution";
 import { DEFAULT_MODEL, DEFAULT_PROVIDER, harnessLabel, trackingOf, type Harness, type Tracking } from "@/lib/harness";
-import { componentName, IMAGE_COMPONENTS, rebuildText, reportedDrift, reportedHarnesses, reportedSandbox, reportedSlack, type SandboxReadiness } from "@/lib/machine";
+import { componentName, IMAGE_COMPONENTS, rebuildText, reportedDrift, reportedHarnesses, reportedSandbox, reportedSlack, sandboxLogin, type SandboxReadiness } from "@/lib/machine";
 import { NotificationsCard } from "./notifications-card";
 import { useFeed, type Feed } from "./sealed";
 import { PanelFooter, PanelHeader } from "./panel-header";
@@ -119,8 +119,8 @@ function sandboxChecks(readiness: SandboxReadiness): Check[] {
           ),
         },
     {
-      tone: readiness.codexSlots === 0 ? "missing" : unusable > 0 ? "warn" : "ok",
-      label: `Codex logins: ${readiness.codexSlots} usable${unusable > 0 ? `, ${unusable} unusable` : ""}`,
+      tone: !sandboxLogin(readiness) ? "missing" : readiness.codexSlots === 0 || unusable > 0 ? "warn" : "ok",
+      label: `Codex logins: ${readiness.codexSlots} usable${unusable > 0 ? `, ${unusable} unusable` : ""}${readiness.codexSlots === 0 && readiness.claude ? ". Codex jobs wait for one; Claude Code jobs need none" : ""}`,
       howTo:
         readiness.codexSlots === 0 || unusable > 0 ? (
           <>

@@ -19,7 +19,7 @@ import { Textarea } from "@/components/ui/textarea";
 import type { MachineRow, RepoSettingsRow } from "@/db/schema";
 import { EXECUTIONS, type Execution } from "@/lib/execution";
 import type { Harness } from "@/lib/harness";
-import { parseInventory, rebuildText, reportedDrift, reportedHarnesses, reportedSandbox, UNKNOWN } from "@/lib/machine";
+import { parseInventory, rebuildText, reportedDrift, reportedHarnesses, reportedSandbox, sandboxLogin, UNKNOWN } from "@/lib/machine";
 import { AUTONOMY_LABELS, AUTONOMY_LEVELS, DEFAULT_POLICY, type Autonomy } from "@/lib/merge-decision";
 import { repoImage } from "@/lib/onboarding";
 import { displayName } from "@/lib/repo-name";
@@ -61,7 +61,7 @@ export type Places = { modal: boolean; modalNote: string | null; machines: strin
 function placesOf(rows: readonly MachineRow[], now: number, row: RepoSettingsRow): Places {
   const sandbox = reportedSandbox(rows, now);
   const drift = sandbox ? reportedDrift(sandbox) : [];
-  const runner = Boolean(sandbox && sandbox.modal && sandbox.image && drift.length === 0 && sandbox.codexSlots > 0);
+  const runner = Boolean(sandbox && sandbox.modal && sandbox.image && drift.length === 0 && sandboxLogin(sandbox));
   const info = sandbox?.imageInfo;
   const image = repoImage(row, info?.versions ? { versions: info.versions, builtAt: info.builtAt } : null);
   const machines = rows.filter((m) => parseInventory(m.inventory)?.repos.some((r) => r.origin !== UNKNOWN && r.origin === row.repo)).map((m) => m.name);

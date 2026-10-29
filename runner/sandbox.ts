@@ -108,6 +108,9 @@ export function sandboxHarness(harness: HarnessChoice, driver: string, hasClaude
   return { choice: { provider: CODEX, model: codexModel }, fallback: `${harness.provider} / ${harness.model} cannot run in a sandbox (${why}); launching on ${CODEX} / ${codexModel}` };
 }
 
+/** Only a sandbox thread on Codex needs a Codex login slot; Claude Code logs in with the runner's token, in any number of sandboxes. */
+export const needsCodexSlot = (provider: string | null) => provider !== CLAUDE;
+
 export const t3Settings = (choice: HarnessChoice, hasClaude: boolean) => ({
   defaultModelSelection: { instanceId: choice.provider, model: choice.model },
   textGenerationModelSelection: { instanceId: choice.provider, model: choice.model },
@@ -178,12 +181,16 @@ export async function installCodexLogin(host: JobHost, slot: string, auth: strin
   if (!(await loggedIn(host, "codex", ["login", "status"]))) throw new CodexLoginError(slot);
 }
 
+export type CodexLogin = { slot: string; auth: string };
+
 export type SandboxSetup = {
   repo: string;
   choice: HarnessChoice;
   hasClaude: boolean;
-  slot: string;
-  codexAuth: string;
+  /** A leased slot's Codex login; null for a Claude Code job, which holds none. */
+  codex: CodexLogin | null;
+  /** Leases a slot when a job without one falls back to Codex; undefined when none is free. */
+  leaseCodex?: () => Promise<CodexLogin | undefined>;
   githubToken: string;
   /** The hooks' ingest config; null for an onboarding run, which reports to no job. */
   ingest: string | null;
@@ -224,13 +231,18 @@ async function refreshWarmCheckout(host: JobHost, repo: string, setup: readonly 
  */
 export async function setupSandbox(host: JobHost, setup: SandboxSetup, codexModel: string): Promise<{ choice: HarnessChoice; fallback?: string }> {
   await host.run("mkdir", ["-p", T3_USERDATA, "/work"], { timeoutMs: 30_000 });
-  await installCodexLogin(host, setup.slot, setup.codexAuth);
+  if (setup.codex) await installCodexLogin(host, setup.codex.slot, setup.codex.auth);
   let { choice, hasClaude } = setup;
   let fallback: string | undefined;
   if (choice.provider === CLAUDE && !(await loggedIn(host, "claude", ["auth", "status"]))) {
     fallback = `claude in the sandbox is not logged in with this runner's CLAUDE_CODE_OAUTH_TOKEN; launching on ${CODEX} / ${codexModel}`;
     choice = { provider: CODEX, model: codexModel };
     hasClaude = false;
+    if (!setup.codex) {
+      const codex = await setup.leaseCodex?.();
+      if (!codex) throw new Error(`${fallback}, but no Codex login slot is free`);
+      await installCodexLogin(host, codex.slot, codex.auth);
+    }
   }
   await host.writeFile(`${CODEX_HOME}/config.toml`, codexConfig(await host.readFile(`${CODEX_HOME}/config.toml`), setup.job && { ...setup.job, repo: setup.repo }));
   await host.writeFile(`${T3_USERDATA}/settings.json`, json(t3Settings(choice, hasClaude)));

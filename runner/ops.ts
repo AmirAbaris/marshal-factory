@@ -873,12 +873,18 @@ export async function recordSandbox(key: string, marker: string, sandboxId: stri
   if (recorded.length === 0) throw new Error(`${key} no longer holds launch ${marker}`);
 }
 
-/** This machine's working jobs that hold a login slot, so a sandbox in setup counts too. */
+/** This machine's working jobs with a running sandbox or a sandbox launch pending, so a sandbox in setup counts too. */
 export async function sandboxesInFlight(machineId: string) {
   const [{ count }] = await db
     .select({ count: sql<number>`count(*)::int` })
     .from(jobs)
-    .where(and(eq(jobs.machine_id, machineId), isNotNull(jobs.codex_slot), or(inArray(jobs.stage, IN_FLIGHT), stoppingSql)));
+    .where(
+      and(
+        eq(jobs.machine_id, machineId),
+        or(isNotNull(jobs.codex_slot), and(eq(jobs.execution, "modal"), or(isNotNull(jobs.sandbox_id), sql`${jobs.t3_thread_id} like ${`${PENDING}%`}`))),
+        or(inArray(jobs.stage, IN_FLIGHT), stoppingSql),
+      ),
+    );
   return count;
 }
 
@@ -901,6 +907,7 @@ export async function pendingLaunches() {
     marker: i.t3_thread_id!,
     branch: attemptBranch(i.key, i.attempt),
     stage: i.stage,
+    execution: i.execution,
     sandbox_id: i.sandbox_id,
     codex_slot: i.codex_slot,
   }));
