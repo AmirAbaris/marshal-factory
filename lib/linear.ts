@@ -22,6 +22,9 @@ export type LinearComment = z.infer<typeof commentSchema>;
 
 const stateSchema = z.object({ id: z.string(), name: z.string(), type: z.string() });
 
+// Linear words a deleted entity, or one the key can no longer see, only in the message.
+const NOT_FOUND = /^(Could not find referenced|Entity not found)/;
+
 export class LinearError extends Error {
   constructor(
     message: string,
@@ -83,7 +86,7 @@ export function linearClient(apiKey: string, { fetch: fetchImpl = realFetch, sle
       const [first] = json.errors;
       throw new LinearError(
         first!.extensions?.userPresentableMessage ?? first!.message,
-        first!.message.startsWith("conflict on insert") ? "conflict" : first!.extensions?.code,
+        first!.message.startsWith("conflict on insert") ? "conflict" : [first!.message, first!.extensions?.userPresentableMessage].some((m) => m && NOT_FOUND.test(m)) ? "not_found" : first!.extensions?.code,
       );
     }
     return schema.parse(json.data);

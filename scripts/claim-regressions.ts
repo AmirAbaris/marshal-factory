@@ -8,6 +8,7 @@ const { announceClaims, checkPullRequests, claim, claimLaunch, deliverStops, thr
 const { TEST_MACHINE_ID } = await import("../lib/config");
 const { config } = await import("../runner/config");
 const { sourceFor } = await import("../lib/sources");
+const { SourceGoneError } = await import("../lib/sources/types");
 const { github } = await import("../lib/github/pulls");
 const { closeBroadcast, deliveryFor, leaseIntent, receiptIntent } = await import("../runner/intents");
 const { linearJob } = await import("./fixtures");
@@ -122,10 +123,24 @@ try {
     if (job.key === `${prefix}-wb-bad`) throw new Error("Linear says the issue is gone");
     return true;
   };
-  await assert.rejects(writeBack({ only: await ours() }), /could not write back .*wb-bad: Linear says the issue is gone/, "a failing write-back is reported");
+  const failedPass = await writeBack({ only: await ours() });
+  assert.deepEqual(failedPass.errors, [`${prefix}-wb-bad: Linear says the issue is gone`], "a failing write-back is reported, not thrown");
   const synced = async (key: string) => (await db.select().from(jobs).where(eq(jobs.key, key)))[0]!.synced_event_id;
   assert.equal(await synced(`${prefix}-wb-good`), "e-good", "and the job after it is still written back");
   assert.equal(await synced(`${prefix}-wb-bad`), null, "while the failed one stays unsynced for the next pass");
+  const attempts: string[] = [];
+  linear.writeBack = async (job) => {
+    attempts.push(job.key);
+    if (job.key === `${prefix}-wb-bad`) throw new SourceGoneError("Could not find referenced Issue.");
+    return true;
+  };
+  const gonePass = await writeBack({ only: await ours() });
+  assert.deepEqual(gonePass.gaveUp, [{ key: `${prefix}-wb-bad`, reason: "Could not find referenced Issue." }], "a transient error retried next pass, and a gone issue is given up on");
+  assert.deepEqual(gonePass.errors, []);
+  attempts.length = 0;
+  const afterPass = await writeBack({ only: await ours() });
+  assert.deepEqual([attempts, afterPass.gaveUp, afterPass.errors], [[], [], []], "a given-up job is not attempted again");
+  assert.equal(await synced(`${prefix}-wb-bad`), "e-bad", "its event is recorded as synced");
 
   await db.insert(jobs).values([
     linearJob(`${prefix}-an-bad`, `${prefix}-an-bad`, { stage: "queued", machine_id: TEST_MACHINE_ID }),

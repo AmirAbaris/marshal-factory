@@ -52,6 +52,17 @@ process.on("unhandledRejection", (reason) =>
 const serial = queue.serial;
 
 /** Launches what this machine has room for, then tells each source about the jobs it now holds. */
+/**
+ * Write-back for every caller. A job whose source item is gone is logged once and then skipped, and
+ * a failing write-back is returned for the log and the timer, never thrown, so the intent or timer
+ * pass that asked for it succeeds on its own work.
+ */
+async function writeBackPass() {
+  const result = await ops.writeBack();
+  for (const { key, reason } of result.gaveUp) log("writeBack:gave-up", { key, reason });
+  return result;
+}
+
 async function launchAndAnnounce() {
   const launched = await launchQueued(logWorktree);
   const announced = await isolated(ops.announceClaims);
@@ -69,16 +80,16 @@ async function handle(intent: IntentRow) {
       return {
         resumed: await ops.resumeAnswered(),
         ...(await launchAndAnnounce()),
-        synced: await ops.writeBack(),
+        synced: await writeBackPass(),
       };
     case "merged":
-      return { merged: await ops.checkPullRequests(), synced: await ops.writeBack() };
+      return { merged: await ops.checkPullRequests(), synced: await writeBackPass() };
     case "recheck_conflicts":
       return { recheck: recheck.request() };
     case "open_t3":
       return openT3(intent.job_id!);
     case "approve_merge":
-      return { approval: await approveMerge(intent.job_id!, approveDetailSchema.parse(JSON.parse(intent.detail ?? "null"))), synced: await ops.writeBack() };
+      return { approval: await approveMerge(intent.job_id!, approveDetailSchema.parse(JSON.parse(intent.detail ?? "null"))), synced: await writeBackPass() };
     case "request_changes": {
       const feedback = feedbackDetailSchema.parse(JSON.parse(intent.detail ?? "null"));
       if (feedback.from === "panel") return { changes: await requestChanges(intent.job_id, feedback) };
@@ -87,7 +98,7 @@ async function handle(intent: IntentRow) {
       return "waiting" in changes ? { error: `waiting: ${changes.waiting}` } : { changes };
     }
     case "close_job":
-      return { close: await closeJob(intent.job_id!, closeDetailSchema.parse(JSON.parse(intent.detail ?? "null"))), synced: await ops.writeBack() };
+      return { close: await closeJob(intent.job_id!, closeDetailSchema.parse(JSON.parse(intent.detail ?? "null"))), synced: await writeBackPass() };
     case "onboard_repo":
       return { onboarding: await onboardRepo(intent.detail!) };
     case "rebuild_repo_image":
@@ -95,7 +106,7 @@ async function handle(intent: IntentRow) {
     case "repo_push":
       return { push: await repoPushed(repoPushDetailSchema.parse(JSON.parse(intent.detail ?? "null"))) };
     case "retry_stop":
-      return { retry: await retryStop(intent.job_id!), synced: await ops.writeBack() };
+      return { retry: await retryStop(intent.job_id!), synced: await writeBackPass() };
     case "slack_test":
       return sendSlackTest(JSON.parse(intent.detail ?? "null"));
     default: {
@@ -208,7 +219,7 @@ async function tick() {
     // After teardown, which records a stopped sandbox's end; a confirmed stop frees its capacity before this tick's launches.
     stopsConfirmed: await isolated(() => confirmStops()),
     pairingsExpired: await isolated(expirePairings),
-    synced: await isolated(async () => ops.writeBack()),
+    synced: await isolated(writeBackPass),
   };
 }
 
@@ -273,7 +284,7 @@ async function subscribe(realtime: Realtime) {
     if (snapshot.status !== "live") return;
     const rows = snapshot.data ?? [];
     if (rows.some((i) => i.stage_event_id && i.stage_event_id !== i.synced_event_id)) {
-      void serial("writeBack", async () => ops.writeBack());
+      void serial("writeBack", writeBackPass);
     }
     // A thread's own session start can bind it (ingest), outside bindThread; deliver its stop now.
     if (rows.some(stopDeliverable)) void serial("deliverStops", () => ops.deliverStops());
