@@ -218,13 +218,13 @@ try {
   assert.deepEqual(usableSlots(limits).includes(slotA), false, "a marked slot is skipped");
   assert.deepEqual(sandboxReadiness({ codexSlots: [slotA, slotB, slotC] }, process.env, readSlotHealth(healthPath)).codexSlots, 2);
   assert.deepEqual(sandboxReadiness({ codexSlots: [slotA, slotB, slotC] }, process.env, readSlotHealth(healthPath)).codexSlotsUnusable, 1, "the inventory counts it");
-  const versions = { t3: "0.1.3", claudeCode: "2.1.310", codex: "0.164.0", pstack: "0.9.69@614d2f9791dd" };
+  const versions = { t3: "0.1.3", claudeCode: "2.1.310", codex: "0.164.0", playwrightMcp: "0.0.83", pstack: "0.9.69@614d2f9791dd" };
   const image = { imageId: "im-secretish", t3Version: "0.1.3", versions, factoryCommit: "abc1234", builtAt: "2026-10-26T10:00:00.000Z" };
-  const pins = { t3Version: "0.1.4", claudeCodeVersion: "2.1.311", codexVersion: "0.164.0", pstack: { repo: "o/r", commit: "a".repeat(40), version: "0.9.70" } };
+  const pins = { t3Version: "0.1.4", claudeCodeVersion: "2.1.311", codexVersion: "0.164.0", playwrightMcpVersion: "0.0.83", pstack: { repo: "o/r", commit: "a".repeat(40), version: "0.9.70" } };
   const reported = sandboxReadiness({ codexSlots: [], ...pins, maxParallel: 3 }, process.env, [], image);
   assert.deepEqual(
     [reported.image, reported.imageInfo, reported.pinnedT3Version, reported.pinnedVersions, reported.maxParallel],
-    [true, { t3Version: "0.1.3", factoryCommit: "abc1234", builtAt: image.builtAt, versions }, "0.1.4", { t3: "0.1.4", claudeCode: "2.1.311", codex: "0.164.0", pstack: "0.9.70@aaaaaaaaaaaa", playbooks: playbooksVersion() }, 3],
+    [true, { t3Version: "0.1.3", factoryCommit: "abc1234", builtAt: image.builtAt, versions }, "0.1.4", { t3: "0.1.4", claudeCode: "2.1.311", codex: "0.164.0", playwrightMcp: "0.0.83", pstack: "0.9.70@aaaaaaaaaaaa", playbooks: playbooksVersion() }, 3],
     "the inventory reports the image's versions, build time and commit, every pin and the cap",
   );
   const beforePins = { ...image, versions: undefined };

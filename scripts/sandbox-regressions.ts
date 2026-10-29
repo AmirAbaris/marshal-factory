@@ -14,7 +14,7 @@ const { jobId } = await import("../lib/sources/shapes");
 const { TEST_MACHINE_ID } = await import("../lib/config");
 const { HostGoneError, hosts, localHost } = await import("../lib/host");
 const { modal, modalHost, realModal, sandboxName } = await import("../lib/modal-host");
-const { enabledPstack, imageProblem, parseVersion, pinnedVersions, PSTACK_PLUGIN, REPO_DIR } = await import("../lib/sandbox");
+const { enabledPstack, imageProblem, parseVersion, browserServer, pinnedVersions, PSTACK_PLUGIN, REPO_DIR } = await import("../lib/sandbox");
 const { config, launchSettings, threads } = await import("../runner/ops");
 const { launchInSandboxes, maybeStarted, recoverPending } = await import("../runner/launch");
 const { sandboxRuntime } = await import("../runner/sandbox");
@@ -107,6 +107,7 @@ assert.equal(parseVersion("t3", "t3 v0.1.3-nightly.20261023.3566\n"), "0.1.3-nig
 assert.equal(parseVersion("claudeCode", "2.1.310 (Claude Code)"), "2.1.310");
 assert.equal(parseVersion("codex", "codex-cli 0.164.0"), "0.164.0");
 assert.equal(parseVersion("codex", "error: no such command"), null, "output without a version parses to none");
+assert.equal(parseVersion("playwrightMcp", "Version 0.0.83\n"), "0.0.83");
 const plugins = (enabled: boolean) => JSON.stringify([{ id: PSTACK_PLUGIN, version: "0.9.69", enabled, installPath: "/root/.claude/plugins/cache/pstack-claude/pstack/0.9.69" }]);
 assert.equal(enabledPstack(plugins(true))?.version, "0.9.69");
 assert.equal(enabledPstack(plugins(false)), null, "a disabled PStack does not count");
@@ -115,12 +116,12 @@ assert.equal(enabledPstack("not json"), null);
 assert.equal(pinnedVersions(pins).pstack, `${pins.pstack.version}@${pins.pstack.commit.slice(0, 12)}`, "PStack is pinned by version and commit");
 assert.equal(imageProblem(image, pins), undefined, "an image built with every pin can launch");
 assert.match(imageProblem(null, pins)!, /no sandbox image is built/);
-for (const [component, name] of [["t3", "T3"], ["claudeCode", "Claude Code"], ["codex", "Codex"], ["pstack", "PStack"]] as const) {
+for (const [component, name] of [["t3", "T3"], ["claudeCode", "Claude Code"], ["codex", "Codex"], ["playwrightMcp", "Playwright MCP"], ["pstack", "PStack"]] as const) {
   const stale = { ...image, ...(component === "t3" && { t3Version: "0.0.1" }), versions: { ...image.versions, [component]: "0.0.1" } };
   assert.equal(imageProblem(stale, pins), `Rebuild the sandbox image: ${name} 0.0.1 → ${pinnedVersions(pins)[component]}; run bun scripts/sandbox-image.ts`, `a ${name} mismatch alone makes the image outdated`);
 }
 const beforePins = { ...image, versions: undefined };
-assert.match(imageProblem(beforePins, pins)!, /^Rebuild the sandbox image: Claude Code missing → .+, Codex missing → .+, PStack missing → .+;/, "an image built before the other pins is outdated");
+assert.match(imageProblem(beforePins, pins)!, /^Rebuild the sandbox image: Claude Code missing → .+, Codex missing → .+, Playwright MCP missing → .+, PStack missing → .+;/, "an image built before the other pins is outdated");
 
 let claudeToken: string | undefined;
 const slots = [slotA];
@@ -222,6 +223,8 @@ try {
   assert.doesNotMatch(sbA.files.get("/root/.claude/settings.json")!, /hooks\/budget\.ts/, "and wire no budget hook");
   assert.equal(JSON.parse(sbA.files.get("/root/.claude.json")!).mcpServers["factory-report"].args[0], "/opt/marshal-factory/mcp/factory-report.ts");
   assert.deepEqual(JSON.parse(sbA.files.get("/root/.claude.json")!).mcpServers["factory-report"].env, { FACTORY_REPORTER: "hook" }, "Claude Code's hooks report its stages, so its server only validates");
+  assert.deepEqual(JSON.parse(sbA.files.get("/root/.claude.json")!).mcpServers.playwright, browserServer, "Claude Code gets the headless browser server");
+  assert.ok(sbA.files.get("/root/.codex/config.toml")!.includes(`[mcp_servers.playwright]\ncommand = "playwright-mcp"\nargs = ${JSON.stringify(browserServer.args)}\n`), "Codex gets the headless browser server");
   const argvs = sbA.execs.map((e) => e.argv.join(" "));
   for (const path of ["/root/.codex/auth.json", "/root/.config/marshal-factory/github-token", "/root/.config/marshal-factory/config.json"]) {
     assert.ok(argvs.includes(`chmod 600 ${path}`), `${path} is owner-only`);

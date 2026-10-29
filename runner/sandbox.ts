@@ -7,6 +7,8 @@ import { sandboxTokens, type RepoName } from "../lib/github/app";
 import type { JobHost } from "../lib/host";
 import { createSandbox, modalHost, rememberSandbox, sandboxName } from "../lib/modal-host";
 import {
+  BROWSER_SERVER,
+  browserServer,
   CODEX_AUTH,
   CODEX_HOME,
   enabledPstack,
@@ -129,8 +131,10 @@ export const t3Settings = (choice: HarnessChoice, hasClaude: boolean) => ({
 export function codexConfig(image: string | null = null, job?: { key: string; attempt: number; repo: string }) {
   const { command, args } = reportServer(FACTORY_ROOT);
   const env = Object.entries(job ? codexReportEnv(job) : { FACTORY_REPORTER: "mcp" }).map(([name, value]) => `${name} = ${JSON.stringify(value)}`);
-  const server = `[mcp_servers.factory-report]\ncommand = ${JSON.stringify(command)}\nargs = ${JSON.stringify(args)}\nenv = { ${env.join(", ")} }\n`;
-  return image?.trim() ? `${image.trimEnd()}\n\n${server}` : server;
+  const servers =
+    `[mcp_servers.factory-report]\ncommand = ${JSON.stringify(command)}\nargs = ${JSON.stringify(args)}\nenv = { ${env.join(", ")} }\n` +
+    `\n[mcp_servers.${BROWSER_SERVER}]\ncommand = ${JSON.stringify(browserServer.command)}\nargs = ${JSON.stringify(browserServer.args)}\n`;
+  return image?.trim() ? `${image.trimEnd()}\n\n${servers}` : servers;
 }
 
 /** Whether the sandbox's claude has PStack enabled; a launch without it only warns. */
@@ -272,7 +276,9 @@ async function wire(host: JobHost) {
   const userSettings = `${SANDBOX_HOME}/.claude/settings.json`;
   const userConfig = `${SANDBOX_HOME}/.claude.json`;
   await host.writeFile(userSettings, json(withHooks(parse(await host.readFile(userSettings)), FACTORY_ROOT)));
-  await host.writeFile(userConfig, json({ ...withServer(parse(await host.readFile(userConfig)), FACTORY_ROOT), hasCompletedOnboarding: true }));
+  const config = withServer(parse(await host.readFile(userConfig)), FACTORY_ROOT);
+  const mcpServers = { ...(config.mcpServers as Json), [BROWSER_SERVER]: browserServer };
+  await host.writeFile(userConfig, json({ ...config, mcpServers, hasCompletedOnboarding: true }));
 }
 
 const T3_RUNTIME = `${T3_USERDATA}/server-runtime.json`;

@@ -105,7 +105,7 @@ const outdatedImage = sandbox("0.1.3", true);
 const currentImage = sandbox("0.1.4", false);
 assert.equal(imageOutdated(outdatedImage), true, "an older runner that reports only T3 is compared on T3");
 assert.equal(imageOutdated(currentImage), false);
-const pinned = { t3: "0.1.4", claudeCode: "2.1.310", codex: "0.164.0", pstack: "0.9.69@614d2f9791dd" };
+const pinned = { t3: "0.1.4", claudeCode: "2.1.310", codex: "0.164.0", playwrightMcp: "0.0.83", pstack: "0.9.69@614d2f9791dd" };
 const pinnedRunner = (versions: Record<string, string> | undefined) => ({
   ...sandbox("0.1.4", true),
   imageInfo: { t3Version: "0.1.4", builtAt: "2026-10-27T10:00:00.000Z", factoryCommit: "abc1234", versions },
@@ -123,7 +123,7 @@ assert.equal(
 );
 assert.equal(
   rebuildText(reportedDrift(pinnedRunner(undefined))),
-  "Rebuild the sandbox image: Claude Code missing → 2.1.310, Codex missing → 0.164.0, PStack missing → 0.9.69@614d2f9791dd",
+  "Rebuild the sandbox image: Claude Code missing → 2.1.310, Codex missing → 0.164.0, Playwright MCP missing → 0.0.83, PStack missing → 0.9.69@614d2f9791dd",
   "an image built before the other pins lists every one it lacks",
 );
 assert.deepEqual(
