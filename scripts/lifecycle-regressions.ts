@@ -17,8 +17,8 @@ const { modal } = await import("../lib/modal-host");
 const { CODEX_AUTH, GITHUB_TOKEN_PATH, pinnedVersions, playbooksVersion, readSlotHealth, sandboxReadiness } = await import("../lib/sandbox");
 const { github } = await import("../lib/github/pulls");
 const { canReclaim, canReclaimSql } = await import("../runner/binding");
-const { checkPullRequests, config, deliverStops, reconcileUsage, resumeAnswered, sandboxesInFlight, threads, toLaunch, watchdog } = await import("../runner/ops");
-const { hibernateIdle, reap, refreshTokens, teardownFinished, tickSandboxes, TOKEN_REFRESH_MS } = await import("../runner/lifecycle");
+const { checkPullRequests, config, deliverStops, ingestClient, reconcileUsage, resumeAnswered, threads, toLaunch, watchdog } = await import("../runner/ops");
+const { hibernateIdle, reap, refreshTokens, sandboxesInFlight, teardownFinished, tickSandboxes, TOKEN_REFRESH_MS } = await import("../runner/lifecycle");
 const { launchInSandboxes } = await import("../runner/launch");
 const { CodexLoginError, sandboxRuntime, usableSlots } = await import("../runner/sandbox");
 
@@ -334,6 +334,54 @@ try {
   assert.deepEqual([r1.sandbox_id, r1.codex_slot, r1.t3_thread_id, r1.machine_id], [null, null, null, null], JSON.stringify(r1));
   assert.ok((await toLaunch()).some((e) => e.key === R1), "so it relaunches");
   answered.clear();
+
+  // maxParallel caps running sandboxes whatever their stage or slot: two answers to hibernated Claude Code jobs wake one at a time.
+  const claudeAsleep = async (name: string) => {
+    fake.images.set(`im-snap-${name}`, new Map());
+    return insert(name, { stage: "waiting", question: "Which?", t3_thread_id: `thread-${name}`, session_id: `session-${name}`, sandbox_snapshot: `im-snap-${name}`, provider: "claudeAgent", model: "claude-opus-5-5", execution: "modal" });
+  };
+  const [A1, A2] = [await claudeAsleep("A1"), await claudeAsleep("A2")];
+  const posted: Record<string, unknown>[] = [];
+  const post = ingestClient.post;
+  const acknowledge = SOURCES.linear.acknowledgeReplies;
+  const localize = SOURCES.linear.localizeImages;
+  ingestClient.post = async (event) => (posted.push(event), { refused: [] });
+  SOURCES.linear.acknowledgeReplies = async () => {};
+  SOURCES.linear.localizeImages = async (_job, text) => text;
+  const capMax = limits.maxParallel;
+  try {
+    limits.maxParallel = (await sandboxesInFlight(TEST_MACHINE_ID)) + 1;
+    answered.add(A1);
+    answered.add(A2);
+    const firstPass = await resumeAnswered();
+    const awake = [A1, A2].filter((k) => firstPass.includes(`${k}:sent`));
+    const waited = [A1, A2].filter((k) => firstPass.includes(`${k}:wake-deferred`));
+    assert.deepEqual([awake.length, waited.length], [1, 1], `one wakes, the other waits: ${JSON.stringify(firstPass)}`);
+    const [woke, deferred] = [awake[0]!, waited[0]!];
+    assert.ok((await row(woke)).sandbox_id && !(await row(woke)).sandbox_snapshot, "the first is awake");
+    const asleepStill = await row(deferred);
+    assert.deepEqual([asleepStill.sandbox_id, asleepStill.sandbox_snapshot, asleepStill.delivered_reply_ids], [null, `im-snap-${deferred.slice(2, 4)}`, []], "the other stays hibernated with its answer unclaimed");
+    assert.deepEqual(await resumeAnswered(), [`${deferred}:wake-deferred`], "and keeps waiting while the cap is held");
+
+    // A launch waits too while the woken sandbox holds the cap.
+    const LW = await insert("LW", { stage: "queued", machine_id: null });
+    assert.deepEqual(await launchInSandboxes([entry(LW, { provider: "claudeAgent", model: "claude-opus-5-5" })], machine), [], "a launch finds no room");
+    assert.deepEqual([(await row(LW)).t3_thread_id, (await row(LW)).machine_id], [null, null], "and leaves its job queued");
+
+    // Once the woken job's sandbox ends, the other wakes on the next pass.
+    await db.update(jobs).set({ stage: "merged" }).where(eq(jobs.key, woke));
+    assert.deepEqual(await teardownFinished(), [`${woke}:torn down`]);
+    assert.deepEqual(await resumeAnswered(), [`${deferred}:sent`], "the waiting answer is delivered");
+    assert.ok((await row(deferred)).sandbox_id && !(await row(deferred)).sandbox_snapshot);
+    await db.update(jobs).set({ stage: "merged" }).where(eq(jobs.key, deferred));
+    assert.deepEqual(await teardownFinished(), [`${deferred}:torn down`]);
+  } finally {
+    limits.maxParallel = capMax;
+    answered.clear();
+    ingestClient.post = post;
+    SOURCES.linear.acknowledgeReplies = acknowledge;
+    SOURCES.linear.localizeImages = localize;
+  }
 
   // Usage reconcile skips a run whose sandbox is gone and goes on with the rest.
   const sbUsage = await sandboxFor(key("UL"));

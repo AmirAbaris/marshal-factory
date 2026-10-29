@@ -57,6 +57,9 @@ export class HostGoneError extends Error {}
 /** Thrown by a hibernated job's host: its sandbox is a snapshot until something wakes it. */
 export class HostAsleepError extends Error {}
 
+/** Thrown by a wake with no room for another sandbox now; the operation that wanted it retries on a later tick. */
+export class WakeDeferredError extends Error {}
+
 export type HostedJob = { key: string; sandbox_id: string | null; sandbox_snapshot?: string | null };
 
 /** A job whose sandbox was snapshotted and terminated while it waits. */

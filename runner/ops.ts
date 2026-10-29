@@ -20,7 +20,7 @@ import { readSettings, resolveExecution, resolveHarness, type HarnessChoice } fr
 import type { Execution } from "../lib/execution";
 import type { TicketRecord } from "../lib/ticket-overrides";
 import { readRegistry, registerRepos, routeRepo, type Registry } from "../lib/repositories";
-import { ensureAwake, HostGoneError, hosts, isHibernated, type JobHost } from "../lib/host";
+import { ensureAwake, HostGoneError, hosts, isHibernated, WakeDeferredError, type JobHost } from "../lib/host";
 import { modalHost } from "../lib/modal-host";
 import { requestedStop } from "../lib/stop";
 import { canReclaimSql, heldStoppingSql, isStopped, PENDING, stopDeliverableSql, stoppingSql } from "./binding";
@@ -108,7 +108,11 @@ async function sendBackForConflict(job: Job, head: string) {
   // Handled already: checked before a hibernated job is woken for it.
   if (job.conflict_head === head) return false;
   // Ask T3 first: a CLI error then fails this PR's check before anything is claimed.
-  const host = await ensureAwake(job);
+  const host = await ensureAwake(job).catch((error: unknown) => {
+    if (error instanceof WakeDeferredError) return null;
+    throw error;
+  });
+  if (!host) return false;
   const thread = await threads.state(job.t3_thread_id, host);
   if (!(await claimConflict(db, job.id, head))) return false;
   const release = () => db.update(jobs).set({ conflict_head: job.conflict_head }).where(eq(jobs.id, job.id));
@@ -182,7 +186,14 @@ export async function resumeAnswered() {
     }
 
     const replyIds = plan.replies.map((r) => r.id);
-    const host = await ensureAwake(job);
+    const host = await ensureAwake(job).catch((error: unknown) => {
+      if (error instanceof WakeDeferredError) return null;
+      throw error;
+    });
+    if (!host) {
+      resumed.push(`${job.key}:wake-deferred`);
+      continue;
+    }
     const alive = await threadAlive(job.t3_thread_id, host);
     // A fresh thread launches in a fresh sandbox, so the dead one's sandbox, snapshot and slot go
     // first, as they are now: a wake replaced the snapshot with a sandbox and a slot.
@@ -871,21 +882,6 @@ export async function recordSandbox(key: string, marker: string, sandboxId: stri
     .where(and(eq(jobs.key, key), eq(jobs.t3_thread_id, marker)))
     .returning({ key: jobs.key });
   if (recorded.length === 0) throw new Error(`${key} no longer holds launch ${marker}`);
-}
-
-/** This machine's working jobs with a running sandbox or a sandbox launch pending, so a sandbox in setup counts too. */
-export async function sandboxesInFlight(machineId: string) {
-  const [{ count }] = await db
-    .select({ count: sql<number>`count(*)::int` })
-    .from(jobs)
-    .where(
-      and(
-        eq(jobs.machine_id, machineId),
-        or(isNotNull(jobs.codex_slot), and(eq(jobs.execution, "modal"), or(isNotNull(jobs.sandbox_id), sql`${jobs.t3_thread_id} like ${`${PENDING}%`}`))),
-        or(inArray(jobs.stage, IN_FLIGHT), stoppingSql),
-      ),
-    );
-  return count;
 }
 
 export async function machineInFlight(machineId: string) {

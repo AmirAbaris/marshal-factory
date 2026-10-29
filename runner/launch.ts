@@ -30,12 +30,11 @@ import {
   recordHarness,
   recordSandbox,
   releaseLaunch,
-  sandboxesInFlight,
   toLaunch,
   withLocalImages,
   type LaunchSlot,
 } from "./ops";
-import { loginFailed, noteTokenWritten, retireSandbox } from "./lifecycle";
+import { loginFailed, noteTokenWritten, retireSandbox, sandboxesInFlight } from "./lifecycle";
 import { announceFallbacks, capabilities, overrideRuntime, planLaunch, splitByExecution } from "./overrides";
 import { CodexLoginError, createJobSandbox, ingestConfig, needsCodexSlot, sandboxHarness, sandboxRuntime, setupSandbox, usableSlots, type CodexLogin } from "./sandbox";
 
