@@ -105,6 +105,7 @@ async function evaluate(job: Job, policy: RepoPolicy, previous: MergeDecision | 
     now,
     evidence,
     runner,
+    browser: job.execution === "modal",
   });
   return { decision, headSha: detail.headSha, headSeenAt, review: reviewSummary(pr), evidence, runner };
 }

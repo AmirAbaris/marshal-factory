@@ -260,6 +260,20 @@
       "when": 1793190332752,
       "tag": "0036_job_archive",
       "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1793306460621,
+      "tag": "0037_screenshots",
+      "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1793307444026,
+      "tag": "0038_assessment_event",
+      "breakpoints": true
     }
   ]
 }

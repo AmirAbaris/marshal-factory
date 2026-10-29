@@ -2,6 +2,7 @@ import { sql } from "drizzle-orm";
 import {
   boolean,
   check,
+  customType,
   doublePrecision,
   index,
   integer,
@@ -19,6 +20,7 @@ import type { CheckSource, EvidenceCheck, EvidenceSummary, Producer } from "../l
 import { DEFAULT_EXECUTION, type Execution } from "../lib/execution";
 import type { Autonomy, MergeDecision } from "../lib/merge-decision";
 import type { NotificationConfig } from "../lib/notifications";
+import type { ScreenshotType } from "../lib/screenshots";
 import { ONBOARDING_STATES, type OnboardingDetail } from "../lib/onboarding";
 import type { NotifyKind, SlackMessageState } from "../lib/slack";
 import type { JobId, JobSource } from "../lib/sources/shapes";
@@ -173,6 +175,8 @@ export const jobs = pgTable(
     codex_slot: text("codex_slot"),
     /** The agent's assessment from its latest pr report on this attempt; rows from before the six checks were dropped keep that shape, so read it with parseAssessment. */
     merge_assessment: jsonb("merge_assessment").$type<AssessmentInput>(),
+    /** The pr stage event merge_assessment came from; its screenshots are stored under it (job_screenshots). */
+    assessment_event_id: text("assessment_event_id"),
     /** The runner's latest merge decision while the job sits in pr; see lib/merge-decision.ts. */
     merge_decision: jsonb("merge_decision").$type<MergeDecision>(),
     /** The latest evidence for the current attempt, without output; job_evidence keeps every commit's. See lib/evidence.ts. */
@@ -233,6 +237,26 @@ export const jobEvidence = pgTable(
     recorded_at: ts("recorded_at").notNull(),
   },
   (t) => [primaryKey({ columns: [t.job_key, t.sha] }), index("job_evidence_job_recorded_idx").on(t.job_key, t.recorded_at)],
+);
+
+const bytea = customType<{ data: Buffer; driverData: Buffer }>({ dataType: () => "bytea" });
+
+/**
+ * One screenshot a pr report's assessment attached (lib/screenshots.ts), keyed by that stage event
+ * and the file it names, so the panel finds the current assessment's images from jobs.stage_event_id.
+ */
+export const jobScreenshots = pgTable(
+  "job_screenshots",
+  {
+    stage_event_id: text("stage_event_id").notNull(),
+    file: text("file").notNull(),
+    job_key: text("job_key").notNull(),
+    content_type: text("content_type").$type<ScreenshotType>().notNull(),
+    bytes: bytea("bytes").notNull(),
+    event_id: text("event_id").notNull(),
+    recorded_at: ts("recorded_at").notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.stage_event_id, t.file] }), index("job_screenshots_job_idx").on(t.job_key)],
 );
 
 /** Every webhook delivery, keyed by its id, so a redelivery is recognised and changes nothing. */
