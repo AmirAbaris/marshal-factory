@@ -26,6 +26,7 @@ export const sandboxSchema = z
     t3Version: z.string().default("0.1.3-nightly.20261023.3566"),
     claudeCodeVersion: z.string().default("2.1.310"),
     codexVersion: z.string().default("0.164.0"),
+    playwrightMcpVersion: z.string().default("0.0.83"),
     /** The PStack marketplace repo at a commit; version is the plugin version that commit declares. */
     pstack: z
       .object({

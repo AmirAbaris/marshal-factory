@@ -20,6 +20,10 @@ export const CODEX_HOME = `${SANDBOX_HOME}/.codex`;
 export const CODEX_AUTH = `${CODEX_HOME}/auth.json`;
 export const T3_PORT = 3773;
 
+/** Headless browser for the agent. The output dir sits outside REPO_DIR so screenshots never land in its worktree. */
+export const BROWSER_SERVER = "playwright";
+export const browserServer = { command: "playwright-mcp", args: ["--headless", "--isolated", "--browser", "chromium", "--no-sandbox", "--output-dir", "/work/browser"] };
+
 /** PStack's marketplace, cloned at the pinned commit, and the plugin both CLIs install from it. */
 export const PSTACK_DIR = "/opt/pstack";
 export const PSTACK_PLUGIN = "pstack@pstack-claude";
@@ -34,7 +38,7 @@ export const sandboxImageSchema = z.object({
 });
 export type SandboxImage = z.infer<typeof sandboxImageSchema>;
 
-type Pins = Pick<SandboxLimits, "t3Version" | "claudeCodeVersion" | "codexVersion" | "pstack">;
+type Pins = Pick<SandboxLimits, "t3Version" | "claudeCodeVersion" | "codexVersion" | "playwrightMcpVersion" | "pstack">;
 
 /** The playbooks the factory ships with its image, by file name under playbooks/. */
 export const PLAYBOOK_FILES = ["factory.md", "onboarding.md"] as const;
@@ -70,6 +74,7 @@ export const pinnedVersions = (limits: Pins): Required<ImageVersions> => ({
   t3: limits.t3Version,
   claudeCode: limits.claudeCodeVersion,
   codex: limits.codexVersion,
+  playwrightMcp: limits.playwrightMcpVersion,
   pstack: pstackVersion(limits.pstack),
   playbooks: playbooksVersion(),
 });
@@ -86,6 +91,8 @@ export function parseVersion(component: Exclude<ImageComponent, "pstack" | "play
         return /^(\S+) \(Claude Code\)$/m;
       case "codex":
         return /^codex-cli (\S+)$/m;
+      case "playwrightMcp":
+        return /^Version (\S+)$/m;
       default: {
         const unknown: never = component;
         throw new Error(`no version format for ${String(unknown)}`);
@@ -168,7 +175,7 @@ export function sandboxReadiness(
 ): SandboxReadiness {
   const loggedIn = limits.codexSlots.filter((slot) => existsSync(slotAuthPath(slot)));
   const unusable = loggedIn.filter((slot) => slotUnusable(health, slot, slotAuthMtime(slot))).length;
-  const { t3Version, claudeCodeVersion, codexVersion, pstack } = limits;
+  const { t3Version, claudeCodeVersion, codexVersion, playwrightMcpVersion, pstack } = limits;
   return {
     modal: Boolean(env.MODAL_TOKEN_ID) || existsSync(join(homedir(), ".modal.toml")),
     claude: Boolean(env.CLAUDE_CODE_OAUTH_TOKEN),
@@ -178,7 +185,7 @@ export function sandboxReadiness(
     // The image id stays on the runner; its version, build time and commit say nothing secret.
     imageInfo: image && { t3Version: image.t3Version, builtAt: image.builtAt, factoryCommit: image.factoryCommit, versions: builtVersions(image) },
     ...(limits.t3Version && { pinnedT3Version: limits.t3Version }),
-    ...(t3Version && claudeCodeVersion && codexVersion && pstack && { pinnedVersions: pinnedVersions({ t3Version, claudeCodeVersion, codexVersion, pstack }) }),
+    ...(t3Version && claudeCodeVersion && codexVersion && playwrightMcpVersion && pstack && { pinnedVersions: pinnedVersions({ t3Version, claudeCodeVersion, codexVersion, playwrightMcpVersion, pstack }) }),
     ...(limits.maxParallel && { maxParallel: limits.maxParallel }),
   };
 }

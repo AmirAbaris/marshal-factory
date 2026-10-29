@@ -27,7 +27,7 @@ import {
 // entry points are bundled here with Bun, one self-contained file each at the path the wiring
 // names, so the sandbox needs no checkout and no install; `factory-verify` on PATH runs
 // hooks/verify.ts. A sandbox from the base gets those files and the factory's playbooks,
-// and its filesystem snapshot, kept indefinitely, is the image. T3, Claude Code, Codex and PStack
+// and its filesystem snapshot, kept indefinitely, is the image. T3, Claude Code, Codex, Playwright MCP and PStack
 // install at the versions factory.sandbox pins, and the build fails unless the sandbox reports
 // exactly those and holds this checkout's playbooks. Rerun it after the hooks, a playbook or a pin change.
 
@@ -94,6 +94,8 @@ try {
     "RUN curl -fsSL https://bun.sh/install | BUN_INSTALL=/usr/local bash",
     `RUN curl -fsSL https://t3.codes/install.sh | T3CODE_VERSION=${limits.t3Version} T3CODE_INSTALL_BIN_DIR=/usr/local/bin sh`,
     `RUN npm i -g @anthropic-ai/claude-code@${limits.claudeCodeVersion} @openai/codex@${limits.codexVersion}`,
+    // The playwright CLI bundled with the pinned package installs the Chromium that exact version drives, with its OS libraries.
+    `RUN npm i -g @playwright/mcp@${limits.playwrightMcpVersion} && cd "$(npm root -g)/@playwright/mcp" && npx --no-install playwright install --with-deps chromium && rm -rf /var/lib/apt/lists/*`,
     // Neither CLI pins a marketplace to a commit, so each adds the checkout as a local marketplace.
     `RUN git init -q ${PSTACK_DIR} && git -C ${PSTACK_DIR} fetch -q --depth 1 https://github.com/${limits.pstack.repo}.git ${limits.pstack.commit}` +
       ` && git -C ${PSTACK_DIR} checkout -q FETCH_HEAD` +
@@ -122,6 +124,7 @@ try {
     t3: parseVersion("t3", await sh(sandbox, "t3 --version")) ?? undefined,
     claudeCode: parseVersion("claudeCode", await sh(sandbox, "claude --version")) ?? undefined,
     codex: parseVersion("codex", await sh(sandbox, "codex --version")) ?? undefined,
+    playwrightMcp: parseVersion("playwrightMcp", await sh(sandbox, "playwright-mcp --version")) ?? undefined,
     pstack: await pstackInImage(sandbox),
     playbooks,
   };
