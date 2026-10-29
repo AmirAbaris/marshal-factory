@@ -51,6 +51,10 @@ for (const status of [500, 429] as const) {
   await assert.rejects(client.team("FAC"), /Argument Validation Error/);
   assert.equal(requests.length, 1, "a Linear error answer is never retried");
 }
+{
+  const { client } = fakeLinear(() => ({ errors: [{ message: "Entity not found: Issue", extensions: { userPresentableMessage: "Could not find referenced Issue." } }] }), []);
+  await assert.rejects(client.team("FAC"), (error) => error instanceof LinearError && error.code === "not_found", "a deleted or invisible issue is a not_found error");
+}
 
 {
   const comments = new Map<string, string>();

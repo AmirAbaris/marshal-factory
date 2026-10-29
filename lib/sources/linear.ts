@@ -10,12 +10,13 @@ import { jobs } from "../../db/schema";
 import { loadConfig, type FactoryLimits } from "../config";
 import type { Stage } from "../events";
 import { attemptBranch } from "../factory";
-import { commentId, linearClient, type LinearClient, type LinearOptions } from "../linear";
+import { commentId, LinearError, linearClient, type LinearClient, type LinearOptions } from "../linear";
 import { forbidInTest } from "../test-mode";
 import { OVERRIDE_GROUPS, type SourceOverrides } from "../ticket-overrides";
 import { hmacHex, sameHex, type IntentDraft, type Verdict } from "../webhooks";
 import { jobId, type SourceStateDraftOf } from "./shapes";
 import type { Job as AnyJob, FileDraft, FiledJob, ImageFile, LabelGroupSpec, Reply, ResumePlan, SourceAdapter, SourceWebhook } from "./types";
+import { SourceGoneError } from "./types";
 
 type Job = AnyJob<"linear">;
 
@@ -299,21 +300,26 @@ export function createLinearAdapter(load: () => LinearDeps | Promise<LinearDeps>
     },
 
     async writeBack(job, transition) {
-      const d = await deps();
-      const action = writeBackTable(d.limits.label)[transition.stage];
-      if (!action) return false;
-      if (action.state || action.labels) {
-        const team = await teamOf(d);
-        await d.client.update(job.writeback.issueId, {
-          ...(action.state ? { stateId: stateId(team, d.limits.teamKey, action.state) } : {}),
-          ...(await labelChangesAgainstIssue(d, job.writeback.issueId, action.labels)),
-        });
+      try {
+        const d = await deps();
+        const action = writeBackTable(d.limits.label)[transition.stage];
+        if (!action) return false;
+        if (action.state || action.labels) {
+          const team = await teamOf(d);
+          await d.client.update(job.writeback.issueId, {
+            ...(action.state ? { stateId: stateId(team, d.limits.teamKey, action.state) } : {}),
+            ...(await labelChangesAgainstIssue(d, job.writeback.issueId, action.labels)),
+          });
+        }
+        if (action.comment) {
+          await postComment(d, job, stageCommentId(job.writeback.issueId, transition.eventId), action.comment(job));
+        }
+        if (action.state) await recordState(d, job, action.state);
+        return true;
+      } catch (error) {
+        if (error instanceof LinearError && error.code === "not_found") throw new SourceGoneError(error.message);
+        throw error;
       }
-      if (action.comment) {
-        await postComment(d, job, stageCommentId(job.writeback.issueId, transition.eventId), action.comment(job));
-      }
-      if (action.state) await recordState(d, job, action.state);
-      return true;
     },
 
     async replies(job) {

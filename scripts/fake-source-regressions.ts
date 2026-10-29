@@ -122,12 +122,12 @@ try {
   // The thread reports on its branch; the hook derives the job from the branch alone.
   await ingest(db, [eventSchema.parse({ eventId: `${sessionId}-0`, sessionId, at, kind: "session_start", cwd: "/w", branch, repo: "factory-demo", t3ThreadId: `thread-${stamp}` })]);
   await ingest(db, [report(1, "triage")]);
-  assert.deepEqual(await ops.writeBack({ only: [key] }), [], "a stage the source has nothing to say about is synced without a write");
+  assert.deepEqual((await ops.writeBack({ only: [key] })).synced, [], "a stage the source has nothing to say about is synced without a write");
   await ingest(db, [report(2, "implementing"), report(3, "pr", { prUrl: `https://github.com/${REPO}/pull/${stamp}` })]);
   job = await row();
   assert.deepEqual([job.stage, job.session_id, job.pr_url], ["pr", sessionId, `https://github.com/${REPO}/pull/${stamp}`]);
   assert.equal((await db.select().from(runs).where(eq(runs.session_id, sessionId)))[0]!.job_key, key, "the run is linked by its branch");
-  assert.deepEqual(await ops.writeBack({ only: [key] }), [`${key}:pr`]);
+  assert.deepEqual((await ops.writeBack({ only: [key] })).synced, [`${key}:pr`]);
 
   assert.deepEqual(await ops.reconcileStops({ only: [id] }), [], "the stop check asks the job's own source");
 
@@ -137,7 +137,7 @@ try {
   };
   await ops.checkPullRequests({ only: [key] });
   assert.equal((await row()).stage, "merged", "the merged PR moves the job");
-  assert.deepEqual(await ops.writeBack({ only: [key] }), [`${key}:merged`]);
+  assert.deepEqual((await ops.writeBack({ only: [key] })).synced, [`${key}:merged`]);
 
   assert.deepEqual(calls, [
     ["ready"],

@@ -301,6 +301,13 @@ export function pullsClient({ api, tokens }: { api: string; tokens: TokenSource 
       return { state: stateOf(pull), mergeable: mergeableOf(pull.mergeable), headSha: pull.head.sha, baseRef: pull.base.ref };
     },
 
+    /** A file's text at a branch or commit, or null when it has none there. */
+    async fileAt(repo: RepoName, path: string, ref: string): Promise<string | null> {
+      const { status, json } = await request(repo, "GET", `/repos/${repo}/contents/${path}?ref=${encodeURIComponent(ref)}`, { allow: [404] });
+      if (status === 404) return null;
+      return Buffer.from(z.object({ content: z.string() }).parse(json).content, "base64").toString("utf8");
+    },
+
     async pullFiles(url: string): Promise<ChangedFile[]> {
       const { repo, number } = parsePullUrl(url);
       const files: ChangedFile[] = [];
