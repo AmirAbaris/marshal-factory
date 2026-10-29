@@ -33,6 +33,12 @@ export const browserServer = {
   args: ["--headless", "--isolated", "--browser", "chromium", "--no-sandbox", "--output-dir", SCREENSHOT_DIR, "--proxy-server", "http://127.0.0.1:9", "--proxy-bypass", "localhost,127.0.0.1,[::1]"],
 };
 
+/**
+ * The factory's entry points the image bundles under FACTORY_ROOT, by path in this checkout.
+ * hooks/budget.ts is a no-op kept for repos wired before the budget cap was removed.
+ */
+export const IMAGE_BUNDLES = ["hooks/report.ts", "hooks/budget.ts", "hooks/verify.ts", "mcp/factory-report.ts"] as const;
+
 /** PStack's marketplace, cloned at the pinned commit, and the plugin both CLIs install from it. */
 export const PSTACK_DIR = "/opt/pstack";
 export const PSTACK_PLUGIN = "pstack@pstack-claude";

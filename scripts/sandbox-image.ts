@@ -10,6 +10,7 @@ import {
   enabledPstack,
   FACTORY_ROOT,
   GITHUB_TOKEN_PATH,
+  IMAGE_BUNDLES,
   installPlaybooks,
   parseVersion,
   pinnedVersions,
@@ -32,8 +33,6 @@ import {
 // exactly those and holds this checkout's playbooks. Rerun it after the hooks, a playbook or a pin change.
 
 const root = join(import.meta.dirname, "..");
-// hooks/budget.ts is a no-op kept for repos wired before the budget cap was removed.
-const ENTRIES = ["hooks/report.ts", "hooks/budget.ts", "hooks/verify.ts", "mcp/factory-report.ts"];
 const limits = loadLimits().sandbox;
 
 const b64 = (text: string) => Buffer.from(text).toString("base64");
@@ -82,8 +81,8 @@ const bundleDir = mkdtempSync(join(tmpdir(), "factory-bundle-"));
 const modal = new ModalClient();
 let sandbox: Sandbox | undefined;
 try {
-  execFileSync("bun", ["build", ...ENTRIES, "--target=bun", "--root", ".", "--outdir", bundleDir, "--entry-naming", "[dir]/[name].ts"], { cwd: root, stdio: "ignore" });
-  log(`bundled ${ENTRIES.join(", ")}`);
+  execFileSync("bun", ["build", ...IMAGE_BUNDLES, "--target=bun", "--root", ".", "--outdir", bundleDir, "--entry-naming", "[dir]/[name].ts"], { cwd: root, stdio: "ignore" });
+  log(`bundled ${IMAGE_BUNDLES.join(", ")}`);
 
   const app = await modal.apps.fromName(limits.appName, { createIfMissing: true });
   const base = modal.images.fromRegistry("node:22-bookworm").dockerfileCommands([
@@ -116,7 +115,7 @@ try {
     command: ["sleep", "infinity"],
   });
   log(`build sandbox ${sandbox.sandboxId} up`);
-  for (const entry of ENTRIES) await sandbox.filesystem.writeText(readFileSync(join(bundleDir, entry), "utf8"), join(FACTORY_ROOT, entry));
+  for (const entry of IMAGE_BUNDLES) await sandbox.filesystem.writeText(readFileSync(join(bundleDir, entry), "utf8"), join(FACTORY_ROOT, entry));
   const playbooks = await installPlaybooks(sandbox.filesystem);
   log(`playbooks ${PLAYBOOK_FILES.join(", ")} in ${SANDBOX_PLAYBOOKS} at ${playbooks}`);
   const pinned = pinnedVersions(limits);

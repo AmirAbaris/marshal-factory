@@ -443,7 +443,7 @@ export function linearFiler(apiKey: string, teamKey: string, label: string, opti
       id: commentId("panel-job", draft.requestId),
       teamId: team.id,
       stateId: todo.id,
-      labelIds: [await client.labelId(team.id, label), ...overrideIds],
+      labelIds: [await client.labelId(team.id, label), ...(await Promise.all((draft.tags ?? []).map((tag) => client.labelId(team.id, tag)))), ...overrideIds],
       title: draft.title,
       description: draft.description,
     });

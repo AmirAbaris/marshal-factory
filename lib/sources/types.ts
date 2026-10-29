@@ -97,6 +97,8 @@ export type FileDraft = {
   description: string;
   /** Override labels the job is filed with, each a child of a source label group. */
   labels?: { group: string; name: string }[];
+  /** Plain labels by name, outside any group, such as `review`; created on the team when missing. */
+  tags?: string[];
 };
 export type ImageFile = { filename: string; contentType: string; bytes: Uint8Array<ArrayBuffer> };
 export type FiledJob = { key: string; url: string };
