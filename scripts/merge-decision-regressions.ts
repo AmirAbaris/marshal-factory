@@ -104,6 +104,7 @@ const input = (over: Partial<DecisionInput> = {}): DecisionInput => ({
   evidence: { state: "verified", sha: "h1", passed: 4, total: 4, producer: "agent" },
   runner: { kind: "unavailable", reason: "the run isn't in a cloud sandbox, so the factory can't run them itself" },
   browser: false,
+  trustEdits: [],
   ...over,
 });
 const handsOver = (over: Partial<DecisionInput>, pattern: RegExp, why: string) => {
@@ -145,7 +146,7 @@ assert.equal(decideMerge(input({ pr: facts({ bugbot: { review: { state: "reviewe
 // Size, retries, a branch behind its base, migrations and major bumps are the agent's and GitHub's to judge, not hard limits.
 const mergesAlone = (pr: PrFacts, why: string) => assert.deepEqual(decideMerge(input({ pr })), { outcome: "merge", reasons: [] }, why);
 mergesAlone(facts({ files: [{ path: "a.ts", additions: 200, deletions: 103 }] }), "a 303-line pull request");
-mergesAlone(facts({ files: [{ path: "drizzle/0001.sql", additions: 1, deletions: 0 }, { path: ".github/workflows/ci.yml", additions: 1, deletions: 1 }] }), "a migration and a workflow, once protected paths");
+mergesAlone(facts({ files: [{ path: "drizzle/0001.sql", additions: 1, deletions: 0 }] }), "a migration, once a protected path");
 mergesAlone(facts({ files: [{ path: "package.json", additions: 1, deletions: 1 }] }), "a manifest whose diff bumps a major version");
 
 const pending = decideMerge(input({ pr: facts({ checks: "pending", bugbot: { review: { state: "pending" }, findings: [] } }) }));
@@ -162,6 +163,19 @@ handsOver({ evidence: { state: "missing" } }, /^Not verified at h1: no checks we
 handsOver({ evidence: { state: "stale", sha: "h0" } }, /^Not verified at h1: the latest checks ran at h0;/, "evidence for an older commit");
 handsOver({ evidence: { state: "dirty", sha: "h1" } }, /uncommitted changes/, "a dirty tree proves nothing");
 handsOver({ evidence: { state: "incomplete", sha: "h1", missing: ["build"] } }, /didn't include build/, "a required check that didn't run");
+handsOver({ evidence: { state: "untrusted", sha: "h1", mismatched: ["test"] } }, /^Not verified at h1: the checks ran other commands than the recipe records for test; /, "checks that ran other commands than the recipe's");
+assert.deepEqual(
+  decideMerge(input({ ...auto, evidence: { state: "untrusted", sha: "h1", mismatched: ["test"] }, runner: { kind: "available" } })),
+  { outcome: "pending", reasons: ["Waiting for verification at h1."], verify: true },
+  "untrusted evidence under auto waits for the runner to run the recorded commands",
+);
+handsOver({ ...auto, evidence: { state: "untrusted", sha: "h1", mismatched: ["test"] }, runner: { kind: "failed", reason: "its run didn't prove the commit" } }, /the factory couldn't run the checks itself/, "untrusted evidence the runner couldn't settle");
+handsOver({ trustEdits: ["The pull request edits the recipe the factory trusts: .factory/setup.json."] }, /edits the recipe the factory trusts/, "a PR that edits what its checks run hands over despite verified evidence");
+assert.equal(
+  decideMerge(input({ ...auto, runner: { kind: "available" }, evidence: { state: "missing" }, trustEdits: ["The pull request edits CI workflows (.github/workflows/ci.yml)."] })).verify,
+  undefined,
+  "and the runner doesn't verify a head that may have rigged its checks",
+);
 assert.deepEqual(
   decideMerge(input({ ...auto, evidence: { state: "stale", sha: "h0" }, runner: { kind: "available" } })),
   { outcome: "pending", reasons: ["Waiting for verification at h1."], verify: true },

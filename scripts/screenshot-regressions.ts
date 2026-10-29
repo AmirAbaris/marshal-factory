@@ -155,6 +155,7 @@ try {
     evidence: { state: "verified", sha: "h1", passed: 1, total: 1, producer: "agent" },
     runner: { kind: "unavailable", reason: "n/a" },
     browser: true,
+    trustEdits: [],
     ...over,
   });
   assert.deepEqual(decideMerge(input()), { outcome: "handover", reasons: ["The pull request changes UI files (src/list.tsx), but the agent attached no screenshots."] }, "a UI change without screenshots hands over");
