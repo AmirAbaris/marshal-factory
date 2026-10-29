@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { MergeAssessment } from "./assessment";
 import { headEvidenceSchema, notVerifiedWhy, shortSha, type HeadEvidence } from "./evidence";
+import { uiFiles } from "./screenshots";
 
 // Whether a factory PR would merge on its own. The agent recommends merge unless it isn't confident
 // (lib/assessment.ts); the runner enforces factual hard limits that no recommendation overrides. Pure, so the runner pass and the
@@ -151,6 +152,8 @@ export type DecisionInput = {
   /** What the evidence for this attempt proves about the PR head; see lib/evidence.ts. */
   evidence: HeadEvidence;
   runner: RunnerVerification;
+  /** Whether the agent had the sandbox's headless browser, so a change to a page can come with screenshots. */
+  browser: boolean;
 };
 
 /** `verify` is set when only verification at the head stands between the PR and a merge, and the runner may run it. */
@@ -176,6 +179,15 @@ function agentReasons({ assessment }: DecisionInput) {
   if (!assessment) return ["The agent didn't report an assessment."];
   if (assessment.recommendation === "merge") return [];
   return [`The agent isn't confident: ${assessment.confidence.reason ?? "it recommends handing over."}`];
+}
+
+/** A change to a page needs screenshots of it, when the agent had a browser to take them with. */
+function screenshotReasons({ assessment, browser }: DecisionInput, pr: PrFacts): string[] {
+  if (!browser || !assessment || assessment.screenshots?.length) return [];
+  const ui = uiFiles(pr.files.map((f) => f.path));
+  if (ui.length === 0) return [];
+  const named = ui.slice(0, 3).join(", ") + (ui.length > 3 ? ` and ${ui.length - 3} more` : "");
+  return [`The pull request changes UI files (${named}), but the agent attached no screenshots.`];
 }
 
 /** The verified-at-head limit: what the agent or the runner ran at exactly the PR's head. */
@@ -229,7 +241,7 @@ export const OFF_DECISION: Decision = { outcome: "handover", reasons: [] };
 export function decideMerge(input: DecisionInput): Decision {
   if (input.policy.autonomy === "off") return OFF_DECISION;
   if (!input.pr) throw new Error("decideMerge needs the PR's facts unless autonomy is off");
-  const reasons = [...agentReasons(input), ...hardLimits(input, input.pr), ...evidenceReasons(input, input.pr)];
+  const reasons = [...agentReasons(input), ...hardLimits(input, input.pr), ...screenshotReasons(input, input.pr), ...evidenceReasons(input, input.pr)];
   if (reasons.length > 0) return { outcome: "handover", reasons };
   const waiting = waitingOn(input, input.pr);
   if (waiting.length > 0) {

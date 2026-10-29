@@ -6,6 +6,7 @@ import { stageReportSchema, stageReportShape, type FactoryEvent, type StageRepor
 import { REPORT_SERVER, REPORT_TOOL } from "../lib/factory";
 import { reportEvents } from "../lib/outbox";
 import { mcpIdentity, mcpPosts, type McpIdentity } from "../lib/report-identity";
+import { screenshotEvents, unreadable } from "../lib/screenshot-files";
 
 // Under Claude Code the PostToolUse hook (hooks/report.ts), which knows the session id, turns the
 // accepted call into the stage event, so the tool only validates. Under any other harness the tool
@@ -29,9 +30,11 @@ function eventsFor(identity: McpIdentity, report: StageReport, at: number, openi
     jobKey,
     branch,
   };
-  if (!opening) return [stage];
+  // The images go first, so the panel never shows an assessment whose screenshots haven't arrived.
+  const images = screenshotEvents(report.assessment?.screenshots ?? [], { jobKey, stageEventId: stage.eventId, sessionId, at });
+  if (!opening) return [...images, stage];
   // Opens the run and links it to the job; the same id from a restarted server is stored once.
-  return [{ eventId: `mcp-start:${sessionId}`, sessionId, at, kind: "session_start", cwd: process.cwd(), branch, repo }, stage];
+  return [{ eventId: `mcp-start:${sessionId}`, sessionId, at, kind: "session_start", cwd: process.cwd(), branch, repo }, ...images, stage];
 }
 
 async function post(report: StageReport) {
@@ -51,7 +54,9 @@ server.registerTool(
     description:
       "Report that this factory run entered a stage. Call it at every stage transition. " +
       "Stage pr needs prUrl and should carry your merge assessment: recommend merge when you are confident you built what the issue asked for and that it works, " +
-      "and handover only when you are not, with confidence.reason saying why; stage waiting needs a concrete question; " +
+      "and handover only when you are not, with confidence.reason saying why. " +
+      "When the change shows on a page, attach assessment.screenshots: the files the playwright server saved, each with a caption. " +
+      "Stage waiting needs a concrete question; " +
       "stage failed puts the reason in summary.",
     inputSchema: stageReportShape,
   },
@@ -63,6 +68,9 @@ server.registerTool(
         content: [{ type: "text", text: parsed.error.issues.map((i) => i.message).join("; ") }],
       };
     }
+    // Checked under every harness: under Claude Code the hook reads the same files once this call succeeds.
+    const missing = unreadable(parsed.data.assessment?.screenshots ?? []);
+    if (missing.length > 0) return { isError: true, content: [{ type: "text", text: `Can't attach the screenshots: ${missing.join("; ")}.` }] };
     // A reporting failure must never fail the call; the outbox keeps whatever was queued.
     const text = await post(parsed.data).catch((error: unknown) => `Stage ${parsed.data.stage} is valid, but reporting it failed: ${error instanceof Error ? error.message : String(error)}`);
     return { content: [{ type: "text", text: VERIFY_STAGES.has(parsed.data.stage) ? `${text} ${VERIFY_HINT}` : text }] };

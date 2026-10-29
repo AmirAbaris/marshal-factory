@@ -1,7 +1,7 @@
 import { and, desc, eq, inArray, isNotNull, sql } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import * as schema from "../db/schema";
-import { agents, events, jobEvidence, jobs, runs } from "../db/schema";
+import { agents, events, jobEvidence, jobs, jobScreenshots, runs } from "../db/schema";
 import type { FactoryEvent, Usage } from "./events";
 import { summarize } from "./evidence";
 import { normalizeAssessment } from "./assessment";
@@ -26,6 +26,7 @@ const RUN_STATUS: Record<FactoryEvent["kind"], RunStatus | null> = {
   stage: null,
   session_end: "ended",
   evidence: null,
+  screenshot: null,
 };
 
 const when = (ms: number) => new Date(ms);
@@ -394,11 +395,26 @@ async function applyEvidence(tx: Tx, e: Extract<FactoryEvent, { kind: "evidence"
   if (latest) await tx.update(jobs).set({ evidence: summarize(latest, latest.recorded_at) }).where(eq(jobs.id, job.id));
 }
 
+/** Stores one attached image; a redelivered event changes nothing. Screenshots open no run. */
+async function applyScreenshot(tx: Tx, e: Extract<FactoryEvent, { kind: "screenshot" }>) {
+  await tx
+    .insert(jobScreenshots)
+    .values({ stage_event_id: e.stageEventId, file: e.file, job_key: e.jobKey, content_type: e.contentType, bytes: Buffer.from(e.data, "base64"), event_id: e.eventId, recorded_at: when(e.at) })
+    .onConflictDoNothing();
+}
+
+/** The event as the log keeps it: an image's bytes live in job_screenshots only. */
+const logged = (e: FactoryEvent): FactoryEvent => (e.kind === "screenshot" ? { ...e, data: "" } : e);
+
 export type StageRefusal = { eventId: string; reason: string };
 
 async function project(tx: Tx, event: FactoryEvent): Promise<StageRefusal | undefined> {
   if (event.kind === "evidence") {
     await applyEvidence(tx, event);
+    return;
+  }
+  if (event.kind === "screenshot") {
+    await applyScreenshot(tx, event);
     return;
   }
   if (event.kind !== "stage") {
@@ -462,8 +478,8 @@ export async function ingest(
           session_id: e.sessionId,
           kind: e.kind,
           at: when(e.at),
-          job_key: e.kind === "stage" || e.kind === "evidence" ? e.jobKey : undefined,
-          payload: e,
+          job_key: e.kind === "stage" || e.kind === "evidence" || e.kind === "screenshot" ? e.jobKey : undefined,
+          payload: logged(e),
         })),
       )
       .onConflictDoNothing({ target: events.event_id })

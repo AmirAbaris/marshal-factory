@@ -5,6 +5,7 @@ import { dirname, join, resolve } from "node:path";
 import { z } from "zod";
 import { CONFIG_PATH, SANDBOX_IMAGE_PATH, type SandboxLimits } from "./config";
 import { imageDrift, imageVersionsSchema, rebuildText, type ImageComponent, type ImageVersions, type SandboxReadiness } from "./machine";
+import { SCREENSHOT_DIR } from "./screenshots";
 
 // Fixed paths inside a job's sandbox. The image puts the factory's hook and MCP bundles and its
 // playbooks under FACTORY_ROOT; each launch clones the job's repo into REPO_DIR.
@@ -22,7 +23,7 @@ export const T3_PORT = 3773;
 
 /** Headless browser for the agent. The output dir sits outside REPO_DIR so screenshots never land in its worktree. */
 export const BROWSER_SERVER = "playwright";
-export const browserServer = { command: "playwright-mcp", args: ["--headless", "--isolated", "--browser", "chromium", "--no-sandbox", "--output-dir", "/work/browser"] };
+export const browserServer = { command: "playwright-mcp", args: ["--headless", "--isolated", "--browser", "chromium", "--no-sandbox", "--output-dir", SCREENSHOT_DIR] };
 
 /** PStack's marketplace, cloned at the pinned commit, and the plugin both CLIs install from it. */
 export const PSTACK_DIR = "/opt/pstack";

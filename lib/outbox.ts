@@ -19,6 +19,9 @@ export const outboxDir = (state: string) => join(state, "outbox");
 export const rejectedDir = (state: string) => join(state, "outbox-rejected");
 const droppedLog = (state: string) => join(state, "outbox-dropped.log");
 
+/** A batch stops growing past this much JSON, so a few screenshots never make one request too large; one event always goes. */
+export const MAX_BATCH_CHARS = 4_000_000;
+
 /** Past this many undelivered events every append warns. */
 export const HIGH_WATER = 1_000;
 /** Past this many the oldest are dropped, each one logged with its id and kind. */
@@ -132,7 +135,7 @@ type Queued = { name: string; event: FactoryEvent };
  * runs out. A failure stops the flush so nothing overtakes an earlier event. A refused batch is
  * retried one event at a time, and only the events ingest refuses on their own are set aside.
  */
-export async function flushOutbox(fs: OutboxFs, state: string, send: Send, { budgetMs, batchSize = 50 }: { budgetMs: number; batchSize?: number }): Promise<FlushResult> {
+export async function flushOutbox(fs: OutboxFs, state: string, send: Send, { budgetMs, batchSize = 50, maxChars = MAX_BATCH_CHARS }: { budgetMs: number; batchSize?: number; maxChars?: number }): Promise<FlushResult> {
   const deadline = Date.now() + budgetMs;
   const dir = outboxDir(state);
   const result: FlushResult = { delivered: 0, rejected: [], left: 0, stuck: [], spend: {} };
@@ -159,16 +162,21 @@ export async function flushOutbox(fs: OutboxFs, state: string, send: Send, { bud
     result.left--;
   };
 
-  for (let at = 0; at < names.length; at += Math.min(batchSize, MAX_BATCH)) {
+  const size = Math.min(batchSize, MAX_BATCH);
+  for (let at = 0; at < names.length; ) {
     if (Date.now() >= deadline) break;
     const batch: Queued[] = [];
-    for (const name of names.slice(at, at + Math.min(batchSize, MAX_BATCH))) {
+    let chars = 0;
+    for (; at < names.length && batch.length < size; at++) {
+      const name = names[at]!;
       const text = await fs.readFile(join(dir, name));
       // Another flush delivered it in the meantime.
       if (text === null) {
         result.left--;
         continue;
       }
+      if (batch.length > 0 && chars + text.length > maxChars) break;
+      chars += text.length;
       batch.push({ name, event: JSON.parse(text) as FactoryEvent });
     }
     if (batch.length === 0) continue;

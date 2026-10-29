@@ -8,6 +8,7 @@ import { stageReportSchema, type FactoryEvent, type Usage } from "../lib/events"
 import { parseBranch, REPORT_STAGE_TOOL } from "../lib/factory";
 import { localHost } from "../lib/host";
 import { readIngestTarget, reportEvents } from "../lib/outbox";
+import { screenshotEvents, unreadable } from "../lib/screenshot-files";
 import { rememberSessionBranch, sessionBranch } from "../lib/session-branch";
 import { mainTranscript, readTranscript, subagentTranscripts, sumUsage } from "../lib/transcript";
 
@@ -150,7 +151,7 @@ const SOURCES = new Set(["startup", "resume", "compact"]);
 async function toEvent(
   input: HookInput,
   base: { eventId: string; sessionId: string; at: number; transcriptPath?: string },
-): Promise<FactoryEvent | undefined> {
+): Promise<FactoryEvent[] | FactoryEvent | undefined> {
   switch (input.hook_event_name) {
     case "SessionStart": {
       const cwd = str(input.cwd) ?? process.cwd();
@@ -186,9 +187,14 @@ async function toEvent(
     case "PostToolUse": {
       if (input.tool_name === REPORT_STAGE_TOOL) {
         const report = stageReportSchema.safeParse(input.tool_input);
-        if (!report.success) return undefined;
+        // The MCP tool refused a report whose screenshots it couldn't read, so it reports nothing either.
+        if (!report.success || unreadable(report.data.assessment?.screenshots ?? []).length > 0) return undefined;
         const git = await gitContext(str(input.cwd) ?? process.cwd());
-        return { ...base, kind: "stage", ...report.data, jobKey: parseBranch(git.branch)?.key, branch: git.branch };
+        const jobKey = parseBranch(git.branch)?.key;
+        const stage: FactoryEvent = { ...base, kind: "stage", ...report.data, jobKey, branch: git.branch };
+        const refs = report.data.assessment?.screenshots ?? [];
+        // The images go first, so the panel never shows an assessment whose screenshots haven't arrived.
+        return jobKey && refs.length > 0 ? [...screenshotEvents(refs, { jobKey, stageEventId: base.eventId, sessionId: base.sessionId, at: base.at }), stage] : stage;
       }
       const agentId = str(input.tool_response?.agentId);
       if (input.tool_name === "Agent" && input.tool_use_id && agentId) {
@@ -240,7 +246,7 @@ async function main() {
     transcriptPath: mainTranscript(str(input.transcript_path), sessionId),
   });
   // Every call flushes, so a backlog left by an ingest outage drains even from hooks that send nothing.
-  const flushed = await reportEvents(event ? [event] : [], FLUSH_BUDGET_MS);
+  const flushed = await reportEvents(event ? [event].flat() : [], FLUSH_BUDGET_MS);
   if (flushed?.error && process.env.REPORT_DEBUG) console.error(flushed.error);
 }
 

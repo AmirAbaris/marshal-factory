@@ -103,6 +103,7 @@ const input = (over: Partial<DecisionInput> = {}): DecisionInput => ({
   now: NOW,
   evidence: { state: "verified", sha: "h1", passed: 4, total: 4, producer: "agent" },
   runner: { kind: "unavailable", reason: "the run isn't in a cloud sandbox, so the factory can't run them itself" },
+  browser: false,
   ...over,
 });
 const handsOver = (over: Partial<DecisionInput>, pattern: RegExp, why: string) => {
