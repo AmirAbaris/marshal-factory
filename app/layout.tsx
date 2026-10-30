@@ -16,7 +16,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Marshal Factory",
+  title: "Abaris Factory",
   description: "Supervision panel for the Claude Code software factory",
 };
 

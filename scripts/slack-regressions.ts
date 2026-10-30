@@ -440,7 +440,7 @@ try {
   mark = calls.length;
   const sent = await sendSlackTest(JSON.parse(intent!.detail!), slack);
   assert.deepEqual(sent, { sent: { to: "owner", channel: "DU0OWNER" } });
-  assert.match(calls.at(-1)!.params.text!, /Test from the marshal factory, sent by owner@example.com/);
+  assert.match(calls.at(-1)!.params.text!, /Test from the Abaris factory, sent by owner@example.com/);
   await db.update(intents).set({ result: JSON.stringify({ error: "a failed try" }) }).where(eq(intents.id, requested.intentId));
   assert.deepEqual(await slackTestOutcome(deps, requested.intentId), { status: "pending" }, "an error on an open intent is not final");
   await db.update(intents).set({ handled_at: new Date(), result: JSON.stringify({ error: "channel_not_found" }) }).where(eq(intents.id, requested.intentId));

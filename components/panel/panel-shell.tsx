@@ -76,8 +76,8 @@ function Nav({
   return (
     <div className="flex h-full min-h-0 flex-col whitespace-nowrap">
       <div className="flex h-11 shrink-0 items-center gap-2 border-b px-3.5">
-        <span className="flex size-5 shrink-0 items-center justify-center rounded-[5px] bg-primary text-[11px] font-semibold text-primary-foreground">M</span>
-        <span className={cn("min-w-0 truncate font-medium", fade)}>Marshal Factory</span>
+        <span className="flex size-5 shrink-0 items-center justify-center rounded-[5px] bg-primary text-[11px] font-semibold text-primary-foreground">A</span>
+        <span className={cn("min-w-0 truncate font-medium", fade)}>Abaris Factory</span>
       </div>
       <nav aria-label="Panel" data-collapsed={collapsed || undefined} className="flex min-h-0 flex-1 flex-col gap-4 overflow-x-hidden overflow-y-auto px-1.5 py-2">
         {NAV.map((group) => (

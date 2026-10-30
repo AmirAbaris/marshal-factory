@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import { CredentialsForm } from "@/components/auth/credentials-form";
 
-export const metadata: Metadata = { title: "Sign in · Marshal Factory" };
+export const metadata: Metadata = { title: "Sign in · Abaris Factory" };
 
 export default function SignInPage() {
   return (

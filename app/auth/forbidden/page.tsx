@@ -4,7 +4,7 @@ import { ForbiddenCard } from "@/components/auth/forbidden-card";
 import { isAllowlisted } from "@/lib/auth/owner";
 import { auth } from "@/lib/auth/server";
 
-export const metadata: Metadata = { title: "Forbidden · Marshal Factory" };
+export const metadata: Metadata = { title: "Forbidden · Abaris Factory" };
 
 export default async function ForbiddenPage() {
   // The SDK logs a prerender attempt's cookie read as an error, so opt out of prerendering first.

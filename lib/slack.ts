@@ -330,6 +330,6 @@ export function renderMessage(
 
 /** The message Settings' "Send test message" posts. */
 export function renderTest(actor: string): SlackMessage {
-  const text = `👋 Test from the marshal factory, sent by ${actor}. Notifications reach this conversation.`;
+  const text = `👋 Test from the Abaris factory, sent by ${actor}. Notifications reach this conversation.`;
   return { text, blocks: [{ type: "section", text: { type: "mrkdwn", text: escape(text) } }] };
 }
