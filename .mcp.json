@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "factory-report": {
+      "command": "bun",
+      "args": [
+        "/Users/amirabaris/code/marshal-factory/mcp/factory-report.ts"
+      ],
+      "env": {
+        "FACTORY_REPORTER": "hook"
+      }
+    }
+  }
+}
