@@ -16,7 +16,7 @@ export const harnessSchema = z.object({
 export type Harness = z.infer<typeof harnessSchema>;
 
 /** Drivers whose sessions run the factory's hooks and MCP reporter, so stages and cost work. */
-export const TRACKED_DRIVERS: readonly string[] = ["claudeAgent"];
+export const TRACKED_DRIVERS: readonly string[] = ["antigravity"];
 
 /** Drivers without hooks whose factory-report MCP server posts their stages, questions, PRs and assessments; the runner reads their cost from their session logs (lib/codex-usage.ts). */
 export const STAGE_REPORTING_DRIVERS: readonly string[] = ["codex"];
