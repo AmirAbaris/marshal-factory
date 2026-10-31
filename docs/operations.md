@@ -189,11 +189,11 @@ The runner posts a Slack message when a job lands in the [inbox](#needs-you-inbo
 
   ```yaml
   display_information:
-    name: Marshal factory
+    name: Abaris factory
     description: Tells you when a factory job needs you.
   features:
     bot_user:
-      display_name: Marshal factory
+      display_name: Abaris factory
       always_online: true
     slash_commands:
       - command: /factory

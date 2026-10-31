@@ -64,7 +64,7 @@ export function CredentialsForm({ mode }: { mode: keyof typeof MODES }) {
   return (
     <Card className="w-full max-w-sm">
       <CardHeader>
-        <CardTitle>Marshal Factory</CardTitle>
+        <CardTitle>Abaris Factory</CardTitle>
         <CardDescription>{config.description}</CardDescription>
       </CardHeader>
       <CardContent>

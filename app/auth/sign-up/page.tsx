@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import { CredentialsForm } from "@/components/auth/credentials-form";
 
-export const metadata: Metadata = { title: "Create the owner account · Marshal Factory" };
+export const metadata: Metadata = { title: "Create the owner account · Abaris Factory" };
 
 // Neon Auth refuses sign-ups unless the operator turns them on for owner creation.
 export default function SignUpPage() {
