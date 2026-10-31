@@ -137,6 +137,7 @@ try {
     { ...ev(24, { kind: "stage", at: t0 + 67_000, stage: "merged", summary: "Merged", prUrl: "https://github.com/x/y/pull/2", jobKey }), eventId: `merged:https://github.com/x/y/pull/2:${run}` },
   ]);
   assert.equal((await jobRow()).stage, "merged", "a PR a human merged after the attempt failed still marks the job merged");
+  assert.equal((await runRow()).status, "ended", "a merged job marks the run ended");
   const merged = await jobRow();
   await ingest(db, [{ ...ev(25, { kind: "stage", at: t0 + 68_000, stage: "failed", summary: "late", jobKey }), eventId: `watchdog:${run}:1:x` }]);
   assert.deepEqual(await jobRow(), merged, "merged is final");
