@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button";
 import type { AgentRow, AuditRow, EventRow, JobEvidenceRow, JobRow, MachineRow, RepoSettingsRow, RunRow } from "@/db/schema";
 import { Board } from "./board";
 import { panelCards } from "./cards";
-import { splitArchived } from "@/lib/archive";
+import { isFinished, splitArchived } from "@/lib/archive";
 import { sandboxState } from "@/lib/execution";
 import { attemptBranch } from "@/lib/factory";
 import { inboxItems } from "@/lib/inbox";
@@ -234,7 +234,16 @@ export function LivePanel({
   const repoSelect = options.length > 0 && <RepoSelect options={options} value={repo} onChange={pickRepo} />;
 
   const meta = viewMeta(view);
-  const active = runRows.filter((r) => r.status === "active").length;
+  const active = useMemo(() => {
+    const jobByKey = new Map(jobRows.map((j) => [j.key, j]));
+    return runRows.filter((r) => {
+      if (r.status !== "active") return false;
+      if (r.stage && isFinished(r.stage)) return false;
+      const job = r.job_key ? jobByKey.get(r.job_key) : undefined;
+      if (job && isFinished(job.stage)) return false;
+      return true;
+    }).length;
+  }, [runRows, jobRows]);
   const content = (() => {
     switch (view) {
       case "inbox":

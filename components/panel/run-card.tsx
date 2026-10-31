@@ -3,6 +3,7 @@ import Link from "next/link";
 import { Badge } from "@/components/ui/badge";
 import { Spinner } from "@/components/ui/spinner";
 import type { AgentRow, RunRow } from "@/db/schema";
+import { isFinished } from "@/lib/archive";
 import type { SandboxState } from "@/lib/execution";
 import type { Tracking } from "@/lib/harness";
 import type { MergeDecision } from "@/lib/merge-decision";
@@ -157,7 +158,7 @@ export function StageCard({
       )}
       {card.stage === "waiting" && card.question && <p className="line-clamp-2 text-xs text-warning">{card.question}</p>}
       <div className="flex items-center gap-2 text-xs text-muted-foreground">
-        {latest?.status === "active" && <Spinner className="size-2.5 shrink-0" aria-label="Working" />}
+        {latest?.status === "active" && !isFinished(card.stage) && <Spinner className="size-2.5 shrink-0" aria-label="Working" />}
         <span className="shrink-0 font-mono">{card.jobKey ?? card.id.slice(0, 8)}</span>
         {repoLabel && <span className="min-w-0 truncate">{repoLabel}</span>}
         <span className="ms-auto flex shrink-0 items-center gap-2">
@@ -190,14 +191,16 @@ export function RunCard({
   agents: readonly AgentRow[];
   selected: boolean;
 }) {
+  const finished = run.stage !== null && isFinished(run.stage);
+  const active = run.status === "active" && !finished;
   return (
     <Link
       href={activityHref(run.session_id)}
       scroll={false}
-      className={cn(cardClass(selected), run.status === "ended" && "opacity-60")}
+      className={cn(cardClass(selected), (run.status === "ended" || finished) && "opacity-60")}
     >
       <div className="flex items-center gap-1.5 font-mono text-xs text-faint">
-        {run.status === "active" && <Spinner className="size-2.5" />}
+        {active && <Spinner className="size-2.5" />}
         {run.job_key ?? shortId(run.session_id)}
       </div>
       <div className="line-clamp-2 font-medium">{runTitle(run)}</div>

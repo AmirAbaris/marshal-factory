@@ -211,6 +211,7 @@ async function tick() {
     stopsReconciled: await isolated(() => ops.reconcileStops()),
     stopsDelivered: await isolated(() => ops.deliverStops()),
     pullRequests: await isolated(ops.checkPullRequests),
+    runsSettled: await isolated(ops.settleFinishedRuns),
     // Before the merge decisions, so a run that just opened its PR is decided on its latest cost.
     reconciled: await isolated(ops.reconcileUsage),
     // After the PR check, so a merged or conflicting PR has already left pr.

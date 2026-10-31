@@ -67,7 +67,7 @@ function Row({
       <span className="hidden w-24 shrink-0 truncate font-mono text-xs text-muted-foreground @lg:block">{card.jobKey ?? card.id.slice(0, 8)}</span>
       <span className="flex min-w-0 flex-1 items-center gap-2">
         <span className="truncate">{card.title}</span>
-        {card.latest?.status === "active" && <Spinner className="size-3 shrink-0 text-muted-foreground" />}
+        {card.latest?.status === "active" && !isFinished(card.stage) && <Spinner className="size-3 shrink-0 text-muted-foreground" />}
       </span>
       {repoLabels && <span className="hidden w-28 shrink-0 truncate text-xs text-muted-foreground @2xl:block">{card.repo && repoLabels.get(card.repo)}</span>}
       <span className={cn("hidden w-32 shrink-0 truncate text-xs @sm:block @xl:w-56", decision?.tone)}>{decision?.text}</span>

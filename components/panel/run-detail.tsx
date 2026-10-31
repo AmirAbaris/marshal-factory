@@ -10,6 +10,7 @@ import { cn } from "@/lib/utils";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import type { AgentRow, AuditRow, EventRow, JobEvidenceRow, JobRow, MachineRow, RunRow } from "@/db/schema";
+import { isFinished } from "@/lib/archive";
 import { sandboxState } from "@/lib/execution";
 import { harnessLabel, type Harness } from "@/lib/harness";
 import { parseInventory, t3ThreadLink, UNKNOWN } from "@/lib/machine";
@@ -252,10 +253,16 @@ export function RunDetail({
               {STAGE_META[stage].label}
             </Badge>
           )}
-          <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
-            {run.status === "active" && <Spinner className="size-3" />}
-            {run.status}
-          </span>
+          {(() => {
+            const finished = Boolean((job?.stage && isFinished(job.stage)) || (run.stage && isFinished(run.stage)));
+            const displayStatus = finished && run.status === "active" ? "ended" : run.status;
+            return (
+              <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                {displayStatus === "active" && <Spinner className="size-3" />}
+                {displayStatus}
+              </span>
+            );
+          })()}
           <span className="ms-auto flex items-center gap-1.5">
             {job?.stage === "pr" && job.pr_url && <MergeButton key={job.pr_url} jobId={job.id} jobKey={job.key} />}
             {run.pr_url && (

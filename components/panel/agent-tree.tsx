@@ -1,4 +1,5 @@
 import type { AgentRow, RunRow } from "@/db/schema";
+import { isFinished } from "@/lib/archive";
 import { costUsd } from "@/lib/pricing";
 import { cn } from "@/lib/utils";
 import { formatTokens, formatUsd, groupBy, totalTokens } from "./format";
@@ -79,11 +80,12 @@ export function AgentTree({
       );
     });
 
+  const active = run.status === "active" && (!run.stage || !isFinished(run.stage));
   return (
     <div className="flex flex-col gap-0.5">
       <Node
         label="main session"
-        status={run.status === "active" ? STATUS_DOT.running : "bg-faint"}
+        status={active ? STATUS_DOT.running : "bg-faint"}
         model={run.model}
         tokens={totalTokens(run)}
         cost={costUsd(run, run.model)}

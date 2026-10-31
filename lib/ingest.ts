@@ -7,6 +7,7 @@ import { summarize } from "./evidence";
 import { normalizeAssessment } from "./assessment";
 import { attemptBranchSql } from "./branch-sql";
 import { parseBranch } from "./factory";
+import { isFinished } from "./archive";
 import { branchSpend } from "./spend";
 import { decideStage, type StageVerdict } from "./stages";
 
@@ -90,7 +91,7 @@ async function upsertRun(tx: Tx, event: FactoryEvent) {
         ...(RUN_STATUS[event.kind]
           ? {
               status: sql.raw(
-                `case when excluded."last_event_at" >= runs."last_event_at" then excluded."status" else runs."status" end`,
+                `case when excluded."last_event_at" >= runs."last_event_at" and (runs."stage" is null or runs."stage" not in ('merged', 'failed')) then excluded."status" else runs."status" end`,
               ),
             }
           : {}),
@@ -292,6 +293,7 @@ const ifNewerStage = (column: string, value = `excluded."${column}"`) =>
 /** A stage report that arrives late never overwrites a newer one. */
 async function applyStage(tx: Tx, e: Extract<FactoryEvent, { kind: "stage" }>) {
   const at = when(e.at);
+  const end = isFinished(e.stage);
   await tx
     .insert(runs)
     .values({
@@ -305,6 +307,7 @@ async function applyStage(tx: Tx, e: Extract<FactoryEvent, { kind: "stage" }>) {
       stage_summary: e.summary,
       question: e.question ?? null,
       pr_url: e.prUrl,
+      status: end ? "ended" : "active",
     })
     .onConflictDoUpdate({
       target: runs.session_id,
@@ -318,6 +321,9 @@ async function applyStage(tx: Tx, e: Extract<FactoryEvent, { kind: "stage" }>) {
         question: ifNewerStage("question"),
         pr_url: ifNewerStage("pr_url", `coalesce(excluded."pr_url", runs."pr_url")`),
         stage_at: sql.raw(`greatest(runs."stage_at", excluded."stage_at")`),
+        status: sql.raw(
+          `case when (runs."stage_at" is null or excluded."stage_at" >= runs."stage_at") and excluded."stage" in ('merged', 'failed') then 'ended' else runs."status" end`,
+        ),
       },
     });
 }
@@ -358,6 +364,9 @@ async function moveJob(tx: Tx, event: Extract<FactoryEvent, { kind: "stage" }>):
       updated_at: at,
     })
     .where(eq(jobs.id, job.id));
+  if (isFinished(event.stage)) {
+    await tx.update(runs).set({ status: "ended" }).where(eq(runs.job_key, event.jobKey));
+  }
   return verdict;
 }
 

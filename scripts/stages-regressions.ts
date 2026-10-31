@@ -91,8 +91,27 @@ assert.deepEqual(
 );
 
 const { boardCards } = await import("../components/panel/cards");
-const mockJob = { key: "ABA-6", id: "linear:1" as any, source: "linear" as const, url: "https://linear.app/x", title: "Test", repo: "repo", stage: "merged" as Stage, stage_summary: null, question: null, pr_url: null, writeback: {}, source_state: {}, machine_id: null, answered_at: null, attempt: 1, provider: null, execution: null, sandbox_id: null, sandbox_snapshot: null, merge_decision: null, evidence: null, stop: null, updated_at: new Date() };
-const mockRun = { session_id: "s-1", job_key: "ABA-6", branch: "factory/ABA-6", stage: "merged" as Stage, status: "active" as const, started_at: new Date(), last_event_at: new Date(), stage_at: new Date(), cwd: null, repo: null, t3_thread_id: null, title: null, stage_summary: null, question: null, pr_url: null, transcript_path: null, model: null, input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0 };
+import type { JobRow, RunRow } from "../db/schema";
+const mockJob = {
+  key: "ABA-6",
+  id: "linear:1",
+  source: "linear",
+  url: "https://linear.app/x",
+  title: "Test",
+  repo: "repo",
+  stage: "merged",
+  attempt: 1,
+  updated_at: new Date(),
+} as unknown as JobRow;
+const mockRun = {
+  session_id: "s-1",
+  job_key: "ABA-6",
+  branch: "factory/ABA-6",
+  stage: "merged",
+  status: "active",
+  started_at: new Date(),
+  last_event_at: new Date(),
+} as unknown as RunRow;
 const cards = boardCards([mockJob], [mockRun]);
 assert.equal(cards[0].latest?.status, "ended", "boardCards normalizes merged job runs to ended status");
 
