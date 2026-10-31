@@ -4,6 +4,7 @@ import { and, eq, inArray, sql } from "drizzle-orm";
 import { db } from "../db/client";
 import { jobs } from "../db/schema";
 import { installationTokens, type RepoName } from "../lib/github/app";
+import { attemptBranch } from "../lib/factory";
 import { github, parsePullUrl } from "../lib/github/pulls";
 import { localHost, type JobHost } from "../lib/host";
 import type { FactoryMerge, MergeDecision, MergeWatch } from "../lib/merge-decision";
@@ -12,7 +13,7 @@ import type { Job } from "../lib/sources/types";
 import { config } from "./config";
 import { thisMachine } from "./heartbeat";
 import { auditFactory, mergeRevert, storedDecision, syncComments } from "./merge-service";
-import { factoryCheckouts } from "./ops";
+import { cleanup, factoryCheckouts } from "./ops";
 
 // After the factory merges a PR, the timer watches the merge commit's checks on the base branch
 // for factory.postMergeWatchMinutes. Green or no verdict in time ends the watch. Red reverts the
@@ -123,10 +124,14 @@ async function watchOne(job: Job, decision: MergeDecision & { merged: FactoryMer
   const { checks, failed } = await github.commitChecks(job.repo as RepoName, merged.sha);
   switch (checks) {
     case "success":
+      if (job.repo) await github.deleteBranch(job.repo as RepoName, attemptBranch(job.key, job.attempt)).catch(() => false);
+      await cleanup().catch(() => {});
       return endWatch(job, decision, { ...watch, state: "green" }, "Main stayed green after the factory's merge", now);
     case "pending":
     case "none":
       if (now < Date.parse(watch.until)) return null;
+      if (job.repo) await github.deleteBranch(job.repo as RepoName, attemptBranch(job.key, job.attempt)).catch(() => false);
+      await cleanup().catch(() => {});
       return endWatch(job, decision, { ...watch, state: "expired" }, `Main's checks didn't finish within ${config.factory.postMergeWatchMinutes} minutes of the merge; stopped watching`, now);
     case "failure": {
       const reverted = await revertMerge(job.pr_url!, merged, failed);

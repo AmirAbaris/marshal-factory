@@ -60,6 +60,9 @@ async function inferJob(job: Job, now: number): Promise<string | undefined> {
     const pr = await github.pullRequestForBranch(job.repo as RepoName, attemptBranch(job.key, job.attempt));
     if (pr?.state === "merged") {
       await postMerged(job.key, pr.url, job.session_id ?? runnerEventId("merged", job.external_id));
+      if (job.repo) {
+        await github.deleteBranch(job.repo as RepoName, attemptBranch(job.key, job.attempt)).catch(() => false);
+      }
       return "merged";
     }
     if (pr?.state === "open") {

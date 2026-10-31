@@ -168,6 +168,9 @@ export async function cleanupRepo(
             continue;
           }
         }
+        if (state.outcome === "merged") {
+          await github.deleteBranch(remote, branch).catch(() => false);
+        }
         report.removed.push({ key, worktree: worktreePath, freedKb });
       }
       const finished = plan.kind === "remove" || plan.reason === "already clean";

@@ -5,7 +5,7 @@ import { GITHUB_API, GitHubError, githubRequest, installationTokens, type RepoNa
 
 export type PullState = "open" | "closed" | "merged";
 export type Mergeable = "mergeable" | "conflicting" | "unknown";
-export type PullRequest = { state: PullState; mergeable: Mergeable; headSha: string; title: string };
+export type PullRequest = { state: PullState; mergeable: Mergeable; headSha: string; headRef?: string | null; title: string };
 export type HeadPull = { state: PullState; headSha: string; mergedAt: Date | null; closedAt: Date | null };
 export type BranchPull = { url: string; state: "open" | "merged" };
 export type MergeResult =
@@ -18,6 +18,7 @@ export type MergeOptions = { method?: MergeMethod; title?: string; message?: str
 export type MergeCandidate = {
   state: PullState;
   headSha: string;
+  headRef?: string | null;
   baseRef: string;
   title: string;
   number: number;
@@ -41,7 +42,7 @@ const pullSchema = z.object({
   state: z.enum(["open", "closed"]),
   merged_at: z.string().nullable(),
   closed_at: z.string().nullable(),
-  head: z.object({ sha: z.string() }),
+  head: z.object({ sha: z.string(), ref: z.string().optional() }),
 });
 
 const stateOf = (pull: z.infer<typeof pullSchema>): PullState => (pull.merged_at ? "merged" : pull.state);
@@ -263,7 +264,7 @@ export function pullsClient({ api, tokens }: { api: string; tokens: TokenSource 
       const { repo, number } = parsePullUrl(url);
       const { json } = await request(repo, "GET", `/repos/${repo}/pulls/${number}`);
       const pull = pullSchema.extend({ mergeable: z.boolean().nullable(), title: z.string() }).parse(json);
-      return { state: stateOf(pull), mergeable: mergeableOf(pull.mergeable), headSha: pull.head.sha, title: pull.title };
+      return { state: stateOf(pull), mergeable: mergeableOf(pull.mergeable), headSha: pull.head.sha, headRef: pull.head.ref ?? null, title: pull.title };
     },
 
     async pullsForHead(repo: RepoName, branch: string): Promise<HeadPull[]> {
@@ -377,6 +378,7 @@ export function pullsClient({ api, tokens }: { api: string; tokens: TokenSource 
       return {
         state,
         headSha: pull.head.sha,
+        headRef: pull.head.ref ?? null,
         baseRef: pull.base.ref,
         title: pull.title,
         number,
@@ -449,6 +451,13 @@ export function pullsClient({ api, tokens }: { api: string; tokens: TokenSource 
       const existing = z.array(z.object({ html_url: z.string() })).parse((await request(repo, "GET", `/repos/${repo}/pulls?${query}`)).json)[0];
       if (!existing) throw new GitHubError(`GitHub POST /repos/${repo}/pulls answered 422: ${messageOf(json)}`, 422);
       return { url: existing.html_url };
+    },
+
+    /** Deletes a branch on GitHub; idempotent if already deleted (404, 422). */
+    async deleteBranch(repo: RepoName, branch: string): Promise<boolean> {
+      const clean = branch.replace(/^(refs\/)?heads\//, "");
+      const { status } = await request(repo, "DELETE", `/repos/${repo}/git/refs/heads/${clean}`, { allow: [404, 422] });
+      return status !== 404 && status !== 422;
     },
   };
 }

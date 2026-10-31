@@ -3,15 +3,16 @@ import { and, eq, inArray, isNotNull, sql } from "drizzle-orm";
 import { db } from "../db/client";
 import { auditLog, jobs, type AuditRow } from "../db/schema";
 import { parseAssessment } from "../lib/assessment";
+import { attemptBranch } from "../lib/factory";
 import type { RepoName } from "../lib/github/app";
-import { github, type MergeCandidate } from "../lib/github/pulls";
+import { github, parsePullUrl, type MergeCandidate } from "../lib/github/pulls";
 import { DECISION_MARKER, fingerprint, prCommentBody, sourceCommentBody } from "../lib/merge-comments";
 import { blockedReason, mergeDecisionSchema, type MergeDecision, type MergeMethod, type MergeVia } from "../lib/merge-decision";
 import { parseJobs, sourceFor } from "../lib/sources";
 import type { Job } from "../lib/sources/types";
 import { runnerEventId } from "../lib/stages";
 import { config } from "./config";
-import { postMerged } from "./ops";
+import { cleanup, postMerged } from "./ops";
 
 // The factory's one way to merge a pull request. Auto-merge (decideMerges), the owner's approval
 // in the inbox and the owner's approval in run detail (both approveMerge) all end in mergeNow:
@@ -126,7 +127,13 @@ async function recordMerge(job: Job, decision: MergeDecision, pull: MergeCandida
     return true;
   });
   if (!recorded) return null;
+  const branchToDelete = pull.headRef ?? attemptBranch(job.key, job.attempt);
+  if (branchToDelete && job.pr_url) {
+    const { repo } = parsePullUrl(job.pr_url);
+    await github.deleteBranch(repo, branchToDelete).catch(() => false);
+  }
   await postMerged(job.key, job.pr_url!, job.session_id ?? runnerEventId("merged", job.external_id));
+  await cleanup().catch(() => {});
   return syncComments(job, next);
 }
 

@@ -89,7 +89,7 @@ const pullJson = (p: Pull, sha: string) => ({
   state: p.state,
   merged_at: p.merged ? "2027-01-01T00:00:00Z" : null,
   closed_at: p.merged ? "2027-01-01T00:00:00Z" : null,
-  head: { sha },
+  head: { sha, ref: p.branch ?? `factory/branch-${p.number}` },
   base: { ref: p.base },
   mergeable: true,
   title: p.title,
@@ -105,6 +105,9 @@ const server = await serve(0, async (request) => {
   const body = request.method === "GET" ? {} : ((await request.json().catch(() => ({}))) as Record<string, unknown>);
   if (request.method !== "GET") writes.push({ method: request.method, path, body });
   let m: RegExpExecArray | null;
+  if ((m = /^\/repos\/([^/]+\/[^/]+)\/git\/refs\/heads\/(.+)$/.exec(path))) {
+    if (request.method === "DELETE") return new Response(null, { status: 204 });
+  }
   if ((m = /^\/repos\/([^/]+\/[^/]+)$/.exec(path))) return Response.json(repoFlags.get(m[1]!) ?? {});
   if ((m = /^\/repos\/([^/]+\/[^/]+)\/pulls$/.exec(path))) {
     if (request.method === "POST") {
@@ -148,6 +151,10 @@ const server = await serve(0, async (request) => {
     const comment = [...comments.values()].flat().find((c) => c.id === Number(m![1]));
     if (comment) comment.body = String(body.body);
     return Response.json({});
+  }
+  if ((m = /^\/repos\/[^/]+\/[^/]+\/contents\/(.+)$/.exec(path))) {
+    const pkg = JSON.stringify({ scripts: { build: "next build", test: "bun test" } });
+    return Response.json({ content: Buffer.from(pkg).toString("base64") });
   }
   return Response.json({ message: `no fake for ${request.method} ${path}` }, { status: 500 });
 });
@@ -331,6 +338,7 @@ try {
   assert.equal(putsTo(AUTO, 4).length, 1, "a refused head is never asked again");
   assert.deepEqual((await auditsOf(FORBIDDEN)).map((a) => a.detail).sort(), [`Hand over · ${reason}`, "Merging (auto)"]);
   assert.equal(putsTo(AUTO, 1).length, 1, "never double-merged");
+  assert.ok(writes.some((w) => w.method === "DELETE" && w.path.includes("/git/refs/heads/")), "merged branch was deleted from GitHub");
 
   // Comments: created once, then the same comment edited when the decision changes.
   pulls.get(pullKey(TRIAL, 6))!.heads = ["h6b"];

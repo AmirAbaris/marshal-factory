@@ -8,7 +8,7 @@ import { SourceGoneError, type Job, type JobDraft, type JobId, type JobSource, t
 import { canTransition, runnerEventId } from "../lib/stages";
 import { subagentTranscripts, sumUsage, transcriptPathFor } from "../lib/transcript";
 import { checkoutRepo, cleanupRepo, cleanupSubagentWorktrees } from "../lib/worktrees";
-import { github } from "../lib/github/pulls";
+import { github, parsePullUrl } from "../lib/github/pulls";
 import { claimConflict, conflictMessage, unclaimedRunsWithPr } from "../lib/conflicts";
 import { attemptBranch, isJobKey, isMcpSession } from "../lib/factory";
 import { ownerNoteSection } from "../lib/inbox";
@@ -72,6 +72,7 @@ export async function checkPullRequests({ only }: { only?: readonly string[] } =
   const each = async (key: string, prUrl: string, step: () => Promise<void>) =>
     step().catch((error: unknown) => void errors.push({ key, prUrl, error: error instanceof Error ? error.message : String(error) }));
 
+  let anyMerged = false;
   for (const job of open) {
     await each(job.key, job.pr_url!, async () => {
       const pr = await github.pullRequest(job.pr_url!);
@@ -79,15 +80,32 @@ export async function checkPullRequests({ only }: { only?: readonly string[] } =
         if (await sendBackForConflict(job, pr.headSha)) conflicts.push(job.key);
         return;
       }
-      if (pr.state === "merged") await postMerged(job.key, job.pr_url!, job.session_id ?? runnerEventId("merged", job.external_id));
+      if (pr.state === "merged") {
+        await postMerged(job.key, job.pr_url!, job.session_id ?? runnerEventId("merged", job.external_id));
+        const branchToDelete = pr.headRef ?? attemptBranch(job.key, job.attempt);
+        if (branchToDelete && job.pr_url) {
+          const { repo } = parsePullUrl(job.pr_url);
+          await github.deleteBranch(repo, branchToDelete).catch(() => false);
+        }
+        anyMerged = true;
+      }
     });
   }
 
   for (const run of (await unclaimedRunsWithPr(db)).filter((r) => !only || only.includes(r.job_key!))) {
     await each(run.job_key!, run.pr_url!, async () => {
-      if ((await github.pullRequest(run.pr_url!)).state === "merged") await postMerged(run.job_key!, run.pr_url!, run.session_id);
+      const pull = await github.pullRequest(run.pr_url!);
+      if (pull.state === "merged") {
+        await postMerged(run.job_key!, run.pr_url!, run.session_id);
+        if (pull.headRef) {
+          const { repo } = parsePullUrl(run.pr_url!);
+          await github.deleteBranch(repo, pull.headRef).catch(() => false);
+        }
+        anyMerged = true;
+      }
     });
   }
+  if (anyMerged) await cleanup().catch(() => {});
   return { conflicts, errors };
 }
 
