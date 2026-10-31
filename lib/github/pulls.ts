@@ -396,10 +396,20 @@ export function pullsClient({ api, tokens }: { api: string; tokens: TokenSource 
           allow_squash_merge: z.boolean().optional(),
           allow_merge_commit: z.boolean().optional(),
           allow_rebase_merge: z.boolean().optional(),
-          permissions: z.object({ push: z.boolean().optional() }).optional(),
+          permissions: z
+            .object({
+              push: z.boolean().optional(),
+              pull: z.boolean().optional(),
+            })
+            .optional(),
         })
         .parse(json);
-      return { method: mergeMethodOf(flags), canPush: flags.permissions?.push !== false };
+      // GitHub App installation tokens return permissions with all fields false (push: false, pull: false)
+      // because collaborator permissions only describe user accounts. When pull is also false on a 200 response,
+      // it indicates a machine/App token rather than a user collaborator denied push permission.
+      const isAppTokenDefault = flags.permissions?.push === false && flags.permissions?.pull === false;
+      const canPush = isAppTokenDefault || flags.permissions?.push !== false;
+      return { method: mergeMethodOf(flags), canPush };
     },
 
     /** The commit's checks with the names of those that failed, Bugbot's run aside. */
