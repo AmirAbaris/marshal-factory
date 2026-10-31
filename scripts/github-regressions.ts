@@ -103,6 +103,18 @@ const stub = await serve(0, async (request) => {
       if (n === 3) return Response.json({ message: "Head branch was modified. Review and try the merge again." }, { status: 409 });
       return Response.json({ message: "Validation Failed" }, { status: 422 });
     }
+    if (url.pathname === "/repos/o/r") {
+      return Response.json({
+        allow_squash_merge: true,
+        permissions: { admin: false, maintain: false, push: false, triage: false, pull: false },
+      });
+    }
+    if (url.pathname === "/repos/o/read-only") {
+      return Response.json({
+        allow_squash_merge: true,
+        permissions: { admin: false, maintain: false, push: false, triage: false, pull: true },
+      });
+    }
     return Response.json({ message: "Not Found" }, { status: 404 });
 });
 const api = `http://localhost:${stub.port}`;
@@ -149,12 +161,15 @@ try {
 
   const client = pullsClient({ api, tokens: { get: async () => "ghs_stub", evict: () => {} } });
   const url = (n: number) => `https://github.com/o/r/pull/${n}`;
-  assert.deepEqual(await client.pullRequest(url(1)), { state: "open", mergeable: "unknown", headSha: "h1", title: "PR 1" }, "null mergeable is unknown");
-  assert.deepEqual(await client.pullRequest(url(2)), { state: "open", mergeable: "conflicting", headSha: "h2", title: "PR 2" }, "false mergeable is conflicting");
+  assert.deepEqual(await client.pullRequest(url(1)), { state: "open", mergeable: "unknown", headSha: "h1", headRef: null, title: "PR 1" }, "null mergeable is unknown");
+  assert.deepEqual(await client.pullRequest(url(2)), { state: "open", mergeable: "conflicting", headSha: "h2", headRef: null, title: "PR 2" }, "false mergeable is conflicting");
   assert.equal((await client.pullRequest(url(3))).state, "merged", "a closed PR with merged_at is merged");
   await assert.rejects(client.pullRequest(url(9)), /answered 404: Not Found/);
   const read = seen.find((s) => s.path === "/repos/o/r/pulls/1")!;
   assert.deepEqual([read.auth, read.version], ["Bearer ghs_stub", "2026-03-10"], "calls carry the installation token and the API version");
+
+  assert.deepEqual(await client.repoMerging("o/r"), { method: "squash", canPush: true }, "App installation tokens with zero collaborator permissions can still push");
+  assert.deepEqual(await client.repoMerging("o/read-only"), { method: "squash", canPush: false }, "Explicit non-app push: false is respected");
 
   assert.deepEqual(
     await client.pullsForHead("o/r", "factory/FAC-1"),
