@@ -3,8 +3,9 @@ import { and, eq, inArray, isNotNull, sql } from "drizzle-orm";
 import { db } from "../db/client";
 import { auditLog, jobs, type AuditRow } from "../db/schema";
 import { parseAssessment } from "../lib/assessment";
+import { attemptBranch } from "../lib/factory";
 import type { RepoName } from "../lib/github/app";
-import { github, type MergeCandidate } from "../lib/github/pulls";
+import { github, parsePullUrl, type MergeCandidate } from "../lib/github/pulls";
 import { DECISION_MARKER, fingerprint, prCommentBody, sourceCommentBody } from "../lib/merge-comments";
 import { blockedReason, mergeDecisionSchema, type MergeDecision, type MergeMethod, type MergeVia } from "../lib/merge-decision";
 import { parseJobs, sourceFor } from "../lib/sources";
@@ -126,6 +127,11 @@ async function recordMerge(job: Job, decision: MergeDecision, pull: MergeCandida
     return true;
   });
   if (!recorded) return null;
+  const branchToDelete = pull.headRef ?? attemptBranch(job.key, job.attempt);
+  if (branchToDelete && job.pr_url) {
+    const { repo } = parsePullUrl(job.pr_url);
+    await github.deleteBranch(repo, branchToDelete).catch(() => false);
+  }
   await postMerged(job.key, job.pr_url!, job.session_id ?? runnerEventId("merged", job.external_id));
   return syncComments(job, next);
 }
