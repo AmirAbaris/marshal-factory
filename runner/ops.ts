@@ -1,6 +1,7 @@
 import { and, asc, eq, gt, inArray, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
 import { db } from "../db/client";
 import { agents, jobs, runs, type JobRow, type RunRow } from "../db/schema";
+import { FINISHED_STAGES } from "../lib/archive";
 import { STAGES, type Stage, type Usage } from "../lib/events";
 import { allSources, jobId, parseJob, parseJobs, sourceFor } from "../lib/sources";
 import { parseJobId, SOURCE_SHAPES } from "../lib/sources/shapes";
@@ -393,6 +394,24 @@ export async function reconcileUsage({ only }: { only?: string[] } = {}) {
     }
   }
   return fixed;
+}
+
+/** Ensures any runs belonging to finished/merged jobs or in finished stages are marked ended. */
+export async function settleFinishedRuns() {
+  const updated = await db
+    .update(runs)
+    .set({ status: "ended" })
+    .where(
+      and(
+        ne(runs.status, "ended"),
+        or(
+          inArray(runs.stage, [...FINISHED_STAGES]),
+          sql`exists (select 1 from ${jobs} where ${jobs.key} = ${runs.job_key} and ${jobs.stage} in ('merged', 'failed'))`,
+        ),
+      ),
+    )
+    .returning({ session_id: runs.session_id });
+  return updated.map((r) => r.session_id);
 }
 
 /** Posts the run's usage when its transcripts are ahead of the board; true when it did. */

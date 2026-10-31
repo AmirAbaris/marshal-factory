@@ -1,5 +1,5 @@
 import type { JobRow, MachineRow, RunRow } from "@/db/schema";
-import { splitArchived } from "@/lib/archive";
+import { isFinished, splitArchived } from "@/lib/archive";
 import type { Stage } from "@/lib/events";
 import { sandboxState, type SandboxState } from "@/lib/execution";
 import { evidenceLine, parseSummary, type EvidenceLine } from "@/lib/evidence";
@@ -137,6 +137,13 @@ export function boardCards(jobs: readonly JobRow[], runs: readonly RunRow[], har
   const fromJobs = jobs.map((job): BoardCard => {
     const jobRuns = newestFirst(byKey.get(job.key) ?? []);
     const attemptRuns = jobRuns.filter((r) => r.branch === attemptBranch(job.key, job.attempt));
+    const finished = isFinished(job.stage);
+    const normalizedAttemptRuns = finished
+      ? attemptRuns.map((r) => (r.status === "active" ? { ...r, status: "ended" as const } : r))
+      : attemptRuns;
+    const normalizedRuns = finished
+      ? jobRuns.map((r) => (r.status === "active" ? { ...r, status: "ended" as const } : r))
+      : jobRuns;
     return {
       id: job.key,
       jobId: job.id,
@@ -151,11 +158,11 @@ export function boardCards(jobs: readonly JobRow[], runs: readonly RunRow[], har
       machineId: job.machine_id,
       answeredAt: job.answered_at,
       attempt: job.attempt,
-      attemptRuns,
+      attemptRuns: normalizedAttemptRuns,
       nudgedAt: job.nudged_stage === job.stage ? job.nudged_at : null,
-      latest: attemptRuns.find((r) => r.session_id === job.session_id) ?? attemptRuns[0] ?? null,
-      runs: jobRuns,
-      harness: job.provider ? harnessOf(job.provider, attemptRuns) : null,
+      latest: normalizedAttemptRuns.find((r) => r.session_id === job.session_id) ?? normalizedAttemptRuns[0] ?? null,
+      runs: normalizedRuns,
+      harness: job.provider ? harnessOf(job.provider, normalizedAttemptRuns) : null,
       runsOn: runsOn(job),
       mergeDecision: shownDecision(job),
       evidence: jobEvidenceLine(job),
@@ -172,7 +179,12 @@ export function boardCards(jobs: readonly JobRow[], runs: readonly RunRow[], har
   const fromRuns = [...groupBy(unclaimed, (r) => r.job_key ?? r.session_id).entries()].map(
     ([id, group]): BoardCard => {
       const sorted = newestFirst(group);
-      const latest = sorted[0]! as RunRow & { stage: Stage };
+      const rawLatest = sorted[0]! as RunRow & { stage: Stage };
+      const finished = isFinished(rawLatest.stage);
+      const normalizedGroup = finished
+        ? sorted.map((r) => (r.status === "active" ? { ...r, status: "ended" as const } : r))
+        : sorted;
+      const latest = normalizedGroup[0]! as RunRow & { stage: Stage };
       return {
         id,
         jobId: null,
@@ -187,10 +199,10 @@ export function boardCards(jobs: readonly JobRow[], runs: readonly RunRow[], har
         machineId: null,
         answeredAt: null,
         attempt: 1,
-        attemptRuns: sorted,
+        attemptRuns: normalizedGroup,
         nudgedAt: null,
         latest,
-        runs: sorted,
+        runs: normalizedGroup,
         harness: null,
         runsOn: null,
         mergeDecision: null,

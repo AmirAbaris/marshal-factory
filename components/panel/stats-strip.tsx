@@ -1,4 +1,5 @@
 import type { AgentRow, RunRow } from "@/db/schema";
+import { isFinished } from "@/lib/archive";
 import { cn } from "@/lib/utils";
 import { formatTokens, formatUsd, runCost, totalTokens } from "./format";
 
@@ -36,7 +37,7 @@ export function StatsStrip({
   startOfToday: number;
 }) {
   const today = runs.filter((r) => r.last_event_at.getTime() >= startOfToday);
-  const active = runs.filter((r) => r.status === "active").length;
+  const active = runs.filter((r) => r.status === "active" && (!r.stage || !isFinished(r.stage))).length;
   const idle = runs.filter((r) => r.status === "idle").length;
   const agentTokens = (r: RunRow) =>
     (agentsBySession.get(r.session_id) ?? []).reduce(

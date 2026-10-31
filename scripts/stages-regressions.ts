@@ -90,4 +90,29 @@ assert.deepEqual(
   "a stage after failed without a reclaim is refused",
 );
 
+const { boardCards } = await import("../components/panel/cards");
+import type { JobRow, RunRow } from "../db/schema";
+const mockJob = {
+  key: "ABA-6",
+  id: "linear:1",
+  source: "linear",
+  url: "https://linear.app/x",
+  title: "Test",
+  repo: "repo",
+  stage: "merged",
+  attempt: 1,
+  updated_at: new Date(),
+} as unknown as JobRow;
+const mockRun = {
+  session_id: "s-1",
+  job_key: "ABA-6",
+  branch: "factory/ABA-6",
+  stage: "merged",
+  status: "active",
+  started_at: new Date(),
+  last_event_at: new Date(),
+} as unknown as RunRow;
+const cards = boardCards([mockJob], [mockRun]);
+assert.equal(cards[0].latest?.status, "ended", "boardCards normalizes merged job runs to ended status");
+
 console.log(`stages regressions passed: ${allowed.length} allowed and ${forbidden.length} forbidden transitions`);
