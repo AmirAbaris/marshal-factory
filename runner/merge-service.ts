@@ -12,7 +12,7 @@ import { parseJobs, sourceFor } from "../lib/sources";
 import type { Job } from "../lib/sources/types";
 import { runnerEventId } from "../lib/stages";
 import { config } from "./config";
-import { cleanup, postMerged } from "./ops";
+import { postMerged } from "./ops";
 
 // The factory's one way to merge a pull request. Auto-merge (decideMerges), the owner's approval
 // in the inbox and the owner's approval in run detail (both approveMerge) all end in mergeNow:
@@ -133,7 +133,6 @@ async function recordMerge(job: Job, decision: MergeDecision, pull: MergeCandida
     await github.deleteBranch(repo, branchToDelete).catch(() => false);
   }
   await postMerged(job.key, job.pr_url!, job.session_id ?? runnerEventId("merged", job.external_id));
-  await cleanup().catch(() => {});
   return syncComments(job, next);
 }
 

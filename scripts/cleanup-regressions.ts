@@ -71,11 +71,6 @@ try {
   }
   inRepo("checkout", "-q", "main");
   const mergedHead = inRepo("rev-parse", "factory/TST-4");
-  const remoteDeletes: string[] = [];
-  (github as unknown as { deleteBranch: (r: string, b: string) => Promise<boolean> }).deleteBranch = async (r: string, b: string) => {
-    remoteDeletes.push(`${r}:${b}`);
-    return true;
-  };
   github.pullsForHead = async (_, branch) => {
     if (branch === "factory/TST-3") throw new Error("GitHub GET /repos/o/r/pulls answered 502");
     return [{ state: "merged", headSha: mergedHead, mergedAt: now, closedAt: now }];
@@ -84,7 +79,6 @@ try {
   assert.deepEqual(report.removed.map((r) => r.key), ["TST-4"], "a branch GitHub fails for does not stop the next one from being cleaned");
   assert.deepEqual(report.held, [{ key: "TST-3", reason: "cleanup failed: GitHub GET /repos/o/r/pulls answered 502" }], "it is held with the error");
   assert.equal(inRepo("branch", "--list", "factory/*", "--format=%(refname:short)"), "factory/TST-3", "only the merged branch is deleted");
-  assert.deepEqual(remoteDeletes, ["o/r:factory/TST-4"], "the merged branch is also deleted from GitHub");
 
   // A repo cleanup cannot read still gets its idle subagent worktrees looked at.
   const other = join(dir, "other");

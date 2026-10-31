@@ -72,7 +72,6 @@ export async function checkPullRequests({ only }: { only?: readonly string[] } =
   const each = async (key: string, prUrl: string, step: () => Promise<void>) =>
     step().catch((error: unknown) => void errors.push({ key, prUrl, error: error instanceof Error ? error.message : String(error) }));
 
-  let anyMerged = false;
   for (const job of open) {
     await each(job.key, job.pr_url!, async () => {
       const pr = await github.pullRequest(job.pr_url!);
@@ -82,12 +81,11 @@ export async function checkPullRequests({ only }: { only?: readonly string[] } =
       }
       if (pr.state === "merged") {
         await postMerged(job.key, job.pr_url!, job.session_id ?? runnerEventId("merged", job.external_id));
-        const branchToDelete = pr.headRef ?? attemptBranch(job.key, job.attempt);
-        if (branchToDelete && job.pr_url) {
+        const branch = pr.headRef ?? attemptBranch(job.key, job.attempt);
+        if (branch && job.pr_url) {
           const { repo } = parsePullUrl(job.pr_url);
-          await github.deleteBranch(repo, branchToDelete).catch(() => false);
+          await github.deleteBranch(repo, branch).catch(() => false);
         }
-        anyMerged = true;
       }
     });
   }
@@ -101,11 +99,9 @@ export async function checkPullRequests({ only }: { only?: readonly string[] } =
           const { repo } = parsePullUrl(run.pr_url!);
           await github.deleteBranch(repo, pull.headRef).catch(() => false);
         }
-        anyMerged = true;
       }
     });
   }
-  if (anyMerged) await cleanup().catch(() => {});
   return { conflicts, errors };
 }
 
